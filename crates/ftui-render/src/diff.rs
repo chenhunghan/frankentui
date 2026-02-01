@@ -484,7 +484,7 @@ mod proptests {
             // Apply diff to old should produce new
             let mut result = old.clone();
             for (x, y) in diff.iter() {
-                let cell = new.get_unchecked(x, y).clone();
+                let cell = *new.get_unchecked(x, y);
                 result.set_raw(x, y, cell);
             }
 
@@ -563,7 +563,7 @@ mod proptests {
             // Verify each run is contiguous
             for run in runs {
                 prop_assert!(run.x1 >= run.x0, "Run has invalid range");
-                prop_assert!(run.len() > 0, "Run should not be empty");
+                prop_assert!(!run.is_empty(), "Run should not be empty");
 
                 // Verify all cells in run are actually changed
                 for x in run.x0..=run.x1 {
