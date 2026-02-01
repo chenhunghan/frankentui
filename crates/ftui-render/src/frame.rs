@@ -27,7 +27,8 @@
 //! frame.set_cursor(Some((2, 0)));
 //! ```
 
-use crate::buffer::{Buffer, Rect};
+use crate::buffer::Buffer;
+use ftui_core::geometry::Rect;
 
 /// Identifier for a clickable region in the hit grid.
 ///

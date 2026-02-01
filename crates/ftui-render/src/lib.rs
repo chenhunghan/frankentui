@@ -7,6 +7,7 @@ pub mod budget;
 pub mod buffer;
 pub mod cell;
 pub mod diff;
+pub mod drawing;
 pub mod frame;
 pub mod grapheme_pool;
 pub mod link_registry;
