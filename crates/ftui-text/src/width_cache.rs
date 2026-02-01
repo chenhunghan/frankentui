@@ -70,6 +70,14 @@ impl CacheStats {
 /// - Uses FxHash for fast hashing
 /// - O(1) lookup and insertion
 /// - Automatic LRU eviction
+/// - Keys are stored as 64-bit hashes (not full strings) to minimize memory
+///
+/// # Hash Collisions
+/// The cache uses a 64-bit hash as the lookup key rather than storing the
+/// full string. This trades theoretical correctness for memory efficiency.
+/// With FxHash, collision probability is ~1 in 2^64, making this safe for
+/// practical use. If you require guaranteed correctness, use `contains()`
+/// to verify presence before trusting cached values.
 ///
 /// # Thread Safety
 /// `WidthCache` is not thread-safe. For concurrent use, wrap in a mutex
@@ -84,8 +92,7 @@ pub struct WidthCache {
 impl WidthCache {
     /// Create a new cache with the specified capacity.
     ///
-    /// # Panics
-    /// Panics if capacity is zero.
+    /// If capacity is zero, defaults to 1.
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         let capacity = NonZeroUsize::new(capacity.max(1)).expect("capacity must be > 0");

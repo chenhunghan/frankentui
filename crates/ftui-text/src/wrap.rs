@@ -264,33 +264,11 @@ fn wrap_long_word(
 }
 
 /// Split text into words (preserving whitespace with words).
+///
+/// Splits on whitespace boundaries, keeping whitespace-only segments
+/// separate from non-whitespace segments.
 fn split_words(text: &str) -> Vec<String> {
     let mut words = Vec::new();
-    let mut current = String::new();
-
-    for grapheme in text.graphemes(true) {
-        if grapheme.chars().all(|c| c.is_whitespace()) {
-            current.push_str(grapheme);
-        } else {
-            if current.chars().all(|c| c.is_whitespace()) && !current.is_empty() {
-                // We have accumulated whitespace, and now hit a non-whitespace char
-                // Start a new word that includes this whitespace
-                current.push_str(grapheme);
-            } else {
-                current.push_str(grapheme);
-            }
-        }
-
-        // End of word is transition from non-whitespace to whitespace
-        // Actually, let's use a simpler approach: split on whitespace boundaries
-    }
-
-    if !current.is_empty() {
-        words.push(current);
-    }
-
-    // Simpler approach: use unicode word boundaries
-    words.clear();
     let mut current = String::new();
     let mut in_whitespace = false;
 

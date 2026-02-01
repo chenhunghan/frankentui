@@ -4,6 +4,7 @@
 
 pub mod cursor;
 pub mod event;
+pub mod geometry;
 pub mod inline_mode;
 pub mod input_parser;
 pub mod logging;
