@@ -156,15 +156,30 @@ impl InlineConfig {
     }
 
     /// Row where the UI region starts (1-indexed for ANSI).
+    ///
+    /// Returns at least 1 (valid ANSI row).
     #[must_use]
     pub const fn ui_top_row(&self) -> u16 {
-        self.term_height.saturating_sub(self.ui_height) + 1
+        let row = self.term_height.saturating_sub(self.ui_height) + 1;
+        // Ensure we return at least row 1 (valid ANSI row)
+        if row == 0 { 1 } else { row }
     }
 
     /// Row where the log region ends (1-indexed for ANSI).
+    ///
+    /// Returns 0 if there's no room for logs (UI takes full height).
+    /// Callers should check for 0 before using this value.
     #[must_use]
     pub const fn log_bottom_row(&self) -> u16 {
         self.ui_top_row().saturating_sub(1)
+    }
+
+    /// Check if the configuration is valid for inline mode.
+    ///
+    /// Returns `true` if there's room for both logs and UI.
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
+        self.ui_height > 0 && self.ui_height < self.term_height && self.term_height > 1
     }
 }
 
@@ -181,6 +196,7 @@ pub struct InlineRenderer<W: Write> {
     config: InlineConfig,
     scroll_region_set: bool,
     in_sync_block: bool,
+    cursor_saved: bool,
 }
 
 impl<W: Write> InlineRenderer<W> {
@@ -195,16 +211,17 @@ impl<W: Write> InlineRenderer<W> {
             config,
             scroll_region_set: false,
             in_sync_block: false,
+            cursor_saved: false,
         }
     }
 
     /// Initialize inline mode on the terminal.
     ///
     /// For scroll-region strategy, this sets up DECSTBM.
-    /// For overlay strategy, this just prepares state.
+    /// For overlay/hybrid strategy, this just prepares state.
     pub fn enter(&mut self) -> io::Result<()> {
         match self.config.strategy {
-            InlineStrategy::ScrollRegion | InlineStrategy::Hybrid => {
+            InlineStrategy::ScrollRegion => {
                 // Set scroll region to log area (top of screen to just above UI)
                 let log_bottom = self.config.log_bottom_row();
                 if log_bottom > 0 {
@@ -212,8 +229,10 @@ impl<W: Write> InlineRenderer<W> {
                     self.scroll_region_set = true;
                 }
             }
-            InlineStrategy::OverlayRedraw => {
-                // No setup needed for overlay mode
+            InlineStrategy::OverlayRedraw | InlineStrategy::Hybrid => {
+                // No setup needed for overlay-based modes.
+                // Hybrid uses overlay as baseline; scroll-region would be an
+                // internal optimization applied per-operation, not upfront.
             }
         }
         self.writer.flush()
@@ -227,8 +246,18 @@ impl<W: Write> InlineRenderer<W> {
     /// Write log output (goes to scrollback region).
     ///
     /// In scroll-region mode: writes to current cursor position in scroll region.
-    /// In overlay mode: saves cursor, writes, then marks UI as needing redraw.
+    /// In overlay mode: saves cursor, writes, then restores cursor.
+    ///
+    /// Returns `Ok(())` even if there's no log region (logs are silently dropped
+    /// when UI takes the full terminal height).
     pub fn write_log(&mut self, text: &str) -> io::Result<()> {
+        let log_row = self.config.log_bottom_row();
+
+        // If there's no room for logs, silently drop
+        if log_row == 0 {
+            return Ok(());
+        }
+
         match self.config.strategy {
             InlineStrategy::ScrollRegion => {
                 // Cursor should be in scroll region; just write
@@ -237,9 +266,9 @@ impl<W: Write> InlineRenderer<W> {
             InlineStrategy::OverlayRedraw | InlineStrategy::Hybrid => {
                 // Save cursor, move to log area, write, restore
                 self.writer.write_all(CURSOR_SAVE)?;
+                self.cursor_saved = true;
 
                 // Move to bottom of log region
-                let log_row = self.config.log_bottom_row();
                 self.writer.write_all(&cursor_position(log_row, 1))?;
 
                 // Write the log line
@@ -247,6 +276,7 @@ impl<W: Write> InlineRenderer<W> {
 
                 // Restore cursor
                 self.writer.write_all(CURSOR_RESTORE)?;
+                self.cursor_saved = false;
             }
         }
         self.writer.flush()

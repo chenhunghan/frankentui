@@ -52,6 +52,8 @@ struct GraphemeSlot {
     /// The grapheme cluster string.
     text: String,
     /// Display width (cached from GraphemeId).
+    /// Note: Width is also embedded in GraphemeId, but kept here for debugging.
+    #[allow(dead_code)]
     width: u8,
     /// Reference count.
     refcount: u32,
