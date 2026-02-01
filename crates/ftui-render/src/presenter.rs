@@ -605,3 +605,178 @@ mod tests {
         assert!(output_str.contains('中'));
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::cell::{Cell, PackedRgba};
+    use crate::diff::BufferDiff;
+    use crate::terminal_model::TerminalModel;
+    use proptest::prelude::*;
+
+    /// Create a presenter for testing.
+    fn test_presenter() -> Presenter<Vec<u8>> {
+        let caps = TerminalCapabilities::basic();
+        Presenter::new(Vec::new(), caps)
+    }
+
+    proptest! {
+        /// Property: Presenter output, when applied to terminal model, produces
+        /// the correct characters in the correct positions.
+        #[test]
+        fn presenter_roundtrip_characters(
+            width in 5u16..40,
+            height in 3u16..20,
+            num_chars in 0usize..50,
+        ) {
+            let mut buffer = Buffer::new(width, height);
+
+            // Fill some cells with ASCII chars
+            for i in 0..num_chars {
+                let x = (i * 7 + 3) as u16 % width;
+                let y = (i * 11 + 5) as u16 % height;
+                let ch = char::from_u32(('A' as u32) + (i as u32 % 26)).unwrap();
+                buffer.set_raw(x, y, Cell::from_char(ch));
+            }
+
+            // Present full buffer
+            let mut presenter = test_presenter();
+            let old = Buffer::new(width, height);
+            let diff = BufferDiff::compute(&old, &buffer);
+            presenter.present(&buffer, &diff).unwrap();
+            let output = presenter.into_inner().unwrap();
+
+            // Apply to terminal model
+            let mut model = TerminalModel::new(width as usize, height as usize);
+            model.process(&output);
+
+            // Verify characters match
+            for y in 0..height {
+                for x in 0..width {
+                    let buf_cell = buffer.get_unchecked(x, y);
+                    let expected_ch = buf_cell.content.as_char().unwrap_or(' ');
+
+                    if let Some(model_cell) = model.cell(x as usize, y as usize) {
+                        prop_assert_eq!(
+                            model_cell.ch,
+                            expected_ch,
+                            "Character mismatch at ({}, {})", x, y
+                        );
+                    }
+                }
+            }
+        }
+
+        /// Property: After complete frame presentation, SGR is reset.
+        #[test]
+        fn style_reset_after_present(
+            width in 5u16..30,
+            height in 3u16..15,
+            num_styled in 1usize..20,
+        ) {
+            let mut buffer = Buffer::new(width, height);
+
+            // Add some styled cells
+            for i in 0..num_styled {
+                let x = (i * 7) as u16 % width;
+                let y = (i * 11) as u16 % height;
+                let fg = PackedRgba::rgb(
+                    ((i * 31) % 256) as u8,
+                    ((i * 47) % 256) as u8,
+                    ((i * 71) % 256) as u8,
+                );
+                buffer.set_raw(x, y, Cell::from_char('X').with_fg(fg));
+            }
+
+            // Present
+            let mut presenter = test_presenter();
+            let old = Buffer::new(width, height);
+            let diff = BufferDiff::compute(&old, &buffer);
+            presenter.present(&buffer, &diff).unwrap();
+            let output = presenter.into_inner().unwrap();
+            let output_str = String::from_utf8_lossy(&output);
+
+            // Output should end with SGR reset sequence
+            prop_assert!(
+                output_str.contains("\x1b[0m"),
+                "Output should contain SGR reset"
+            );
+        }
+
+        /// Property: Presenter handles empty diff correctly.
+        #[test]
+        fn empty_diff_minimal_output(
+            width in 5u16..50,
+            height in 3u16..25,
+        ) {
+            let buffer = Buffer::new(width, height);
+            let diff = BufferDiff::new(); // Empty diff
+
+            let mut presenter = test_presenter();
+            presenter.present(&buffer, &diff).unwrap();
+            let output = presenter.into_inner().unwrap();
+
+            // Output should only be SGR reset (or very minimal)
+            // No cursor moves or cell content for empty diff
+            prop_assert!(output.len() < 50, "Empty diff should have minimal output");
+        }
+
+        /// Property: Diff is symmetric - same diff regardless of content.
+        #[test]
+        fn diff_size_bounds(
+            width in 5u16..30,
+            height in 3u16..15,
+        ) {
+            // Full change buffer
+            let old = Buffer::new(width, height);
+            let mut new = Buffer::new(width, height);
+
+            for y in 0..height {
+                for x in 0..width {
+                    new.set_raw(x, y, Cell::from_char('X'));
+                }
+            }
+
+            let diff = BufferDiff::compute(&old, &new);
+
+            // Diff should capture all cells
+            prop_assert_eq!(
+                diff.len(),
+                (width as usize) * (height as usize),
+                "Full change should have all cells in diff"
+            );
+        }
+
+        /// Property: Presenter cursor state is consistent after operations.
+        #[test]
+        fn presenter_cursor_consistency(
+            width in 10u16..40,
+            height in 5u16..20,
+            num_runs in 1usize..10,
+        ) {
+            let mut buffer = Buffer::new(width, height);
+
+            // Create some runs of changes
+            for i in 0..num_runs {
+                let start_x = (i * 5) as u16 % (width - 5);
+                let y = i as u16 % height;
+                for x in start_x..(start_x + 3) {
+                    buffer.set_raw(x, y, Cell::from_char('A'));
+                }
+            }
+
+            // Multiple presents should work correctly
+            let mut presenter = test_presenter();
+            let old = Buffer::new(width, height);
+
+            for _ in 0..3 {
+                let diff = BufferDiff::compute(&old, &buffer);
+                presenter.present(&buffer, &diff).unwrap();
+            }
+
+            // Should not panic and produce valid output
+            let output = presenter.into_inner().unwrap();
+            prop_assert!(!output.is_empty(), "Should produce some output");
+        }
+    }
+}

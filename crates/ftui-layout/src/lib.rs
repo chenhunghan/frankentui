@@ -248,9 +248,7 @@ impl Flex {
         // 3. Clamp Max constraints
         for (i, &constraint) in self.constraints.iter().enumerate() {
             if let Constraint::Max(max_size) = constraint {
-                if sizes[i] > max_size {
-                    sizes[i] = max_size;
-                }
+                sizes[i] = sizes[i].min(max_size);
             }
         }
 

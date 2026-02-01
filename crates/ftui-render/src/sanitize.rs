@@ -66,8 +66,11 @@ use memchr::memchr;
 pub fn sanitize(input: &str) -> Cow<'_, str> {
     let bytes = input.as_bytes();
 
-    // Fast path: check for any ESC byte or forbidden C0 controls
-    if memchr(0x1B, bytes).is_none() && !has_forbidden_c0(bytes) {
+    // Fast path: check for any ESC byte, forbidden C0 controls, or DEL
+    if memchr(0x1B, bytes).is_none()
+        && memchr(0x7F, bytes).is_none()
+        && !has_forbidden_c0(bytes)
+    {
         return Cow::Borrowed(input);
     }
 
@@ -232,8 +235,7 @@ fn decode_utf8_char(bytes: &[u8]) -> Option<(char, usize)> {
     }
 
     // Process continuation bytes
-    for i in 1..expected_len {
-        let b = bytes[i];
+    for &b in bytes.iter().take(expected_len).skip(1) {
         if (b & 0xC0) != 0x80 {
             return None; // Invalid continuation byte
         }

@@ -448,3 +448,176 @@ mod tests {
         assert_eq!(changes[2], (2, 2));
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::cell::Cell;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Property: Applying diff changes to old buffer produces new buffer.
+        ///
+        /// This is the fundamental correctness property of the diff algorithm:
+        /// for any pair of buffers, the diff captures all and only the changes.
+        #[test]
+        fn diff_apply_produces_target(
+            width in 5u16..50,
+            height in 5u16..30,
+            num_changes in 0usize..200,
+        ) {
+            // Create old buffer (all spaces)
+            let old = Buffer::new(width, height);
+
+            // Create new buffer by making random changes
+            let mut new = old.clone();
+            for i in 0..num_changes {
+                let x = (i * 7 + 3) as u16 % width;
+                let y = (i * 11 + 5) as u16 % height;
+                let ch = char::from_u32(('A' as u32) + (i as u32 % 26)).unwrap();
+                new.set_raw(x, y, Cell::from_char(ch));
+            }
+
+            // Compute diff
+            let diff = BufferDiff::compute(&old, &new);
+
+            // Apply diff to old should produce new
+            let mut result = old.clone();
+            for (x, y) in diff.iter() {
+                let cell = new.get_unchecked(x, y).clone();
+                result.set_raw(x, y, cell);
+            }
+
+            // Verify buffers match
+            for y in 0..height {
+                for x in 0..width {
+                    let result_cell = result.get_unchecked(x, y);
+                    let new_cell = new.get_unchecked(x, y);
+                    prop_assert!(
+                        result_cell.bits_eq(new_cell),
+                        "Mismatch at ({}, {})", x, y
+                    );
+                }
+            }
+        }
+
+        /// Property: Diff is empty when buffers are identical.
+        #[test]
+        fn identical_buffers_empty_diff(
+            width in 1u16..100,
+            height in 1u16..50,
+        ) {
+            let buf = Buffer::new(width, height);
+            let diff = BufferDiff::compute(&buf, &buf);
+            prop_assert!(diff.is_empty(), "Identical buffers should have empty diff");
+        }
+
+        /// Property: Every change in diff corresponds to an actual difference.
+        #[test]
+        fn diff_contains_only_real_changes(
+            width in 5u16..50,
+            height in 5u16..30,
+            num_changes in 0usize..100,
+        ) {
+            let old = Buffer::new(width, height);
+            let mut new = old.clone();
+
+            for i in 0..num_changes {
+                let x = (i * 7 + 3) as u16 % width;
+                let y = (i * 11 + 5) as u16 % height;
+                new.set_raw(x, y, Cell::from_char('X'));
+            }
+
+            let diff = BufferDiff::compute(&old, &new);
+
+            // Every change position should actually differ
+            for (x, y) in diff.iter() {
+                let old_cell = old.get_unchecked(x, y);
+                let new_cell = new.get_unchecked(x, y);
+                prop_assert!(
+                    !old_cell.bits_eq(new_cell),
+                    "Diff includes unchanged cell at ({}, {})", x, y
+                );
+            }
+        }
+
+        /// Property: Runs correctly coalesce adjacent changes.
+        #[test]
+        fn runs_are_contiguous(
+            width in 10u16..80,
+            height in 5u16..30,
+        ) {
+            let old = Buffer::new(width, height);
+            let mut new = old.clone();
+
+            // Create some horizontal runs
+            for y in 0..height.min(5) {
+                for x in 0..width.min(10) {
+                    new.set_raw(x, y, Cell::from_char('#'));
+                }
+            }
+
+            let diff = BufferDiff::compute(&old, &new);
+            let runs = diff.runs();
+
+            // Verify each run is contiguous
+            for run in runs {
+                prop_assert!(run.x1 >= run.x0, "Run has invalid range");
+                prop_assert!(run.len() > 0, "Run should not be empty");
+
+                // Verify all cells in run are actually changed
+                for x in run.x0..=run.x1 {
+                    let old_cell = old.get_unchecked(x, run.y);
+                    let new_cell = new.get_unchecked(x, run.y);
+                    prop_assert!(
+                        !old_cell.bits_eq(new_cell),
+                        "Run includes unchanged cell at ({}, {})", x, run.y
+                    );
+                }
+            }
+        }
+
+        /// Property: Runs cover all changes exactly once.
+        #[test]
+        fn runs_cover_all_changes(
+            width in 10u16..60,
+            height in 5u16..30,
+            num_changes in 1usize..100,
+        ) {
+            let old = Buffer::new(width, height);
+            let mut new = old.clone();
+
+            for i in 0..num_changes {
+                let x = (i * 13 + 7) as u16 % width;
+                let y = (i * 17 + 3) as u16 % height;
+                new.set_raw(x, y, Cell::from_char('X'));
+            }
+
+            let diff = BufferDiff::compute(&old, &new);
+            let runs = diff.runs();
+
+            // Count cells covered by runs
+            let mut run_cells: std::collections::HashSet<(u16, u16)> = std::collections::HashSet::new();
+            for run in &runs {
+                for x in run.x0..=run.x1 {
+                    let was_new = run_cells.insert((x, run.y));
+                    prop_assert!(was_new, "Duplicate cell ({}, {}) in runs", x, run.y);
+                }
+            }
+
+            // Verify runs cover exactly the changes
+            for (x, y) in diff.iter() {
+                prop_assert!(
+                    run_cells.contains(&(x, y)),
+                    "Change at ({}, {}) not covered by runs", x, y
+                );
+            }
+
+            prop_assert_eq!(
+                run_cells.len(),
+                diff.len(),
+                "Run cell count should match diff change count"
+            );
+        }
+    }
+}
