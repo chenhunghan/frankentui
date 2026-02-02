@@ -49,6 +49,14 @@
 - [x] **Release reservation** for `tests/e2e/scripts/test_mux.sh`
 - [x] **Post completion message** in Agent Mail thread `bd-2nu8.15.14`
 
+## 11. Current Session (DustyCanyon) — Bead Triage After bv (bd-2d66)
+- [x] **Run bv --robot-triage** (no actionable items surfaced)
+- [x] **Run br list --status=open** (found bd-2d66)
+- [x] **Inspect render_end calculation** in `crates/ftui-widgets/src/virtualized.rs`
+- [x] **Notify agents** that bd-2d66 already uses saturating_add (likely already fixed)
+- [x] **Close bead** bd-2d66 with reason "already fixed" (already closed on attempt)
+- [x] **Sync beads** (`br sync --flush-only`)
+
 ## 1. Restore Terminal Safety
 - [x] **Read Cargo.toml**: Confirm current `panic` setting.
 - [x] **Update Cargo.toml**: Changed `panic = "abort"` to `panic = "unwind"` to ensure RAII cleanup.

@@ -37,14 +37,21 @@ done
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 E2E_LOG_DIR="${E2E_LOG_DIR:-/tmp/ftui_e2e_${TIMESTAMP}}"
+if [[ -e "$E2E_LOG_DIR" ]]; then
+    base="$E2E_LOG_DIR"
+    suffix=1
+    while [[ -e "${base}_$suffix" ]]; do
+        suffix=$((suffix + 1))
+    done
+    E2E_LOG_DIR="${base}_$suffix"
+fi
 E2E_RESULTS_DIR="$E2E_LOG_DIR/results"
 LOG_FILE="$E2E_LOG_DIR/e2e.log"
 
 export E2E_LOG_DIR E2E_RESULTS_DIR LOG_FILE LOG_LEVEL
 export E2E_RUN_START_MS="$(date +%s%3N)"
 
-# Clean results from any previous run
-rm -rf "$E2E_RESULTS_DIR"
+# Prepare results directory without destructive cleanup
 mkdir -p "$E2E_LOG_DIR" "$E2E_RESULTS_DIR"
 
 log_info "FrankenTUI E2E Test Suite"
