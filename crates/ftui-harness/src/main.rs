@@ -70,6 +70,8 @@ struct AgentHarness {
     auto_quit_ticks: Option<u32>,
     /// Which view layout to render.
     view_mode: HarnessView,
+    /// Whether to log key events to the log viewer.
+    log_keys: bool,
 }
 
 /// Messages for the agent harness.
@@ -128,7 +130,7 @@ enum HarnessView {
 }
 
 impl AgentHarness {
-    fn new(view_mode: HarnessView) -> Self {
+    fn new(view_mode: HarnessView, log_keys: bool) -> Self {
         let suppress_welcome = std::env::var("FTUI_HARNESS_SUPPRESS_WELCOME")
             .ok()
             .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
@@ -199,10 +201,19 @@ impl AgentHarness {
             task_tick_count: 0,
             auto_quit_ticks,
             view_mode,
+            log_keys,
         }
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Cmd<Msg> {
+        if self.log_keys {
+            let mods = format_modifiers(key.modifiers);
+            self.log_viewer.push(format!(
+                "Key: code={:?} kind={:?} mods={}",
+                key.code, key.kind, mods
+            ));
+        }
+
         // Only handle Press events
         if key.kind != KeyEventKind::Press {
             return Cmd::None;
@@ -286,6 +297,26 @@ impl AgentHarness {
 
         Cmd::None
     }
+}
+
+fn format_modifiers(mods: Modifiers) -> String {
+    if mods.is_empty() {
+        return "none".to_string();
+    }
+    let mut parts = Vec::new();
+    if mods.contains(Modifiers::SHIFT) {
+        parts.push("shift");
+    }
+    if mods.contains(Modifiers::ALT) {
+        parts.push("alt");
+    }
+    if mods.contains(Modifiers::CTRL) {
+        parts.push("ctrl");
+    }
+    if mods.contains(Modifiers::SUPER) {
+        parts.push("super");
+    }
+    parts.join("+")
 }
 
 impl Model for AgentHarness {
@@ -677,6 +708,10 @@ fn main() -> std::io::Result<()> {
     };
 
     // Run the agent harness in inline mode
-    let mut program = Program::with_config(AgentHarness::new(view_mode), config)?;
+    let log_keys = std::env::var("FTUI_HARNESS_LOG_KEYS")
+        .ok()
+        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+
+    let mut program = Program::with_config(AgentHarness::new(view_mode, log_keys), config)?;
     program.run()
 }
