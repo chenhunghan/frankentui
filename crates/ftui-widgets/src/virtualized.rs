@@ -218,12 +218,17 @@ impl<T> Virtualized<T> {
             ItemHeight::Fixed(h) if *h > 0 => (viewport_height / h) as usize,
             ItemHeight::Fixed(_) => viewport_height as usize,
             ItemHeight::Variable(cache) => {
-                // Sum heights until we exceed viewport
+                // Sum heights until the next item would exceed viewport
                 let mut count = 0;
                 let mut total_height = 0u16;
                 let start = self.scroll_offset;
-                while total_height < viewport_height && start + count < self.len() {
-                    total_height = total_height.saturating_add(cache.get(start + count));
+                while start + count < self.len() {
+                    let next = cache.get(start + count);
+                    let proposed = total_height.saturating_add(next);
+                    if proposed > viewport_height {
+                        break;
+                    }
+                    total_height = proposed;
                     count += 1;
                 }
                 count
@@ -832,8 +837,11 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
 
         // Calculate render range with overscan
         let render_start = state.scroll_offset.saturating_sub(state.overscan);
-        let render_end =
-            (state.scroll_offset + items_per_viewport + state.overscan).min(total_items);
+        let render_end = state
+            .scroll_offset
+            .saturating_add(items_per_viewport)
+            .saturating_add(state.overscan)
+            .min(total_items);
 
         // Render visible items
         for idx in render_start..render_end {
@@ -956,6 +964,35 @@ mod tests {
     }
 
     #[test]
+    fn test_visible_range_variable_height_clamps() {
+        let mut cache = HeightCache::new(1, 16);
+        cache.set(0, 3);
+        cache.set(1, 3);
+        cache.set(2, 3);
+        let mut virt: Virtualized<i32> =
+            Virtualized::new(10).with_item_height(ItemHeight::Variable(cache));
+        for i in 0..3 {
+            virt.push(i);
+        }
+        let range = virt.visible_range(5);
+        assert_eq!(range, 0..1);
+    }
+
+    #[test]
+    fn test_visible_range_variable_height_exact_fit() {
+        let mut cache = HeightCache::new(1, 16);
+        cache.set(0, 2);
+        cache.set(1, 3);
+        let mut virt: Virtualized<i32> =
+            Virtualized::new(10).with_item_height(ItemHeight::Variable(cache));
+        for i in 0..2 {
+            virt.push(i);
+        }
+        let range = virt.visible_range(5);
+        assert_eq!(range, 0..2);
+    }
+
+    #[test]
     fn test_visible_range_with_scroll() {
         let mut virt: Virtualized<i32> = Virtualized::new(100).with_fixed_height(1);
         for i in 0..50 {
@@ -964,6 +1001,36 @@ mod tests {
         virt.scroll(10);
         let range = virt.visible_range(10);
         assert_eq!(range, 10..20);
+    }
+
+    #[test]
+    fn test_visible_range_variable_height_excludes_partial() {
+        let mut cache = HeightCache::new(1, 16);
+        cache.set(0, 6);
+        cache.set(1, 6);
+        let mut virt: Virtualized<i32> =
+            Virtualized::new(100).with_item_height(ItemHeight::Variable(cache));
+        virt.push(1);
+        virt.push(2);
+        virt.push(3);
+
+        let range = virt.visible_range(10);
+        assert_eq!(range, 0..1);
+    }
+
+    #[test]
+    fn test_visible_range_variable_height_exact_fit_larger() {
+        let mut cache = HeightCache::new(1, 16);
+        cache.set(0, 4);
+        cache.set(1, 6);
+        let mut virt: Virtualized<i32> =
+            Virtualized::new(100).with_item_height(ItemHeight::Variable(cache));
+        virt.push(1);
+        virt.push(2);
+        virt.push(3);
+
+        let range = virt.visible_range(10);
+        assert_eq!(range, 0..2);
     }
 
     #[test]
