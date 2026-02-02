@@ -24,6 +24,7 @@
 
 use std::cell::RefCell;
 use std::io::{self, Read, Write};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use ftui_core::event::{
@@ -336,16 +337,31 @@ fn parse_exit_after() -> Option<Duration> {
 }
 
 fn run_input_trace(exit_after: Option<Duration>) -> io::Result<()> {
-    let session = TerminalSession::new(SessionOptions {
+    let _session = TerminalSession::new(SessionOptions {
         kitty_keyboard: true,
         ..Default::default()
     })?;
     let mut parser = InputParser::new();
     let start = Instant::now();
-    let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout();
-    let mut buf = [0u8; 4096];
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let poll_timeout = Duration::from_millis(50);
+
+    std::thread::spawn(move || {
+        let mut stdin = io::stdin().lock();
+        let mut buf = [0u8; 4096];
+        loop {
+            match stdin.read(&mut buf) {
+                Ok(0) => break,
+                Ok(count) => {
+                    if tx.send(buf[..count].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
 
     loop {
         if let Some(limit) = exit_after
@@ -354,25 +370,23 @@ fn run_input_trace(exit_after: Option<Duration>) -> io::Result<()> {
             break;
         }
 
-        if !session.poll_event(poll_timeout)? {
-            continue;
-        }
-
-        let n = stdin.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        for event in parser.parse(&buf[..n]) {
-            if let Event::Key(key) = event {
-                let mods = format_modifiers(key.modifiers);
-                writeln!(
-                    stdout,
-                    "Key: code={:?} kind={:?} mods={}",
-                    key.code, key.kind, mods
-                )?;
+        match rx.recv_timeout(poll_timeout) {
+            Ok(bytes) => {
+                for event in parser.parse(&bytes) {
+                    if let Event::Key(key) = event {
+                        let mods = format_modifiers(key.modifiers);
+                        writeln!(
+                            stdout,
+                            "Key: code={:?} kind={:?} mods={}",
+                            key.code, key.kind, mods
+                        )?;
+                    }
+                }
+                stdout.flush()?;
             }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        stdout.flush()?;
     }
 
     Ok(())
