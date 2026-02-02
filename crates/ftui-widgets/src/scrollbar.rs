@@ -191,14 +191,14 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
                     ScrollbarOrientation::VerticalLeft => area.left(),
                     _ => unreachable!(),
                 };
-                (x, area.top() + i as u16)
+                (x, area.top().saturating_add(i as u16))
             } else {
                 let y = match self.orientation {
                     ScrollbarOrientation::HorizontalBottom => area.bottom().saturating_sub(1),
                     ScrollbarOrientation::HorizontalTop => area.top(),
                     _ => unreachable!(),
                 };
-                (area.left() + i as u16, y)
+                (area.left().saturating_add(i as u16), y)
             };
 
             // Only draw if within bounds (redundant check but safe)

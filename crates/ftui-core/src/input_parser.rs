@@ -1259,6 +1259,648 @@ mod tests {
         );
         assert!(matches!(events[0], Event::Paste(_)));
     }
+
+    // ── Navigation keys via CSI ~ sequences ──────────────────────────
+
+    #[test]
+    fn csi_tilde_home() {
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1b[1~");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Home
+        ));
+    }
+
+    #[test]
+    fn csi_tilde_insert() {
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1b[2~");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Insert
+        ));
+    }
+
+    #[test]
+    fn csi_tilde_delete() {
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1b[3~");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Delete
+        ));
+    }
+
+    #[test]
+    fn csi_tilde_end() {
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1b[4~");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::End
+        ));
+    }
+
+    #[test]
+    fn csi_tilde_page_up() {
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1b[5~");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::PageUp
+        ));
+    }
+
+    #[test]
+    fn csi_tilde_page_down() {
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1b[6~");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::PageDown
+        ));
+    }
+
+    // ── Navigation keys via CSI H/F (xterm-style) ───────────────────
+
+    #[test]
+    fn csi_home_and_end() {
+        let mut parser = InputParser::new();
+        assert!(matches!(
+            parser.parse(b"\x1b[H").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Home
+        ));
+        assert!(matches!(
+            parser.parse(b"\x1b[F").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::End
+        ));
+    }
+
+    // ── SS3 Home/End ─────────────────────────────────────────────────
+
+    #[test]
+    fn ss3_home_and_end() {
+        let mut parser = InputParser::new();
+        assert!(matches!(
+            parser.parse(b"\x1bOH").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Home
+        ));
+        assert!(matches!(
+            parser.parse(b"\x1bOF").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::End
+        ));
+    }
+
+    // ── BackTab (Shift+Tab via CSI Z) ────────────────────────────────
+
+    #[test]
+    fn backtab_csi_z() {
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1b[Z");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Tab && k.modifiers.contains(Modifiers::SHIFT)
+        ));
+    }
+
+    // ── F7-F12 keys via CSI tilde ────────────────────────────────────
+
+    #[test]
+    fn function_keys_f7_to_f12() {
+        let mut parser = InputParser::new();
+        assert!(matches!(
+            parser.parse(b"\x1b[18~").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::F(7)
+        ));
+        assert!(matches!(
+            parser.parse(b"\x1b[19~").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::F(8)
+        ));
+        assert!(matches!(
+            parser.parse(b"\x1b[20~").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::F(9)
+        ));
+        assert!(matches!(
+            parser.parse(b"\x1b[21~").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::F(10)
+        ));
+        assert!(matches!(
+            parser.parse(b"\x1b[23~").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::F(11)
+        ));
+        assert!(matches!(
+            parser.parse(b"\x1b[24~").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::F(12)
+        ));
+    }
+
+    // ── Modifier combinations on navigation keys ─────────────────────
+
+    #[test]
+    fn ctrl_home_and_alt_end() {
+        let mut parser = InputParser::new();
+
+        // Ctrl+Home: CSI 1;5 H
+        let events = parser.parse(b"\x1b[1;5H");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Home && k.modifiers.contains(Modifiers::CTRL)
+        ));
+
+        // Alt+End: CSI 1;3 F
+        let events = parser.parse(b"\x1b[1;3F");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::End && k.modifiers.contains(Modifiers::ALT)
+        ));
+    }
+
+    #[test]
+    fn shift_ctrl_arrow() {
+        let mut parser = InputParser::new();
+
+        // Shift+Ctrl+Right: CSI 1;6 C (modifier value 6 = 1 + Shift|Ctrl = 1 + 5)
+        let events = parser.parse(b"\x1b[1;6C");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Right
+                && k.modifiers.contains(Modifiers::SHIFT)
+                && k.modifiers.contains(Modifiers::CTRL)
+        ));
+    }
+
+    #[test]
+    fn modifiers_on_tilde_keys() {
+        let mut parser = InputParser::new();
+
+        // Ctrl+Delete: CSI 3;5 ~
+        let events = parser.parse(b"\x1b[3;5~");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Delete && k.modifiers.contains(Modifiers::CTRL)
+        ));
+
+        // Shift+PageUp: CSI 5;2 ~
+        let events = parser.parse(b"\x1b[5;2~");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::PageUp && k.modifiers.contains(Modifiers::SHIFT)
+        ));
+    }
+
+    // ── Mouse right/middle click and release ─────────────────────────
+
+    #[test]
+    fn mouse_sgr_right_click() {
+        let mut parser = InputParser::new();
+        // Right click: button code 2
+        let events = parser.parse(b"\x1b[<2;15;10M");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::Down(MouseButton::Right))
+                && m.x == 14 && m.y == 9
+        ));
+    }
+
+    #[test]
+    fn mouse_sgr_middle_click() {
+        let mut parser = InputParser::new();
+        // Middle click: button code 1
+        let events = parser.parse(b"\x1b[<1;5;5M");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::Down(MouseButton::Middle))
+        ));
+    }
+
+    #[test]
+    fn mouse_sgr_button_release() {
+        let mut parser = InputParser::new();
+        // Left button release: final byte 'm'
+        let events = parser.parse(b"\x1b[<0;10;20m");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::Up(MouseButton::Left))
+        ));
+    }
+
+    #[test]
+    fn mouse_sgr_drag() {
+        let mut parser = InputParser::new();
+        // Mouse move/drag: button code 32 (bit 5 set)
+        let events = parser.parse(b"\x1b[<32;10;20M");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::Moved)
+        ));
+    }
+
+    #[test]
+    fn mouse_sgr_with_modifiers() {
+        let mut parser = InputParser::new();
+        // Shift+Left click: button_code bit 2 set (shift) = 4
+        let events = parser.parse(b"\x1b[<4;5;5M");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                && m.modifiers.contains(Modifiers::SHIFT)
+        ));
+
+        // Ctrl+Left click: button_code bit 4 set (ctrl) = 16
+        let events = parser.parse(b"\x1b[<16;5;5M");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                && m.modifiers.contains(Modifiers::CTRL)
+        ));
+
+        // Alt+Left click: button_code bit 3 set (alt) = 8
+        let events = parser.parse(b"\x1b[<8;5;5M");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                && m.modifiers.contains(Modifiers::ALT)
+        ));
+    }
+
+    // ── Kitty keyboard release events and special keys ───────────────
+
+    #[test]
+    fn kitty_keyboard_release_event() {
+        let mut parser = InputParser::new();
+        // Release event: kind=3
+        let events = parser.parse(b"\x1b[97;1:3u");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Char('a') && k.kind == KeyEventKind::Release
+        ));
+    }
+
+    #[test]
+    fn kitty_keyboard_special_keys() {
+        let mut parser = InputParser::new();
+
+        // Escape: 57344
+        assert!(matches!(
+            parser.parse(b"\x1b[57344u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Escape
+        ));
+
+        // Enter: 57345
+        assert!(matches!(
+            parser.parse(b"\x1b[57345u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Enter
+        ));
+
+        // Tab: 57346
+        assert!(matches!(
+            parser.parse(b"\x1b[57346u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Tab
+        ));
+
+        // Backspace: 57347
+        assert!(matches!(
+            parser.parse(b"\x1b[57347u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Backspace
+        ));
+
+        // Insert: 57348
+        assert!(matches!(
+            parser.parse(b"\x1b[57348u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Insert
+        ));
+
+        // Delete: 57349
+        assert!(matches!(
+            parser.parse(b"\x1b[57349u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Delete
+        ));
+    }
+
+    #[test]
+    fn kitty_keyboard_navigation_keys() {
+        let mut parser = InputParser::new();
+
+        // Left: 57350
+        assert!(matches!(
+            parser.parse(b"\x1b[57350u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Left
+        ));
+        // Right: 57351
+        assert!(matches!(
+            parser.parse(b"\x1b[57351u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Right
+        ));
+        // Up: 57352
+        assert!(matches!(
+            parser.parse(b"\x1b[57352u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Up
+        ));
+        // Down: 57353
+        assert!(matches!(
+            parser.parse(b"\x1b[57353u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Down
+        ));
+        // PageUp: 57354
+        assert!(matches!(
+            parser.parse(b"\x1b[57354u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::PageUp
+        ));
+        // PageDown: 57355
+        assert!(matches!(
+            parser.parse(b"\x1b[57355u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::PageDown
+        ));
+        // Home: 57356
+        assert!(matches!(
+            parser.parse(b"\x1b[57356u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Home
+        ));
+        // End: 57357
+        assert!(matches!(
+            parser.parse(b"\x1b[57357u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::End
+        ));
+    }
+
+    #[test]
+    fn kitty_keyboard_f_keys() {
+        let mut parser = InputParser::new();
+        // F1: 57364
+        assert!(matches!(
+            parser.parse(b"\x1b[57364u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::F(1)
+        ));
+        // F12: 57375
+        assert!(matches!(
+            parser.parse(b"\x1b[57375u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::F(12)
+        ));
+        // F24: 57387
+        assert!(matches!(
+            parser.parse(b"\x1b[57387u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::F(24)
+        ));
+    }
+
+    #[test]
+    fn kitty_keyboard_ascii_as_standard() {
+        let mut parser = InputParser::new();
+        // Tab (9), Enter (13), Escape (27), Backspace (127)
+        assert!(matches!(
+            parser.parse(b"\x1b[9u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Tab
+        ));
+        assert!(matches!(
+            parser.parse(b"\x1b[13u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Enter
+        ));
+        assert!(matches!(
+            parser.parse(b"\x1b[27u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Escape
+        ));
+        assert!(matches!(
+            parser.parse(b"\x1b[127u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Backspace
+        ));
+        // Backspace alternate: 8
+        assert!(matches!(
+            parser.parse(b"\x1b[8u").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Backspace
+        ));
+    }
+
+    // ── OSC 52 clipboard ─────────────────────────────────────────────
+
+    #[test]
+    fn osc52_clipboard_bel_terminated() {
+        let mut parser = InputParser::new();
+        // OSC 52;c;<base64 "hello"> BEL
+        // "hello" in base64 is "aGVsbG8="
+        let events = parser.parse(b"\x1b]52;c;aGVsbG8=\x07");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Clipboard(c)) if c.content == "hello" && c.source == ClipboardSource::Osc52
+        ));
+    }
+
+    #[test]
+    fn osc52_clipboard_st_terminated() {
+        let mut parser = InputParser::new();
+        // OSC 52;c;<base64 "hello"> ESC \
+        let events = parser.parse(b"\x1b]52;c;aGVsbG8=\x1b\\");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Clipboard(c)) if c.content == "hello"
+        ));
+    }
+
+    #[test]
+    fn osc52_clipboard_primary_selection() {
+        let mut parser = InputParser::new();
+        // Primary selection: p instead of c
+        // "abc" in base64 is "YWJj"
+        let events = parser.parse(b"\x1b]52;p;YWJj\x07");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Clipboard(c)) if c.content == "abc"
+        ));
+    }
+
+    // ── Control keys ─────────────────────────────────────────────────
+
+    #[test]
+    fn ctrl_space_is_ctrl_space() {
+        let mut parser = InputParser::new();
+        let events = parser.parse(&[0x00]);
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Char(' ') && k.modifiers.contains(Modifiers::CTRL)
+        ));
+    }
+
+    #[test]
+    fn all_ctrl_letter_keys() {
+        let mut parser = InputParser::new();
+        // Ctrl+A (0x01) through Ctrl+Z (0x1A), skipping Tab (0x09) and Enter (0x0D)
+        for byte in 0x01..=0x1Au8 {
+            let events = parser.parse(&[byte]);
+            assert_eq!(
+                events.len(),
+                1,
+                "Ctrl+{} should produce one event",
+                (byte + b'a' - 1) as char
+            );
+            match byte {
+                0x09 => assert!(matches!(events[0], Event::Key(k) if k.code == KeyCode::Tab)),
+                0x0D => assert!(matches!(events[0], Event::Key(k) if k.code == KeyCode::Enter)),
+                _ => {
+                    let expected_char = (byte + b'a' - 1) as char;
+                    match &events[0] {
+                        Event::Key(k) => {
+                            assert_eq!(
+                                k.code,
+                                KeyCode::Char(expected_char),
+                                "Byte 0x{byte:02X} should produce Ctrl+{expected_char}"
+                            );
+                            assert!(
+                                k.modifiers.contains(Modifiers::CTRL),
+                                "Byte 0x{byte:02X} should have Ctrl modifier"
+                            );
+                        }
+                        other => panic!("Byte 0x{byte:02X}: expected Key event, got {other:?}"),
+                    }
+                }
+            }
+        }
+    }
+
+    // ── UTF-8 multi-byte: 3-byte and 4-byte ─────────────────────────
+
+    #[test]
+    fn utf8_3byte_cjk() {
+        let mut parser = InputParser::new();
+        // 中 (U+4E2D) = 0xE4 0xB8 0xAD
+        let events = parser.parse(&[0xE4, 0xB8, 0xAD]);
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Char('中')
+        ));
+    }
+
+    #[test]
+    fn utf8_4byte_emoji() {
+        let mut parser = InputParser::new();
+        // 🦀 (U+1F980) = 0xF0 0x9F 0xA6 0x80
+        let events = parser.parse(&[0xF0, 0x9F, 0xA6, 0x80]);
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Char('🦀')
+        ));
+    }
+
+    // ── Empty input ──────────────────────────────────────────────────
+
+    #[test]
+    fn empty_input_returns_no_events() {
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"");
+        assert!(events.is_empty());
+    }
+
+    // ── Unknown CSI tilde values ─────────────────────────────────────
+
+    #[test]
+    fn unknown_csi_tilde_ignored() {
+        let mut parser = InputParser::new();
+        // Code 99 is not a known tilde key
+        let events = parser.parse(b"\x1b[99~");
+        assert!(events.is_empty());
+
+        // Parser should still work
+        let events = parser.parse(b"a");
+        assert!(matches!(events.first(), Some(Event::Key(k)) if k.code == KeyCode::Char('a')));
+    }
+
+    // ── Alt+various characters ───────────────────────────────────────
+
+    #[test]
+    fn alt_special_chars() {
+        let mut parser = InputParser::new();
+
+        // Alt+space
+        let events = parser.parse(b"\x1b ");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Char(' ') && k.modifiers.contains(Modifiers::ALT)
+        ));
+
+        // Alt+digit
+        let events = parser.parse(b"\x1b5");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Char('5') && k.modifiers.contains(Modifiers::ALT)
+        ));
+
+        // Alt+bracket
+        let events = parser.parse(b"\x1b}");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Char('}') && k.modifiers.contains(Modifiers::ALT)
+        ));
+    }
+
+    // ── SS3 arrow keys ───────────────────────────────────────────────
+
+    #[test]
+    fn ss3_arrow_keys() {
+        let mut parser = InputParser::new();
+        assert!(matches!(
+            parser.parse(b"\x1bOA").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Up
+        ));
+        assert!(matches!(
+            parser.parse(b"\x1bOB").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Down
+        ));
+        assert!(matches!(
+            parser.parse(b"\x1bOC").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Right
+        ));
+        assert!(matches!(
+            parser.parse(b"\x1bOD").first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Left
+        ));
+    }
+
+    // ── Xterm modifier encoding ──────────────────────────────────────
+
+    #[test]
+    fn xterm_modifier_encoding() {
+        // Verify modifiers_from_xterm decoding (value = 1 + modifier_bits)
+        assert_eq!(InputParser::modifiers_from_xterm(1), Modifiers::NONE);
+        assert_eq!(InputParser::modifiers_from_xterm(2), Modifiers::SHIFT);
+        assert_eq!(InputParser::modifiers_from_xterm(3), Modifiers::ALT);
+        assert_eq!(
+            InputParser::modifiers_from_xterm(4),
+            Modifiers::SHIFT | Modifiers::ALT
+        );
+        assert_eq!(InputParser::modifiers_from_xterm(5), Modifiers::CTRL);
+        assert_eq!(
+            InputParser::modifiers_from_xterm(6),
+            Modifiers::SHIFT | Modifiers::CTRL
+        );
+        assert_eq!(InputParser::modifiers_from_xterm(9), Modifiers::SUPER);
+    }
+
+    // ── SS3 interrupted by ESC ───────────────────────────────────────
+
+    #[test]
+    fn ss3_interrupted_by_esc() {
+        let mut parser = InputParser::new();
+        // ESC O ESC should restart into Escape state
+        let events = parser.parse(b"\x1bO\x1b[A");
+        // Should get Up arrow from the new ESC [ A sequence
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Up
+        ));
+    }
+
+    // ── Kitty keyboard: unhandled keycodes ───────────────────────────
+
+    #[test]
+    fn kitty_keyboard_reserved_keycode_ignored() {
+        let mut parser = InputParser::new();
+        // Reserved range 57358..=57363 returns None
+        let events = parser.parse(b"\x1b[57360u");
+        assert!(events.is_empty());
+
+        // Parser still works
+        let events = parser.parse(b"x");
+        assert!(matches!(events.first(), Some(Event::Key(k)) if k.code == KeyCode::Char('x')));
+    }
 }
 
 #[cfg(test)]

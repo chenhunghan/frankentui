@@ -718,9 +718,10 @@ impl StatefulWidget for Form {
             );
 
             // Draw ": " separator
-            let sep_x = area.x
-                + unicode_width::UnicodeWidthStr::width(label)
-                    .min((label_w.saturating_sub(2)) as usize) as u16;
+            let sep_x = area.x.saturating_add(
+                unicode_width::UnicodeWidthStr::width(label)
+                    .min((label_w.saturating_sub(2)) as usize) as u16,
+            );
             draw_str(frame, sep_x, y, ": ", label_style, 2);
 
             // Draw field value
@@ -744,9 +745,8 @@ impl StatefulWidget for Form {
             // Draw error indicator
             if let Some(msg) = error_msg {
                 // Show error after value if space allows
-                let err_x = value_x
-                    + value_width
-                        .saturating_sub(unicode_width::UnicodeWidthStr::width(msg) as u16 + 2);
+                let msg_w = (unicode_width::UnicodeWidthStr::width(msg) as u16).saturating_add(2);
+                let err_x = value_x.saturating_add(value_width.saturating_sub(msg_w));
                 if err_x > value_x {
                     draw_str(frame, err_x, y, msg, self.error_style, value_width);
                 }
@@ -783,8 +783,8 @@ impl Form {
                 if is_focused {
                     let buf = &mut frame.buffer;
                     let cursor_col = grapheme_display_width(value, state.text_cursor);
-                    let cursor_x = x + cursor_col.min(width as usize) as u16;
-                    if cursor_x < x + width
+                    let cursor_x = x.saturating_add(cursor_col.min(width as usize) as u16);
+                    if cursor_x < x.saturating_add(width)
                         && let Some(cell) = buf.get_mut(cursor_x, y)
                     {
                         use ftui_render::cell::StyleFlags;
@@ -977,7 +977,7 @@ impl StatefulWidget for ConfirmDialog {
             .saturating_add(area.width.saturating_sub(total_btn_width as u16) / 2);
 
         draw_str(frame, start_x, btn_y, &yes_str, yes_style, area.width);
-        let no_x = start_x + yes_w as u16 + 2;
+        let no_x = start_x.saturating_add(yes_w as u16).saturating_add(2);
         draw_str(frame, no_x, btn_y, &no_str, no_style, area.width);
     }
 }
@@ -1050,9 +1050,9 @@ fn draw_str(frame: &mut Frame, x: u16, y: u16, s: &str, style: Style, max_width:
         apply_style(&mut cell, style);
 
         // Use set() which handles multi-width characters (atomic writes)
-        frame.buffer.set(x + col, y, cell);
+        frame.buffer.set(x.saturating_add(col), y, cell);
 
-        col += w;
+        col = col.saturating_add(w);
     }
 }
 

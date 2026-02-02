@@ -396,6 +396,8 @@ pub struct AppModel {
     pub terminal_width: u16,
     /// Current terminal height.
     pub terminal_height: u16,
+    /// Auto-exit after this many milliseconds (0 = disabled).
+    pub exit_after_ms: u64,
 }
 
 impl Default for AppModel {
@@ -416,12 +418,25 @@ impl AppModel {
             frame_count: 0,
             terminal_width: 0,
             terminal_height: 0,
+            exit_after_ms: 0,
         }
     }
 }
 
 impl Model for AppModel {
     type Message = AppMsg;
+
+    fn init(&mut self) -> Cmd<Self::Message> {
+        if self.exit_after_ms > 0 {
+            let ms = self.exit_after_ms;
+            Cmd::Task(Box::new(move || {
+                std::thread::sleep(Duration::from_millis(ms));
+                AppMsg::Quit
+            }))
+        } else {
+            Cmd::None
+        }
+    }
 
     fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
         match msg {

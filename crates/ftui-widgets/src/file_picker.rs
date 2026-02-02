@@ -172,7 +172,6 @@ impl FilePickerState {
         // No history — try parent directory
         if let Some(parent) = self.current_dir.parent().map(|p| p.to_path_buf()) {
             let entries = read_directory(&parent)?;
-            self.history.push((self.current_dir.clone(), self.cursor));
             self.current_dir = parent;
             self.entries = entries;
             self.cursor = 0;
@@ -371,9 +370,9 @@ impl StatefulWidget for FilePicker {
             let mut x = area.x;
             if is_cursor {
                 draw_text_span(frame, x, y, "> ", self.cursor_style, area.right());
-                x += 2;
+                x = x.saturating_add(2);
             } else {
-                x += 2;
+                x = x.saturating_add(2);
             }
 
             // Draw prefix + name

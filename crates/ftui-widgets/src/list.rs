@@ -197,11 +197,15 @@ impl<'a> StatefulWidget for List<'a> {
             .take(list_height)
         {
             let y = list_area.y.saturating_add((i - state.offset) as u16);
+            if y >= list_area.bottom() {
+                break;
+            }
             let is_selected = state.selected == Some(i);
 
-            // Determine style
+            // Determine style: merge highlight on top of item style so
+            // unset highlight properties inherit from the item.
             let item_style = if is_selected {
-                self.highlight_style
+                self.highlight_style.merge(&item.style)
             } else {
                 item.style
             };

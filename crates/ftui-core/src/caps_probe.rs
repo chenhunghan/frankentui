@@ -297,14 +297,25 @@ fn parse_background_response(bytes: &[u8]) -> Option<bool> {
     let g = parse_color_component(parts[1])?;
     let b = parse_color_component(parts[2])?;
 
-    // Determine scale: 4-digit hex (0-65535) or 2-digit hex (0-255).
-    let max_val: f64 = if parts[0].len() > 2 { 65535.0 } else { 255.0 };
+    // Normalize each component based on its hex digit count.
+    // X11 color spec supports 1-4 hex digits per component (4/8/12/16-bit).
+    fn scale_for_digits(n: usize) -> f64 {
+        match n {
+            1 => 15.0,
+            2 => 255.0,
+            3 => 4095.0,
+            _ => 65535.0,
+        }
+    }
+
+    let r_norm = f64::from(r) / scale_for_digits(parts[0].len());
+    let g_norm = f64::from(g) / scale_for_digits(parts[1].len());
+    let b_norm = f64::from(b) / scale_for_digits(parts[2].len());
 
     // Perceived luminance (ITU-R BT.601).
-    let luminance = 0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b);
-    let normalized = luminance / max_val;
+    let luminance = 0.299 * r_norm + 0.587 * g_norm + 0.114 * b_norm;
 
-    Some(normalized < 0.5)
+    Some(luminance < 0.5)
 }
 
 /// Parse a hex color component (2- or 4-digit).

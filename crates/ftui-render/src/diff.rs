@@ -125,8 +125,8 @@ impl BufferDiff {
         #[cfg(feature = "tracing")]
         let _guard = _span.enter();
 
-        debug_assert_eq!(old.width(), new.width(), "buffer widths must match");
-        debug_assert_eq!(old.height(), new.height(), "buffer heights must match");
+        assert_eq!(old.width(), new.width(), "buffer widths must match");
+        assert_eq!(old.height(), new.height(), "buffer heights must match");
 
         let width = old.width();
         let height = old.height();

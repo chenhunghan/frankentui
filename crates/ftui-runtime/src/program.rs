@@ -554,6 +554,9 @@ impl<M: Model, W: Write + Send> Program<M, W> {
                     if !was_resizing {
                         debug!("Showing resize placeholder");
                     }
+                    // Clamp to minimum 1 to prevent Buffer::new panic on zero dimensions
+                    let width = width.max(1);
+                    let height = height.max(1);
                     self.width = width;
                     self.height = height;
                     self.writer.set_size(width, height);
@@ -599,6 +602,9 @@ impl<M: Model, W: Write + Send> Program<M, W> {
             self.dirty = true;
             self.execute_cmd(cmd)?;
         }
+        if self.dirty {
+            self.reconcile_subscriptions();
+        }
         Ok(())
     }
 
@@ -622,6 +628,9 @@ impl<M: Model, W: Write + Send> Program<M, W> {
             Cmd::Sequence(cmds) => {
                 for c in cmds {
                     self.execute_cmd(c)?;
+                    if !self.running {
+                        break;
+                    }
                 }
             }
             Cmd::Tick(duration) => {
@@ -793,6 +802,9 @@ impl<M: Model, W: Write + Send> Program<M, W> {
 
     fn apply_resize(&mut self, width: u16, height: u16, elapsed: Duration) -> io::Result<()> {
         self.resizing = false;
+        // Clamp to minimum 1 to prevent Buffer::new panic on zero dimensions
+        let width = width.max(1);
+        let height = height.max(1);
         self.width = width;
         self.height = height;
         self.writer.set_size(width, height);

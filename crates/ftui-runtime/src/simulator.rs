@@ -217,6 +217,9 @@ impl<M: Model> ProgramSimulator<M> {
                 self.command_log.push(CmdRecord::Sequence(count));
                 for c in cmds {
                     self.execute_cmd(c);
+                    if !self.running {
+                        break;
+                    }
                 }
             }
             Cmd::Tick(duration) => {

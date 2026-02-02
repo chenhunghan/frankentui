@@ -343,7 +343,9 @@ impl Clipboard {
                     log_fallback(self.backend, ClipboardBackend::External(fallback), "osc52");
                     return set_external_backend(fallback, content, selection);
                 }
-                log_write(self.backend, content.len());
+                if result.is_ok() {
+                    log_write(self.backend, content.len());
+                }
                 result
             }
             ClipboardBackend::External(backend) => {

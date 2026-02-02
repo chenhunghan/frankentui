@@ -456,6 +456,10 @@ impl EventRecorder {
             if let Some(pause_start) = self.pause_start.take() {
                 self.total_paused += pause_start.elapsed();
             }
+            // Reset the inner recorder's timestamp so the next event's
+            // delay is measured from the resume instant, not from the
+            // last event before the pause.
+            self.inner.last_event_time = Instant::now();
             self.state = RecordingState::Recording;
         }
     }

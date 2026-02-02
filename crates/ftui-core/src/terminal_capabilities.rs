@@ -810,4 +810,169 @@ mod tests {
         assert!(!caps.use_hyperlinks());
         assert!(!caps.use_clipboard());
     }
+
+    // ====== Additional terminal detection (coverage gaps) ======
+
+    #[test]
+    fn detect_rio() {
+        let env = make_env("xterm-256color", "Rio", "truecolor");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.true_color);
+        assert!(caps.osc8_hyperlinks);
+        assert!(caps.kitty_keyboard);
+        assert!(caps.focus_events);
+    }
+
+    #[test]
+    fn detect_contour() {
+        let env = make_env("xterm-256color", "Contour", "truecolor");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.true_color);
+        assert!(caps.sync_output);
+        assert!(caps.osc8_hyperlinks);
+        assert!(caps.focus_events);
+    }
+
+    #[test]
+    fn detect_foot() {
+        let env = make_env("foot", "foot", "truecolor");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.kitty_keyboard, "foot supports kitty keyboard");
+    }
+
+    #[test]
+    fn detect_hyper() {
+        let env = make_env("xterm-256color", "Hyper", "truecolor");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.true_color);
+        assert!(caps.osc8_hyperlinks);
+        assert!(caps.focus_events);
+    }
+
+    #[test]
+    fn detect_linux_console() {
+        let env = make_env("linux", "", "");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(!caps.true_color, "linux console doesn't support truecolor");
+        assert!(!caps.colors_256, "linux console doesn't support 256 colors");
+        // But basic features work
+        assert!(caps.bracketed_paste);
+        assert!(caps.mouse_sgr);
+        assert!(caps.scroll_region);
+    }
+
+    #[test]
+    fn detect_xterm_direct() {
+        let env = make_env("xterm", "", "");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(!caps.true_color, "plain xterm has no truecolor");
+        assert!(!caps.colors_256, "plain xterm has no 256color");
+        assert!(caps.bracketed_paste);
+        assert!(caps.mouse_sgr);
+    }
+
+    #[test]
+    fn detect_screen_256color() {
+        let env = make_env("screen-256color", "", "");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.colors_256, "screen-256color has 256 colors");
+        assert!(!caps.true_color);
+    }
+
+    // ====== Only TERM_PROGRAM without COLORTERM ======
+
+    #[test]
+    fn wezterm_without_colorterm() {
+        let env = make_env("xterm-256color", "WezTerm", "");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        // Modern terminal detection still works via TERM_PROGRAM
+        assert!(caps.true_color, "WezTerm is modern, implies truecolor");
+        assert!(caps.sync_output);
+        assert!(caps.osc8_hyperlinks);
+    }
+
+    #[test]
+    fn alacritty_via_term_only() {
+        // Alacritty sets TERM=alacritty
+        let env = make_env("alacritty", "", "");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        // TERM contains "alacritty" which matches lowercase of MODERN_TERMINALS
+        assert!(caps.true_color);
+        assert!(caps.osc8_hyperlinks);
+    }
+
+    // ====== Kitty detection edge cases ======
+
+    #[test]
+    fn kitty_via_term_without_window_id() {
+        let env = make_env("xterm-kitty", "", "");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.kitty_keyboard);
+        assert!(caps.true_color);
+        assert!(caps.sync_output);
+    }
+
+    #[test]
+    fn kitty_window_id_with_generic_term() {
+        let mut env = make_env("xterm-256color", "", "");
+        env.kitty_window_id = true;
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.kitty_keyboard);
+        assert!(caps.true_color);
+    }
+
+    // ====== Policy edge cases ======
+
+    #[test]
+    fn use_clipboard_enabled_when_no_mux_and_modern() {
+        let env = make_env("xterm-256color", "WezTerm", "truecolor");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.osc52_clipboard);
+        assert!(caps.use_clipboard());
+    }
+
+    #[test]
+    fn use_clipboard_disabled_in_tmux_even_if_detected() {
+        let mut env = make_env("xterm-256color", "WezTerm", "truecolor");
+        env.in_tmux = true;
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        // osc52_clipboard is already false due to mux detection in detect_from_inputs
+        assert!(!caps.osc52_clipboard);
+        assert!(!caps.use_clipboard());
+    }
+
+    #[test]
+    fn scroll_region_enabled_for_basic_xterm() {
+        let env = make_env("xterm", "", "");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.scroll_region);
+        assert!(caps.use_scroll_region());
+    }
+
+    #[test]
+    fn no_color_preserves_non_visual_features() {
+        let mut env = make_env("xterm-256color", "WezTerm", "truecolor");
+        env.no_color = true;
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        // Visual features disabled
+        assert!(!caps.true_color);
+        assert!(!caps.colors_256);
+        assert!(!caps.osc8_hyperlinks);
+        // Non-visual features preserved
+        assert!(caps.sync_output);
+        assert!(caps.kitty_keyboard);
+        assert!(caps.focus_events);
+        assert!(caps.bracketed_paste);
+        assert!(caps.mouse_sgr);
+    }
+
+    // ====== COLORTERM variations ======
+
+    #[test]
+    fn colorterm_yes_not_truecolor() {
+        let env = make_env("xterm-256color", "", "yes");
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(!caps.true_color, "COLORTERM=yes is not truecolor");
+        assert!(caps.colors_256, "TERM=xterm-256color implies 256");
+    }
 }

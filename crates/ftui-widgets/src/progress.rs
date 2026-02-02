@@ -117,7 +117,7 @@ impl<'a> Widget for ProgressBar<'a> {
 
         for y in bar_area.top()..bar_area.bottom() {
             for x in 0..filled_width {
-                let cell_x = bar_area.left() + x;
+                let cell_x = bar_area.left().saturating_add(x);
                 if cell_x < bar_area.right() {
                     let mut cell = Cell::from_char(fill_char);
                     crate::apply_style(&mut cell, gauge_style);
@@ -134,9 +134,10 @@ impl<'a> Widget for ProgressBar<'a> {
         };
         if let Some(label) = self.label {
             let label_width = unicode_width::UnicodeWidthStr::width(label);
-            let label_x = bar_area.left()
-                + ((bar_area.width as usize).saturating_sub(label_width) / 2) as u16;
-            let label_y = bar_area.top() + (bar_area.height / 2);
+            let label_x = bar_area
+                .left()
+                .saturating_add(((bar_area.width as usize).saturating_sub(label_width) / 2) as u16);
+            let label_y = bar_area.top().saturating_add(bar_area.height / 2);
 
             crate::draw_text_span(
                 frame,

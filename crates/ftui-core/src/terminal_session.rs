@@ -219,7 +219,13 @@ impl TerminalSession {
     pub fn new(options: SessionOptions) -> io::Result<Self> {
         install_panic_hook();
 
-        // Enter raw mode first
+        // Create signal guard before raw mode so that a failure here
+        // does not leave the terminal in raw mode (the struct would never
+        // be fully constructed, so Drop would not run).
+        #[cfg(unix)]
+        let signal_guard = Some(SignalGuard::new()?);
+
+        // Enter raw mode
         crossterm::terminal::enable_raw_mode()?;
         #[cfg(feature = "tracing")]
         tracing::info!("terminal raw mode enabled");
@@ -232,7 +238,7 @@ impl TerminalSession {
             focus_events_enabled: false,
             kitty_keyboard_enabled: false,
             #[cfg(unix)]
-            signal_guard: Some(SignalGuard::new()?),
+            signal_guard,
         };
 
         // Enable optional features
@@ -1116,6 +1122,116 @@ mod tests {
         // Verify the escape sequences are correct
         assert_eq!(KITTY_KEYBOARD_ENABLE, b"\x1b[>15u");
         assert_eq!(KITTY_KEYBOARD_DISABLE, b"\x1b[<u");
+    }
+
+    // -- Additional SessionOptions tests --
+
+    #[test]
+    fn session_options_partial_config() {
+        let opts = SessionOptions {
+            alternate_screen: true,
+            mouse_capture: false,
+            bracketed_paste: true,
+            ..Default::default()
+        };
+        assert!(opts.alternate_screen);
+        assert!(!opts.mouse_capture);
+        assert!(opts.bracketed_paste);
+        assert!(!opts.focus_events);
+        assert!(!opts.kitty_keyboard);
+    }
+
+    // -- Additional event mapping edge cases --
+
+    #[test]
+    fn map_key_event_with_release_kind() {
+        let ct_event = crossterm::event::KeyEvent {
+            code: crossterm::event::KeyCode::Char('a'),
+            modifiers: crossterm::event::KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Release,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+        let mapped = map_key_event(ct_event).expect("should map");
+        assert_eq!(mapped.kind, KeyEventKind::Release);
+    }
+
+    #[test]
+    fn map_key_event_with_repeat_kind() {
+        let ct_event = crossterm::event::KeyEvent {
+            code: crossterm::event::KeyCode::Char('x'),
+            modifiers: crossterm::event::KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Repeat,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+        let mapped = map_key_event(ct_event).expect("should map");
+        assert_eq!(mapped.kind, KeyEventKind::Repeat);
+    }
+
+    #[test]
+    fn map_key_event_all_modifiers_combined() {
+        let combined = crossterm::event::KeyModifiers::SHIFT
+            | crossterm::event::KeyModifiers::CONTROL
+            | crossterm::event::KeyModifiers::ALT
+            | crossterm::event::KeyModifiers::SUPER;
+        let ct_event = crossterm::event::KeyEvent {
+            code: crossterm::event::KeyCode::Char('z'),
+            modifiers: combined,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+        let mapped = map_key_event(ct_event).expect("should map");
+        assert!(mapped.modifiers.contains(Modifiers::SHIFT));
+        assert!(mapped.modifiers.contains(Modifiers::CTRL));
+        assert!(mapped.modifiers.contains(Modifiers::ALT));
+        assert!(mapped.modifiers.contains(Modifiers::SUPER));
+    }
+
+    // -- Crossterm event mapping edge cases --
+
+    #[test]
+    fn map_crossterm_event_resize_zero() {
+        let ct_event = crossterm::event::Event::Resize(0, 0);
+        let mapped = map_crossterm_event(ct_event).expect("should map");
+        assert!(matches!(
+            mapped,
+            Event::Resize {
+                width: 0,
+                height: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn map_crossterm_event_resize_large() {
+        let ct_event = crossterm::event::Event::Resize(500, 200);
+        let mapped = map_crossterm_event(ct_event).expect("should map");
+        assert!(matches!(
+            mapped,
+            Event::Resize {
+                width: 500,
+                height: 200
+            }
+        ));
+    }
+
+    #[test]
+    fn map_crossterm_event_paste_empty() {
+        let ct_event = crossterm::event::Event::Paste(String::new());
+        let mapped = map_crossterm_event(ct_event).expect("should map");
+        match mapped {
+            Event::Paste(paste) => assert!(paste.text.is_empty()),
+            _ => panic!("expected Paste event"),
+        }
+    }
+
+    #[test]
+    fn map_crossterm_event_paste_unicode() {
+        let ct_event = crossterm::event::Event::Paste("こんにちは🌍".to_string());
+        let mapped = map_crossterm_event(ct_event).expect("should map");
+        match mapped {
+            Event::Paste(paste) => assert_eq!(paste.text, "こんにちは🌍"),
+            _ => panic!("expected Paste event"),
+        }
     }
 
     // Note: Interactive tests that actually enter raw mode should be run

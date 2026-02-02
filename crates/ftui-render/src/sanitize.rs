@@ -212,11 +212,13 @@ fn skip_escape_sequence(bytes: &[u8], start: usize) -> usize {
                 if b == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
                     return i + 2;
                 }
+                // Lone ESC (not followed by \): abort OSC and let the main loop
+                // re-process this ESC as a potential new escape sequence.
+                if b == 0x1B {
+                    return i;
+                }
                 // Abort on other C0 controls (e.g. newline) to prevent swallowing logs
-                // 0x1B is allowed as part of ST check above, but lone ESC is tricky.
-                // We'll allow 0x1B here to let the loop check for ST next iteration,
-                // but strictly block other C0 (0x00-0x1F except 0x1B).
-                if b < 0x20 && b != 0x1B {
+                if b < 0x20 {
                     return i;
                 }
                 i += 1;
@@ -231,8 +233,13 @@ fn skip_escape_sequence(bytes: &[u8], start: usize) -> usize {
                 if b == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
                     return i + 2;
                 }
+                // Lone ESC (not followed by \): abort and let the main loop
+                // re-process this ESC as a potential new escape sequence.
+                if b == 0x1B {
+                    return i;
+                }
                 // Abort on C0 controls
-                if b < 0x20 && b != 0x1B {
+                if b < 0x20 {
                     return i;
                 }
                 i += 1;
@@ -327,7 +334,10 @@ impl<'a> Text<'a> {
     /// Create owned sanitized text.
     #[inline]
     pub fn sanitized_owned(s: String) -> Self {
-        Text::Sanitized(Cow::Owned(sanitize_slow(&s)))
+        match sanitize(&s) {
+            Cow::Borrowed(_) => Text::Sanitized(Cow::Owned(s)),
+            Cow::Owned(owned) => Text::Sanitized(Cow::Owned(owned)),
+        }
     }
 
     /// Create owned trusted text.
@@ -1165,8 +1175,18 @@ mod tests {
 
     #[test]
     fn adversarial_st_inside_dcs() {
-        // Ensure ST properly terminates DCS
+        // DCS with lone ESC (not followed by \) in body: aborts the DCS handler.
+        // The lone ESC is re-processed by the main loop as ESC d (single-char escape),
+        // and the remaining "ata" appears as text before ESC \ (another single-char escape).
         let input = "A\x1bPsome\x1bdata\x1b\\B";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "AataB");
+    }
+
+    #[test]
+    fn dcs_with_proper_st_fully_consumed() {
+        // DCS properly terminated by ST (no lone ESC in body)
+        let input = "A\x1bPsomedata\x1b\\B";
         let result = sanitize(input);
         assert_eq!(result.as_ref(), "AB");
     }

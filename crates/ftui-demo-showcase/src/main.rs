@@ -28,6 +28,7 @@ fn main() {
 
     let mut model = AppModel::new();
     model.current_screen = start_screen;
+    model.exit_after_ms = opts.exit_after_ms;
 
     let config = ProgramConfig {
         screen_mode,
