@@ -1,4 +1,4 @@
-# AGENTS.md — dcg (Destructive Command Guard)
+# AGENTS.md — FrankenTUI (ftui)
 
 > Guidelines for AI coding agents working in this Rust codebase.
 
@@ -13,8 +13,6 @@
 ---
 
 ## Irreversible Git & Filesystem Actions — DO NOT EVER BREAK GLASS
-
-> **Note:** This project exists specifically to block these dangerous commands for AI agents. Practice what we preach.
 
 1. **Absolutely forbidden commands:** `git reset --hard`, `git clean -fd`, `rm -rf`, or any command that can delete or overwrite code/data must never be run unless the user explicitly provides the exact command and states, in the same message, that they understand and want the irreversible consequences.
 2. **No guessing:** If there is any uncertainty about what a command might delete or overwrite, stop immediately and ask the user for specific approval. "I think it's safe" is never acceptable.
@@ -37,15 +35,15 @@ We only use **Cargo** in this project, NEVER any other package manager.
 
 | Crate | Purpose |
 |-------|---------|
-| `serde` + `serde_json` | JSON parsing for Claude Code hook protocol |
-| `fancy-regex` | Advanced regex with lookahead/lookbehind |
-| `memchr` | SIMD-accelerated substring search |
-| `colored` | Terminal colors with TTY detection |
-| `vergen-gix` | Build metadata embedding (build.rs) |
+| `crossterm` | Terminal backend (events, raw mode, ANSI) |
+| `unicode-width` | Grapheme width calculation for rendering |
+| `pulldown-cmark` | GitHub-Flavored Markdown parsing |
+| `tracing` | Structured logging and instrumentation |
+| `insta` | Snapshot testing framework |
 
 ### Release Profile
 
-The release build optimizes for binary size:
+The release build optimizes for size:
 
 ```toml
 [profile.release]
@@ -91,23 +89,6 @@ We do not care about backwards compatibility—we're in early development with n
 
 ---
 
-## Output Style
-
-This tool has two output modes:
-
-- **JSON to stdout:** For Claude Code hook protocol (`hookSpecificOutput` with `permissionDecision: "deny"`)
-- **Colorful warning to stderr:** For human visibility when commands are blocked
-
-Output behavior:
-- **Deny:** Colorful warning to stderr + JSON to stdout
-- **Allow:** No output (silent exit)
-- **--version/-V:** Version info with build metadata to stderr
-- **--help/-h:** Usage information to stderr
-
-Colors are automatically disabled when stderr is not a TTY (e.g., piped to file).
-
----
-
 ## Compiler Checks (CRITICAL)
 
 **After any substantive code changes, you MUST verify no errors were introduced:**
@@ -131,7 +112,7 @@ If you see errors, **carefully understand and resolve each issue**. Read suffici
 
 ### Unit Tests
 
-The test suite includes 80+ tests covering all functionality:
+The workspace includes comprehensive tests across all crates:
 
 ```bash
 # Run all tests
@@ -140,39 +121,50 @@ cargo test
 # Run with output
 cargo test -- --nocapture
 
-# Run specific test module
-cargo test normalize_command_tests
-cargo test safe_pattern_tests
-cargo test destructive_pattern_tests
+# Run specific crate tests
+cargo test -p ftui-core
+cargo test -p ftui-render
+cargo test -p ftui-widgets
+cargo test -p ftui-runtime
+```
+
+### Snapshot Testing
+
+FrankenTUI uses insta for visual snapshot testing:
+
+```bash
+# Run snapshot tests
+cargo test -p ftui-demo-showcase
+
+# Update snapshots (bless mode)
+BLESS=1 cargo test -p ftui-demo-showcase
+
+# Review snapshot changes
+cargo insta review
 ```
 
 ### End-to-End Testing
 
 ```bash
-# Run the E2E test script
+# Run E2E test scripts
 ./scripts/e2e_test.sh
+./scripts/widget_api_e2e.sh
 
-# Or test manually
-echo '{"tool_name":"Bash","tool_input":{"command":"git reset --hard"}}' | cargo run --release
-# Should output JSON denial
-
-echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | cargo run --release
-# Should output nothing (allowed)
+# Run the demo showcase manually
+cargo run -p ftui-demo-showcase
 ```
 
 ### Test Categories
 
-| Module | Tests | Purpose |
-|--------|-------|---------|
-| `normalize_command_tests` | 8 | Path stripping for git/rm binaries |
-| `quick_reject_tests` | 5 | Fast-path filtering for non-git/rm commands |
-| `safe_pattern_tests` | 16 | Whitelist accuracy |
-| `destructive_pattern_tests` | 20 | Blacklist coverage |
-| `input_parsing_tests` | 8 | JSON parsing robustness |
-| `deny_output_tests` | 2 | Output format validation |
-| `integration_tests` | 4 | End-to-end pipeline |
-| `optimization_tests` | 9 | Performance paths |
-| `edge_case_tests` | 24 | Real-world edge cases |
+| Crate | Focus |
+|-------|-------|
+| `ftui-core` | Terminal lifecycle, event parsing, capabilities |
+| `ftui-render` | Buffer operations, diff computation, ANSI emission |
+| `ftui-layout` | Constraint solving, flex/grid layout |
+| `ftui-text` | Unicode width, text wrapping, grapheme handling |
+| `ftui-widgets` | Widget rendering, state management |
+| `ftui-runtime` | Event loop, command execution, subscriptions |
+| `ftui-demo-showcase` | Snapshot tests for all demo screens |
 
 ---
 
@@ -182,101 +174,45 @@ echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | cargo run --
 
 | Job | Trigger | Purpose | Blocking |
 |-----|---------|---------|----------|
-| `check` | PR, push | Format, clippy, UBS, tests | Yes |
+| `check` | PR, push | Format, clippy, tests | Yes |
 | `coverage` | PR, push | Coverage thresholds | Yes |
-| `memory-tests` | PR, push | Memory leak detection | Yes |
+| `snapshots` | PR, push | Visual regression testing | Yes |
 | `benchmarks` | push to master | Performance budgets | Warn only |
-| `e2e` | PR, push | End-to-end shell tests | Yes |
-| `scan-regression` | PR, push | Scan output stability | Yes |
-| `perf-regression` | PR, push | Process-per-invocation perf | Yes |
+| `e2e` | PR, push | End-to-end harness tests | Yes |
 
 ### Check Job
 
-Runs format, clippy, UBS static analysis, and unit tests. Includes:
+Runs format, clippy, and unit tests. Includes:
 - `cargo fmt --check` - Code formatting
 - `cargo clippy --all-targets -- -D warnings` - Lints (pedantic + nursery enabled)
-- UBS analysis on changed Rust files (warning-only, non-blocking)
 - `cargo nextest run` - Full test suite with JUnit XML report
 
 ### Coverage Job
 
 Runs `cargo llvm-cov` and enforces thresholds:
 - **Overall:** ≥ 70%
-- **src/evaluator.rs:** ≥ 80%
-- **src/hook.rs:** ≥ 80%
+- **ftui-render:** ≥ 80%
+- **ftui-core:** ≥ 80%
 
-Coverage is uploaded to Codecov for trend tracking. Dashboard: https://codecov.io/gh/Dicklesworthstone/destructive_command_guard
+### Snapshot Testing
 
-### Memory Tests Job
-
-Runs dedicated memory leak tests with:
-- `--test-threads=1` for accurate measurements
-- Release mode for realistic performance
-- 1-2MB growth budgets per test
-
-Tests include: hook input parsing, pattern evaluation, heredoc extraction, file extractors, full pipeline, and a self-test that verifies the framework catches leaks.
-
-### Benchmarks Job
-
-Runs on push to master only (benchmarks are noisy on PRs). Checks performance budgets from `src/perf.rs`:
-- Quick reject: < 50μs panic
-- Fast path: < 500μs panic
-- Pattern match: < 1ms panic
-- Heredoc extract: < 2ms panic
-- Full pipeline: < 50ms panic
-
-### UBS Static Analysis
-
-Ultimate Bug Scanner runs on changed Rust files. Currently warning-only (non-blocking) to tune for false positives. Configuration in `.ubsignore` excludes test/bench/fuzz directories.
-
-### Dependabot
-
-Automated dependency updates configured in `.github/dependabot.yml`:
-- **Cargo dependencies:** Weekly (Monday 9am EST), 5 PR limit
-- **GitHub Actions:** Weekly (Monday 9am EST), 3 PR limit
-- **Grouping:** Minor/patch updates grouped; serde updates separate (more careful review)
+Visual regression tests ensure rendering consistency:
+- All demo screens tested at multiple sizes (80x24, 120x40)
+- BLESS=1 to update baselines
+- Changes require review before merge
 
 ### Debugging CI Failures
+
+#### Snapshot Test Failure
+1. Download snapshot artifacts
+2. Compare expected vs actual renders
+3. Run `BLESS=1 cargo test` locally if changes are intentional
+4. Review visual diff before committing
 
 #### Coverage Threshold Failure
 1. Check which file(s) dropped below threshold in CI output
 2. Run `cargo llvm-cov --html` locally to see uncovered lines
 3. Add tests for uncovered code paths
-4. Download `coverage-report` artifact for full details
-
-#### Memory Test Failure
-1. Download `memory-test-output` artifact
-2. Check which test failed and growth amount
-3. Run locally: `cargo test --test memory_tests --release -- --nocapture --test-threads=1`
-4. Profile with valgrind if needed
-
-#### UBS Warnings
-1. Check ubs-output.log in CI summary
-2. Review flagged issues - may be false positives
-3. If valid issues, fix them; if false positives, add to `.ubsignore`
-
-#### E2E Test Failure
-1. Download `e2e-artifacts` artifact
-2. Check `e2e_output.json` for failing test details
-3. Run locally: `./scripts/e2e_test.sh --verbose`
-4. The step summary shows the first failure with output
-
-#### Benchmark Regression
-1. Download `benchmark-results` artifact
-2. Compare against budgets in `src/perf.rs`
-3. Profile locally with `cargo bench --bench heredoc_perf`
-4. Check for algorithmic regressions in hot path
-
----
-
-## Heredoc Detection Notes (for contributors)
-
-- **Rule IDs**: Heredoc patterns use stable IDs like `heredoc.python.shutil_rmtree` for allowlisting.
-- **Fail-open**: In hook mode, heredoc parse errors/timeouts must allow (do not block).
-- **Tests**: Prefer targeted tests in `src/ast_matcher.rs` and `src/heredoc.rs`.
-  - `cargo test ast_matcher`
-  - `cargo test heredoc`
-  - Add positive and negative fixtures for each new pattern.
 
 ---
 
@@ -286,334 +222,177 @@ If you aren't 100% sure how to use a third-party library, **SEARCH ONLINE** to f
 
 ---
 
-## dcg (Destructive Command Guard) — This Project
+## FrankenTUI (ftui) — This Project
 
-**This is the project you're working on.** dcg is a high-performance Claude Code hook that blocks destructive commands before they execute. It protects against dangerous git commands, filesystem operations, database queries, container commands, and more through a modular pack system.
+**This is the project you're working on.** FrankenTUI is a minimal, high-performance terminal UI kernel focused on correctness, determinism, and clean architecture.
+
+### Design Philosophy
+
+1. **Correctness over cleverness** — predictable terminal state is non-negotiable
+2. **Deterministic output** — buffer diffs and explicit presentation over ad-hoc writes
+3. **Inline first** — preserve scrollback while keeping chrome stable
+4. **Layered architecture** — core → render → runtime → widgets, no cyclic dependencies
+5. **Zero-surprise teardown** — RAII cleanup, even when apps crash
 
 ### Architecture
 
 ```
-JSON Input → Parse → Quick Reject (memchr) → Normalize → Safe Patterns → Destructive Patterns → Default Allow
+┌──────────────────────────────────────────────────────────────────┐
+│                          Input Layer                              │
+│   TerminalSession (crossterm) → Event (ftui-core)                 │
+└──────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                          Runtime Loop                              │
+│   Program/Model (ftui-runtime) → Cmd → Subscriptions              │
+└──────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                         Render Kernel                              │
+│   Frame → Buffer → BufferDiff → Presenter → ANSI                  │
+└──────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                          Output Layer                              │
+│   TerminalWriter (inline or alt-screen)                           │
+└──────────────────────────────────────────────────────────────────┘
 ```
+
+### Workspace Crates
+
+| Crate | Purpose |
+|-------|---------|
+| `ftui` | Public facade + prelude |
+| `ftui-core` | Terminal lifecycle, events, capabilities |
+| `ftui-render` | Buffer, diff, ANSI presenter |
+| `ftui-style` | Style + theme system |
+| `ftui-text` | Spans, segments, rope editor |
+| `ftui-layout` | Flex + Grid solvers |
+| `ftui-runtime` | Elm/Bubbletea runtime |
+| `ftui-widgets` | Core widget library (37 widgets) |
+| `ftui-extras` | Feature-gated add-ons |
+| `ftui-demo-showcase` | Reference app + snapshots |
+| `ftui-harness` | Test utilities + snapshot framework |
+| `ftui-pty` | PTY test utilities |
 
 ### Key Files
 
 | File | Purpose |
 |------|---------|
-| `src/main.rs` | Complete implementation (~40KB) + 80 tests |
-| `Cargo.toml` | Dependencies and release optimizations |
-| `build.rs` | Build script for version metadata (vergen) |
-| `rust-toolchain.toml` | Nightly toolchain requirement |
-| `scripts/e2e_test.sh` | End-to-end test script (120 tests) |
+| `crates/ftui-core/src/terminal_session.rs` | RAII terminal lifecycle |
+| `crates/ftui-render/src/buffer.rs` | 2D cell buffer with scissor stacks |
+| `crates/ftui-render/src/cell.rs` | 16-byte cache-optimized Cell |
+| `crates/ftui-render/src/diff.rs` | Efficient buffer diff computation |
+| `crates/ftui-render/src/presenter.rs` | State-tracked ANSI emitter |
+| `crates/ftui-runtime/src/program.rs` | Main event loop (Elm architecture) |
+| `crates/ftui-runtime/src/terminal_writer.rs` | One-writer rule enforcement |
+| `crates/ftui-widgets/src/lib.rs` | Widget trait + 37 implementations |
+| `crates/ftui-demo-showcase/src/app.rs` | Demo application model |
 
-### Pattern System
+### Core Abstractions
 
-- **34 safe patterns** (whitelist, checked first)
-- **16 destructive patterns** (blacklist, checked second)
-- **Default allow** for unmatched commands
-
-### Adding New Patterns
-
-1. Identify the command to block/allow
-2. Write a regex using `fancy-regex` syntax (supports lookahead/lookbehind)
-3. Add to `SAFE_PATTERNS` or `DESTRUCTIVE_PATTERNS` using the macros:
-
+**Cell (16 bytes)** — Cache-line optimized for SIMD comparisons:
 ```rust
-// Safe pattern (whitelist)
-pattern!("pattern-name", r"regex-here")
-
-// Destructive pattern (blacklist)
-destructive!(
-    r"regex-here",
-    "Human-readable reason for blocking"
-)
+Cell {
+    content: CellContent,  // 4 bytes - char or GraphemeId
+    fg: PackedRgba,        // 4 bytes - foreground RGBA
+    bg: PackedRgba,        // 4 bytes - background RGBA
+    attrs: CellAttrs,      // 4 bytes - style flags + link ID
+}
 ```
 
-4. Add tests for all variants
-5. Run `cargo test` and `./scripts/e2e_test.sh`
+**Buffer** — 2D grid with scissor/opacity stacks:
+```rust
+Buffer {
+    width: u16,
+    height: u16,
+    cells: Vec<Cell>,           // Row-major layout
+    scissor_stack: Vec<Rect>,   // Clipping regions
+    opacity_stack: Vec<f32>,    // Compositing opacity
+}
+```
+
+**Model Trait** — Elm/Bubbletea architecture:
+```rust
+pub trait Model: Sized {
+    type Message: From<Event> + Send;
+
+    fn init(&mut self) -> Cmd<Self::Message>;
+    fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message>;
+    fn view(&self, frame: &mut Frame);
+    fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>>;
+}
+```
+
+### Key Invariants
+
+1. **One-Writer Rule**: Only one owner of terminal output (enforced via `TerminalWriter`)
+2. **Terminal State Restoration**: Guaranteed on any exit path via RAII
+3. **Cell Size Fixed at 16 Bytes**: Non-negotiable for cache efficiency
+4. **Buffer Dimensions Immutable**: Once created, width/height never change
+5. **Scissor Stack Monotonic Intersection**: Each push intersects with current
+
+### Screen Modes
+
+**Inline Mode** — Preserves scrollback:
+```rust
+ScreenMode::Inline { ui_height: 12 }
+```
+- UI rendered at bottom of terminal
+- Logs scroll normally above UI
+- Uses cursor save/restore (DEC 7/8)
+
+**AltScreen Mode** — Full-screen UI:
+```rust
+ScreenMode::AltScreen
+```
+- Takes over entire terminal
+- No scrollback preservation
 
 ### Performance Requirements
 
-Every Bash command passes through this hook. Performance is critical:
+- 16-byte Cell for SIMD comparisons
+- Row-major buffer layout for cache prefetching
+- State tracking in Presenter (avoid redundant escape sequences)
+- 64KB buffered output (one write per frame)
+- Budget system for graceful degradation
 
-- Quick rejection filter eliminates 99%+ of commands before regex
-- Lazy-initialized static regex patterns (compiled once, reused)
-- Sub-millisecond execution for typical commands
-- Zero allocations on the hot path for safe commands
+### Running the Demo
 
----
+```bash
+# Default (alt-screen mode)
+cargo run -p ftui-demo-showcase
 
-<!-- dcg-machine-readable-v1 -->
+# Inline mode
+FTUI_HARNESS_SCREEN_MODE=inline FTUI_HARNESS_UI_HEIGHT=12 cargo run -p ftui-demo-showcase
 
-## DCG Hook Protocol (Machine-Readable Reference)
+# Specific demo screen
+FTUI_HARNESS_VIEW=dashboard cargo run -p ftui-demo-showcase
+FTUI_HARNESS_VIEW=visual_effects cargo run -p ftui-demo-showcase
+```
 
-> This section provides structured documentation for AI agents integrating with dcg.
+### Adding New Widgets
 
-### JSON Input Format
+1. Create widget struct in `crates/ftui-widgets/src/`
+2. Implement `Widget` or `StatefulWidget` trait
+3. Add unit tests in same file
+4. Export from `lib.rs`
+5. Add snapshot tests in `ftui-demo-showcase`
 
-dcg reads from stdin in Claude Code's `PreToolUse` hook format:
+```rust
+pub trait Widget {
+    fn render(&self, area: Rect, frame: &mut Frame);
+    fn is_essential(&self) -> bool { false }  // Degradation support
+}
 
-```json
-{
-  "tool_name": "Bash",
-  "tool_input": {
-    "command": "git reset --hard HEAD~5"
-  }
+pub trait StatefulWidget {
+    type State;
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State);
 }
 ```
-
-**Required fields:**
-- `tool_name`: Must be `"Bash"` for dcg to process (other tools are ignored)
-- `tool_input.command`: The shell command string to evaluate
-
-### JSON Output Format (Denial)
-
-When a command is blocked, dcg outputs JSON to stdout:
-
-```json
-{
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "deny",
-    "permissionDecisionReason": "BLOCKED by dcg\n\nTip: dcg explain \"git reset --hard HEAD~5\"\n\nReason: git reset --hard destroys uncommitted changes\n\nExplanation: Rewrites history and discards uncommitted changes.\n\nRule: core.git:reset-hard\n\nCommand: git reset --hard HEAD~5\n\nIf this operation is truly needed, ask the user for explicit permission and have them run the command manually.",
-    "ruleId": "core.git:reset-hard",
-    "packId": "core.git",
-    "severity": "critical",
-    "confidence": 0.95,
-    "allowOnceCode": "a1b2c3",
-    "allowOnceFullHash": "sha256:abc123...",
-    "remediation": {
-      "safeAlternative": "git stash",
-      "explanation": "Use git stash to save your changes first.",
-      "allowOnceCommand": "dcg allow-once a1b2c3"
-    }
-  }
-}
-```
-
-**Key fields for agent parsing:**
-| Field | Type | Description |
-|-------|------|-------------|
-| `permissionDecision` | `"allow"` \| `"deny"` | The decision |
-| `ruleId` | `string` | Stable pattern ID (e.g., `"core.git:reset-hard"`) for allowlisting |
-| `packId` | `string` | Pack that matched (e.g., `"core.git"`) |
-| `severity` | `string` | `"critical"`, `"high"`, `"medium"`, or `"low"` |
-| `confidence` | `number` | Match confidence 0.0-1.0 |
-| `allowOnceCode` | `string` | Short code for `dcg allow-once` |
-| `remediation.safeAlternative` | `string?` | Suggested safe command |
-
-### JSON Output Format (Allow)
-
-When a command is allowed: **no output** (silent exit 0).
-
----
-
-## Exit Codes Reference
-
-| Code | Meaning | Agent Action |
-|------|---------|--------------|
-| `0` | Command allowed OR denied (check stdout for JSON) | Parse stdout; if empty, command was allowed |
-| `1` | Parse error or invalid input | Retry with corrected input |
-| `2` | Configuration error | Check config file syntax |
-
-**Detection logic for agents:**
-```bash
-output=$(echo "$hook_input" | dcg 2>/dev/null)
-if [ -z "$output" ]; then
-  echo "ALLOWED"
-else
-  echo "DENIED: $output"
-fi
-```
-
----
-
-## Error Codes Reference
-
-DCG uses standardized error codes in the format `DCG-XXXX` for machine-parseable error handling.
-
-### Error Categories
-
-| Range | Category | Description |
-|-------|----------|-------------|
-| DCG-1xxx | `pattern_match` | Pattern matching and evaluation errors |
-| DCG-2xxx | `configuration` | Configuration loading and parsing errors |
-| DCG-3xxx | `runtime` | Runtime and execution errors |
-| DCG-4xxx | `external` | External integration errors |
-
-### Common Error Codes
-
-| Code | Description | Typical Cause |
-|------|-------------|---------------|
-| `DCG-1001` | Pattern compilation failed | Invalid regex syntax in pattern |
-| `DCG-1002` | Pattern match timeout | Complex pattern taking too long |
-| `DCG-2001` | Config file not found | Missing configuration file |
-| `DCG-2002` | Config parse error | Invalid TOML/JSON syntax |
-| `DCG-2004` | Allowlist load error | Invalid allowlist file |
-| `DCG-3001` | JSON parse error | Malformed JSON input |
-| `DCG-3002` | IO error | File read/write failure |
-| `DCG-4001` | External pack load failed | Invalid external pack YAML |
-
-### Error JSON Structure
-
-When errors are returned in JSON format, they follow this structure:
-
-```json
-{
-  "error": {
-    "code": "DCG-3001",
-    "category": "runtime",
-    "message": "JSON parse error: unexpected token at position 15",
-    "context": {
-      "position": 15,
-      "input_preview": "{ \"tool_name\": ..."
-    }
-  }
-}
-```
-
-**Fields:**
-- `code`: Stable error code for programmatic handling
-- `category`: Error category (`pattern_match`, `configuration`, `runtime`, `external`)
-- `message`: Human-readable error description
-- `context`: Additional details (optional, varies by error type)
-
----
-
-## Allowlist & Bypass Instructions
-
-### Temporary Bypass (24-hour allow-once)
-
-When a command is blocked, the output includes an `allowOnceCode`. Use it:
-
-```bash
-dcg allow-once <code>
-```
-
-This allows the specific command for 24 hours in the current directory scope.
-
-### Permanent Allowlist (by rule ID)
-
-Add a rule to the project allowlist:
-
-```bash
-dcg allowlist add <ruleId> --project
-# Example: dcg allowlist add core.git:reset-hard --project
-```
-
-Allowlist files (in priority order):
-1. `.dcg/allowlist.toml` (project)
-2. `~/.config/dcg/allowlist.toml` (user)
-3. `/etc/dcg/allowlist.toml` (system)
-
-### Bypass Environment Variable
-
-For emergency bypass (use sparingly):
-
-```bash
-DCG_BYPASS=1 <command>
-```
-
-**Warning:** This disables all protection. Log and justify any usage.
-
----
-
-## Pattern Quick Reference
-
-### Core Git Patterns (Always Enabled)
-
-| Pattern ID | Blocks | Severity |
-|------------|--------|----------|
-| `core.git:reset-hard` | `git reset --hard` | Critical |
-| `core.git:reset-merge` | `git reset --merge` | High |
-| `core.git:checkout-discard` | `git checkout -- <file>` | High |
-| `core.git:restore-discard` | `git restore <file>` (without `--staged`) | High |
-| `core.git:clean-force` | `git clean -f`, `git clean -fd` | High |
-| `core.git:force-push` | `git push --force`, `git push -f` | High |
-| `core.git:branch-force-delete` | `git branch -D` | High |
-| `core.git:stash-drop` | `git stash drop`, `git stash clear` | High |
-
-### Core Filesystem Patterns (Always Enabled)
-
-| Pattern ID | Blocks | Severity |
-|------------|--------|----------|
-| `core.filesystem:rm-rf-root` | `rm -rf /`, `rm -rf ~` | Critical |
-| `core.filesystem:rm-rf-general` | `rm -rf` outside temp dirs | High |
-
-### Safe Patterns (Whitelist - Always Allowed)
-
-| Pattern | Command | Why Safe |
-|---------|---------|----------|
-| `git-checkout-branch` | `git checkout -b <branch>` | Creates new branch |
-| `git-checkout-orphan` | `git checkout --orphan <branch>` | Creates orphan branch |
-| `git-restore-staged` | `git restore --staged <file>` | Only unstages, doesn't discard |
-| `git-clean-dry-run` | `git clean -n`, `git clean --dry-run` | Preview only |
-| `rm-tmp` | `rm -rf /tmp/*`, `/var/tmp/*` | Temp directory cleanup |
-
-### Pack Enable/Disable Examples
-
-```toml
-# ~/.config/dcg/config.toml
-[packs]
-enabled = [
-    "database.postgresql",    # Blocks DROP TABLE, TRUNCATE
-    "kubernetes.kubectl",     # Blocks kubectl delete namespace
-    "cloud.aws",              # Blocks aws ec2 terminate-instances
-]
-
-disabled = [
-    "containers.docker",      # Disable Docker protection
-]
-```
-
-List all packs: `dcg packs --verbose`
-
----
-
-## CLI Quick Reference for Agents
-
-| Command | Purpose |
-|---------|---------|
-| `dcg explain "<command>"` | Detailed trace of why command is blocked/allowed |
-| `dcg allow-once <code>` | Allow a blocked command for 24 hours |
-| `dcg allowlist add <ruleId> --project` | Permanently allow a rule |
-| `dcg packs` | List enabled packs |
-| `dcg packs --verbose` | List all packs with pattern counts |
-| `dcg scan .` | Scan codebase for destructive patterns |
-| `dcg --version` | Show version and build info |
-
----
-
-## Agent Integration Checklist
-
-When integrating with dcg, ensure your agent:
-
-- [ ] Parses stdout for JSON denial responses
-- [ ] Handles empty stdout as "command allowed"
-- [ ] Uses `ruleId` for stable allowlisting (not pattern text)
-- [ ] Displays `remediation.safeAlternative` to users when available
-- [ ] Respects `severity` for prioritization (critical > high > medium > low)
-- [ ] Uses `dcg explain` before asking users to bypass
-
----
-
-## JSON Schema Reference
-
-Formal JSON Schema definitions (Draft 2020-12) for all dcg output formats are available in `docs/json-schema/`:
-
-| Schema | Purpose |
-|--------|---------|
-| [`hook-output.json`](docs/json-schema/hook-output.json) | PreToolUse hook denial response format |
-| [`scan-results.json`](docs/json-schema/scan-results.json) | `dcg scan` command output format |
-| [`stats-output.json`](docs/json-schema/stats-output.json) | `dcg stats` command output format |
-| [`error.json`](docs/json-schema/error.json) | Error response formats for various commands |
-
-Use these schemas for:
-- Validating dcg output in automated pipelines
-- Generating type-safe client code
-- Understanding the complete output contract
-
-<!-- end-dcg-machine-readable -->
 
 ---
 
@@ -897,18 +676,18 @@ rg -l -t rust 'unwrap\(' | xargs ast-grep run -l Rust -p '$X.unwrap()' --json
 
 | Scenario | Tool | Why |
 |----------|------|-----|
-| "How is pattern matching implemented?" | `warp_grep` | Exploratory; don't know where to start |
-| "Where is the quick reject filter?" | `warp_grep` | Need to understand architecture |
-| "Find all uses of `Regex::new`" | `ripgrep` | Targeted literal search |
-| "Find files with `println!`" | `ripgrep` | Simple pattern |
+| "How is the render pipeline implemented?" | `warp_grep` | Exploratory; don't know where to start |
+| "Where is the diff computation?" | `warp_grep` | Need to understand architecture |
+| "Find all uses of `Buffer::new`" | `ripgrep` | Targeted literal search |
+| "Find files with `unwrap()`" | `ripgrep` | Simple pattern |
 | "Replace all `unwrap()` with `expect()`" | `ast-grep` | Structural refactor |
 
 ### warp_grep Usage
 
 ```
 mcp__morph-mcp__warp_grep(
-  repoPath: "/path/to/dcg",
-  query: "How does the safe pattern whitelist work?"
+  repoPath: "/path/to/frankentui",
+  query: "How does the buffer diff algorithm work?"
 )
 ```
 
