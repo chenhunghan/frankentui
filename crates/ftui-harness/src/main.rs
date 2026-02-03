@@ -933,34 +933,30 @@ impl AgentHarness {
             .split(area);
 
         // Create a demo tree representing the harness state
+        // TreeNode is expanded by default, so no need to call with_expanded(true)
         let tree_root = TreeNode::new("Harness State")
-            .expanded(true)
             .child(
                 TreeNode::new("Model")
-                    .expanded(true)
-                    .child(TreeNode::new(&format!("name: {}", self.model_name)))
-                    .child(TreeNode::new(&format!("commands: {}", self.command_count))),
+                    .child(TreeNode::new(format!("name: {}", self.model_name)))
+                    .child(TreeNode::new(format!("commands: {}", self.command_count))),
             )
             .child(
                 TreeNode::new("Task")
-                    .expanded(true)
-                    .child(TreeNode::new(&format!("running: {}", self.task_running)))
-                    .child(TreeNode::new(&format!(
+                    .child(TreeNode::new(format!("running: {}", self.task_running)))
+                    .child(TreeNode::new(format!(
                         "tool: {}",
                         self.current_tool.as_deref().unwrap_or("none")
                     ))),
             )
             .child(
                 TreeNode::new("View")
-                    .expanded(true)
-                    .child(TreeNode::new(&format!("mode: {:?}", self.view_mode)))
+                    .child(TreeNode::new(format!("mode: {:?}", self.view_mode)))
                     .child(TreeNode::new("tree_open: true")),
             )
             .child(
                 TreeNode::new("Input")
-                    .expanded(true)
-                    .child(TreeNode::new(&format!("value: \"{}\"", self.input.value())))
-                    .child(TreeNode::new(&format!("cursor: {}", self.input.cursor()))),
+                    .child(TreeNode::new(format!("value: \"{}\"", self.input.value())))
+                    .child(TreeNode::new(format!("cursor: {}", self.input.cursor()))),
             );
 
         // Render block first, then tree inside it
@@ -986,7 +982,7 @@ impl AgentHarness {
              - View mode\n\
              - Input state\n\n\
              Log lines: {}",
-            self.log_viewer.len()
+            self.log_viewer.line_count()
         );
 
         let info_block = Block::new()
