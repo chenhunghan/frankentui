@@ -178,6 +178,7 @@ impl ScreenId {
             Self::AdvancedTextEditor => "Editor",
             Self::MousePlayground => "Mouse",
             Self::FormValidation => "Validate",
+            Self::VirtualizedSearch => "VirtSearch",
         }
     }
 
@@ -205,6 +206,7 @@ impl ScreenId {
             Self::AdvancedTextEditor => "AdvancedTextEditor",
             Self::MousePlayground => "MousePlayground",
             Self::FormValidation => "FormValidation",
+            Self::VirtualizedSearch => "VirtualizedSearch",
         }
     }
 
@@ -268,9 +270,11 @@ pub struct ScreenStates {
     pub mouse_playground: screens::mouse_playground::MousePlayground,
     /// Form validation demo screen state (bd-34pj.5).
     pub form_validation: screens::form_validation::FormValidationDemo,
+    /// Virtualized list with fuzzy search screen state (bd-2zbk).
+    pub virtualized_search: screens::virtualized_search::VirtualizedSearch,
     /// Tracks whether each screen has errored during rendering.
     /// Indexed by `ScreenId::index()`.
-    screen_errors: [Option<String>; 21],
+    screen_errors: [Option<String>; 22],
 }
 
 impl ScreenStates {
@@ -341,6 +345,9 @@ impl ScreenStates {
             ScreenId::FormValidation => {
                 self.form_validation.update(event);
             }
+            ScreenId::VirtualizedSearch => {
+                self.virtualized_search.update(event);
+            }
         }
     }
 
@@ -368,6 +375,7 @@ impl ScreenStates {
         self.advanced_text_editor.tick(tick_count);
         self.mouse_playground.tick(tick_count);
         self.form_validation.tick(tick_count);
+        self.virtualized_search.tick(tick_count);
     }
 
     fn apply_theme(&mut self) {
@@ -418,6 +426,7 @@ impl ScreenStates {
                 ScreenId::AdvancedTextEditor => self.advanced_text_editor.view(frame, area),
                 ScreenId::MousePlayground => self.mouse_playground.view(frame, area),
                 ScreenId::FormValidation => self.form_validation.view(frame, area),
+                ScreenId::VirtualizedSearch => self.virtualized_search.view(frame, area),
             }
         }));
 
@@ -974,6 +983,7 @@ impl AppModel {
             ScreenId::AdvancedTextEditor => self.screens.advanced_text_editor.keybindings(),
             ScreenId::MousePlayground => self.screens.mouse_playground.keybindings(),
             ScreenId::FormValidation => self.screens.form_validation.keybindings(),
+            ScreenId::VirtualizedSearch => self.screens.virtualized_search.keybindings(),
         };
         // Convert screens::HelpEntry to chrome::HelpEntry (same struct, different module).
         entries
@@ -1330,7 +1340,7 @@ mod tests {
         assert_eq!(app.current_screen, ScreenId::Dashboard);
 
         app.update(AppMsg::PrevScreen);
-        assert_eq!(app.current_screen, ScreenId::FormValidation);
+        assert_eq!(app.current_screen, ScreenId::VirtualizedSearch);
     }
 
     #[test]
@@ -1408,7 +1418,7 @@ mod tests {
     fn screen_next_prev_wraps() {
         assert_eq!(ScreenId::Dashboard.next(), ScreenId::Shakespeare);
         assert_eq!(ScreenId::VisualEffects.next(), ScreenId::ResponsiveDemo);
-        assert_eq!(ScreenId::Dashboard.prev(), ScreenId::FormValidation);
+        assert_eq!(ScreenId::Dashboard.prev(), ScreenId::VirtualizedSearch);
         assert_eq!(ScreenId::Shakespeare.prev(), ScreenId::Dashboard);
     }
 
@@ -1587,7 +1597,7 @@ mod tests {
     /// Verify all screens have the expected count.
     #[test]
     fn all_screens_count() {
-        assert_eq!(ScreenId::ALL.len(), 21);
+        assert_eq!(ScreenId::ALL.len(), 22);
     }
 
     // -----------------------------------------------------------------------

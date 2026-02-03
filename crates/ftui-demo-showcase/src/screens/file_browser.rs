@@ -22,6 +22,7 @@ use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::tree::{Tree, TreeGuides, TreeNode};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::{HelpEntry, Screen};
 use crate::theme;
@@ -99,6 +100,7 @@ pub struct FileBrowser {
     highlighter: SyntaxHighlighter,
     preview_scroll: usize,
     show_hidden: bool,
+    entries: Vec<FileEntry>,
 }
 
 impl Default for FileBrowser {
@@ -110,7 +112,7 @@ impl Default for FileBrowser {
 impl FileBrowser {
     pub fn new() -> Self {
         let entries = simulated_entries();
-        let mut picker = FilePicker::new(entries);
+        let mut picker = FilePicker::new(entries.clone());
         picker.set_path("/home/user/projects/my-app");
         picker.set_style(Self::picker_style());
         picker.set_filter(FilePickerFilter {
@@ -127,12 +129,56 @@ impl FileBrowser {
             highlighter,
             preview_scroll: 0,
             show_hidden: false,
+            entries,
         }
     }
 
     pub fn apply_theme(&mut self) {
         self.picker.set_style(Self::picker_style());
         self.highlighter.set_theme(theme::syntax_theme());
+    }
+
+    fn set_entries(&mut self, entries: Vec<FileEntry>) {
+        self.entries = entries.clone();
+        self.picker.set_entries(entries);
+    }
+
+    fn visible_entries(&self) -> Vec<&FileEntry> {
+        let filter = FilePickerFilter {
+            allowed_extensions: vec![],
+            show_hidden: self.show_hidden,
+        };
+        self.entries.iter().filter(|e| filter.matches(e)).collect()
+    }
+
+    fn current_path(&self) -> &str {
+        self.picker.path()
+    }
+
+    fn enter_selected_directory(&mut self) {
+        let Some(entry) = self.picker.selected_entry() else {
+            return;
+        };
+        if !entry.is_dir() {
+            return;
+        }
+        let base = self.current_path();
+        let new_path = join_path(base, &entry.name);
+        self.picker.set_path(new_path.clone());
+        self.set_entries(simulated_entries_for(&new_path));
+        self.preview_scroll = 0;
+    }
+
+    fn go_up(&mut self) {
+        let path = self.current_path().to_string();
+        let parent = parent_path(&path).to_string();
+        if parent == path {
+            return;
+        }
+        let entries = simulated_entries_for(&parent);
+        self.picker.set_path(parent);
+        self.set_entries(entries);
+        self.preview_scroll = 0;
     }
 
     fn picker_style() -> FilePickerStyle {
@@ -147,14 +193,43 @@ impl FileBrowser {
         }
     }
 
-    fn current_preview(&self) -> (&str, &str) {
+    fn current_preview(&self) -> (String, &str) {
         let entry = self.picker.selected_entry();
+        if let Some(entry) = entry {
+            if entry.is_dir() {
+                let mut listing = String::from("Directory contents:\n");
+                for item in self.visible_entries().iter().take(8) {
+                    let icon = icons::entry_icon(item);
+                    listing.push_str(&format!("  {icon} {}\n", item.name));
+                }
+                return (listing, "plain");
+            }
+
+            let name = entry.name.as_str();
+            let ext = name.rsplit('.').next().unwrap_or("");
+            let meta = match ext {
+                "png" | "jpg" | "jpeg" | "gif" => {
+                    "Image preview (metadata only)\nResolution: 1920x1080\nColor: sRGB"
+                }
+                "mp3" | "wav" => "Audio preview\nDuration: 3:42\nCodec: AAC",
+                "mp4" | "mov" => "Video preview\nDuration: 1:12\nCodec: H.264",
+                _ => "",
+            };
+            if !meta.is_empty() {
+                return (meta.to_string(), "plain");
+            }
+        }
+
         match entry.map(|e| e.name.as_str()) {
-            Some("main.rs") | Some("lib.rs") => (SAMPLE_RUST, "rust"),
-            Some("app.py") | Some("test_app.py") => (SAMPLE_PYTHON, "python"),
-            Some("Cargo.toml") | Some("config.toml") => (SAMPLE_TOML, "toml"),
-            Some("package.json") | Some("data.json") => (SAMPLE_JSON, "json"),
-            _ => ("(no preview available)", "plain"),
+            Some("main.rs") | Some("lib.rs") | Some("mod.rs") => (SAMPLE_RUST.to_string(), "rust"),
+            Some("app.py") | Some("test_app.py") | Some("scripts.py") => {
+                (SAMPLE_PYTHON.to_string(), "python")
+            }
+            Some("Cargo.toml") | Some("config.toml") | Some("settings.toml") => {
+                (SAMPLE_TOML.to_string(), "toml")
+            }
+            Some("package.json") | Some("data.json") => (SAMPLE_JSON.to_string(), "json"),
+            _ => ("(no preview available)".to_string(), "plain"),
         }
     }
 
@@ -218,7 +293,8 @@ impl FileBrowser {
         // FilePicker::render needs &mut self, but view() has &self.
         // We work around by re-rendering manually with Paragraph lines.
         let selected_idx = self.picker.selected_index();
-        let count = self.picker.filtered_count();
+        let entries = self.visible_entries();
+        let count = entries.len();
 
         // We'll render a simple list view since FilePicker::render needs &mut.
         let visible = inner.height as usize;
@@ -228,41 +304,43 @@ impl FileBrowser {
             0
         };
 
-        // Render path header
+        // Render breadcrumbs
         let path_area = Rect::new(inner.x, inner.y, inner.width, 1);
-        Paragraph::new(self.picker.path())
-            .style(Style::new().fg(theme::fg::SECONDARY))
-            .render(path_area, frame);
+        Paragraph::new(fit_to_width(
+            &format_breadcrumbs(self.current_path()),
+            inner.width,
+        ))
+        .style(
+            Style::new()
+                .fg(theme::fg::SECONDARY)
+                .bg(theme::alpha::SURFACE),
+        )
+        .render(path_area, frame);
+
+        // Column header
+        let header_area = Rect::new(inner.x, inner.y.saturating_add(1), inner.width, 1);
+        Paragraph::new(format_entry_header(inner.width))
+            .style(Style::new().fg(theme::fg::MUTED))
+            .render(header_area, frame);
 
         // Render entries
         let list_area = Rect::new(
             inner.x,
-            inner.y.saturating_add(1),
+            inner.y.saturating_add(2),
             inner.width,
-            inner.height.saturating_sub(1),
+            inner.height.saturating_sub(2),
         );
-        let entries = simulated_entries();
-        let filter = FilePickerFilter {
-            allowed_extensions: vec![],
-            show_hidden: self.show_hidden,
-        };
 
         for (row, i) in (scroll..count.min(scroll + list_area.height as usize)).enumerate() {
-            if i >= entries.len() {
+            let Some(entry) = entries.get(i) else {
                 break;
-            }
-            let entry = &entries[i];
-            if !filter.matches(entry) {
-                continue;
-            }
+            };
             let y = list_area.y.saturating_add(row as u16);
             if y >= list_area.bottom() {
                 break;
             }
 
-            let icon = entry.icon();
-            let size_str = entry.size.map(filesize::decimal).unwrap_or_default();
-            let line = format!("{icon}{:<30} {}", entry.name, size_str);
+            let line = format_entry_line(entry, list_area.width);
 
             let style = if i == selected_idx {
                 Style::new()
@@ -270,6 +348,8 @@ impl FileBrowser {
                     .bg(theme::alpha::HIGHLIGHT)
             } else if entry.is_dir() {
                 Style::new().fg(theme::accent::INFO)
+            } else if entry.kind == FileKind::Symlink {
+                Style::new().fg(theme::accent::SECONDARY)
             } else {
                 Style::new().fg(theme::fg::PRIMARY)
             };
@@ -305,34 +385,264 @@ impl FileBrowser {
             return;
         }
 
+        let header_body = Flex::vertical()
+            .constraints([Constraint::Fixed(3), Constraint::Min(1)])
+            .split(inner);
+
+        let meta = preview_metadata(self.current_path(), self.picker.selected_entry());
+        Paragraph::new(meta)
+            .style(Style::new().fg(theme::fg::SECONDARY))
+            .render(header_body[0], frame);
+
         let (content, lang) = self.current_preview();
-        let highlighted = self.highlighter.highlight(content, lang);
+        let highlighted = self.highlighter.highlight(&content, lang);
         Paragraph::new(highlighted)
             .style(Style::new().fg(theme::fg::PRIMARY))
-            .render(inner, frame);
+            .scroll((self.preview_scroll as u16, 0))
+            .render(header_body[1], frame);
     }
 }
 
 fn simulated_entries() -> Vec<FileEntry> {
-    vec![
+    let mut entries = vec![
         FileEntry::new("src", FileKind::Directory),
         FileEntry::new("tests", FileKind::Directory),
+        FileEntry::new("assets", FileKind::Directory),
         FileEntry::new("docs", FileKind::Directory),
         FileEntry::new(".git", FileKind::Directory),
         FileEntry::new("target", FileKind::Directory),
         FileEntry::new("main.rs", FileKind::File).with_size(2048),
         FileEntry::new("lib.rs", FileKind::File).with_size(4096),
+        FileEntry::new("mod.rs", FileKind::File).with_size(512),
         FileEntry::new("app.py", FileKind::File).with_size(1536),
         FileEntry::new("test_app.py", FileKind::File).with_size(892),
+        FileEntry::new("scripts.py", FileKind::File).with_size(1638),
         FileEntry::new("Cargo.toml", FileKind::File).with_size(512),
         FileEntry::new("config.toml", FileKind::File).with_size(256),
+        FileEntry::new("settings.toml", FileKind::File).with_size(256),
         FileEntry::new("package.json", FileKind::File).with_size(384),
         FileEntry::new("data.json", FileKind::File).with_size(10240),
         FileEntry::new("README.md", FileKind::File).with_size(3072),
+        FileEntry::new("logo.png", FileKind::File).with_size(424_128),
+        FileEntry::new("cover.jpg", FileKind::File).with_size(512_000),
+        FileEntry::new("demo.mp4", FileKind::File).with_size(12_582_912),
+        FileEntry::new("song.mp3", FileKind::File).with_size(3_402_112),
         FileEntry::new(".gitignore", FileKind::File).with_size(128),
         FileEntry::new(".env", FileKind::File).with_size(64),
         FileEntry::new("build.sh", FileKind::Symlink).with_size(48),
-    ]
+    ];
+    sort_entries(&mut entries);
+    entries
+}
+
+fn simulated_entries_for(path: &str) -> Vec<FileEntry> {
+    if path.ends_with("/src") {
+        let mut entries = vec![
+            FileEntry::new("main.rs", FileKind::File).with_size(4096),
+            FileEntry::new("lib.rs", FileKind::File).with_size(5120),
+            FileEntry::new("mod.rs", FileKind::File).with_size(1024),
+            FileEntry::new("models", FileKind::Directory),
+        ];
+        sort_entries(&mut entries);
+        return entries;
+    }
+    if path.ends_with("/assets") {
+        let mut entries = vec![
+            FileEntry::new("logo.png", FileKind::File).with_size(424_128),
+            FileEntry::new("cover.jpg", FileKind::File).with_size(512_000),
+            FileEntry::new("song.mp3", FileKind::File).with_size(3_402_112),
+            FileEntry::new("demo.mp4", FileKind::File).with_size(12_582_912),
+        ];
+        sort_entries(&mut entries);
+        return entries;
+    }
+    simulated_entries()
+}
+
+fn sort_entries(entries: &mut [FileEntry]) {
+    entries.sort_by(|a, b| {
+        let kind_rank = |entry: &FileEntry| match entry.kind {
+            FileKind::Directory => 0,
+            FileKind::Symlink => 1,
+            FileKind::File => 2,
+        };
+        let rank_cmp = kind_rank(a).cmp(&kind_rank(b));
+        if rank_cmp != std::cmp::Ordering::Equal {
+            return rank_cmp;
+        }
+        a.name.to_lowercase().cmp(&b.name.to_lowercase())
+    });
+}
+
+fn file_permissions(entry: &FileEntry) -> &'static str {
+    match entry.kind {
+        FileKind::Directory => "drwxr-xr-x",
+        FileKind::Symlink => "lrwxr-xr-x",
+        FileKind::File => {
+            let name = entry.name.as_str();
+            if name.ends_with(".sh") || name.ends_with(".py") {
+                "-rwxr-xr-x"
+            } else {
+                "-rw-r--r--"
+            }
+        }
+    }
+}
+
+fn format_entry_header(width: u16) -> String {
+    fit_to_width("  Name                         Perms      Size", width)
+}
+
+fn format_entry_line(entry: &FileEntry, width: u16) -> String {
+    let icon = icons::entry_icon(entry);
+    let perms = file_permissions(entry);
+    let size_str = entry
+        .size
+        .map(filesize::decimal)
+        .unwrap_or_else(|| "--".into());
+
+    let icon_width = UnicodeWidthStr::width(icon);
+    let perms_width = UnicodeWidthStr::width(perms);
+    let size_width = size_str.len();
+    let reserved = icon_width + 1 + perms_width + 2 + size_width;
+    let name_width = width.saturating_sub(reserved as u16).saturating_sub(1) as usize;
+    let name = pad_to_width(&entry.name, name_width);
+    let line = format!("{icon} {name} {perms}  {size_str}");
+    fit_to_width(&line, width)
+}
+
+fn pad_to_width(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + ch_width > width {
+            break;
+        }
+        out.push(ch);
+        used += ch_width;
+    }
+    if used < width {
+        out.push_str(&" ".repeat(width - used));
+    }
+    out
+}
+
+fn fit_to_width(text: &str, width: u16) -> String {
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + ch_width > width as usize {
+            break;
+        }
+        out.push(ch);
+        used += ch_width;
+    }
+    if used < width as usize {
+        out.push_str(&" ".repeat(width as usize - used));
+    }
+    out
+}
+
+fn format_breadcrumbs(path: &str) -> String {
+    let mut parts = path.split('/').filter(|p| !p.is_empty());
+    let mut out = String::new();
+    if path.starts_with('/') {
+        out.push_str("🏠 /");
+    }
+    if let Some(first) = parts.next() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(icons::directory_icon());
+        out.push(' ');
+        out.push_str(first);
+    }
+    for part in parts {
+        out.push(' ');
+        out.push_str(theme::icons::ARROW_RIGHT);
+        out.push(' ');
+        out.push_str(icons::directory_icon());
+        out.push(' ');
+        out.push_str(part);
+    }
+    out
+}
+
+fn join_path(base: &str, child: &str) -> String {
+    if base.ends_with('/') {
+        format!("{base}{child}")
+    } else {
+        format!("{base}/{child}")
+    }
+}
+
+fn parent_path(path: &str) -> &str {
+    let trimmed = path.trim_end_matches('/');
+    if let Some(idx) = trimmed.rfind('/') {
+        if idx == 0 { "/" } else { &trimmed[..idx] }
+    } else {
+        path
+    }
+}
+
+fn preview_metadata(path: &str, entry: Option<&FileEntry>) -> String {
+    match entry {
+        Some(entry) => {
+            let kind = match entry.kind {
+                FileKind::Directory => "Directory",
+                FileKind::Symlink => "Symlink",
+                FileKind::File => "File",
+            };
+            let size = entry
+                .size
+                .map(filesize::decimal)
+                .unwrap_or_else(|| "--".into());
+            let perms = file_permissions(entry);
+            format!("{kind}  •  Size: {size}  •  Perms: {perms}\nPath: {path}\nPreview:",)
+        }
+        None => format!("No selection\nPath: {path}\nPreview:"),
+    }
+}
+
+mod icons {
+    use super::{FileEntry, FileKind};
+
+    pub fn directory_icon() -> &'static str {
+        "📁"
+    }
+
+    pub fn symlink_icon() -> &'static str {
+        "🔗"
+    }
+
+    pub fn file_icon(name: &str) -> &'static str {
+        let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+        match ext.as_str() {
+            "rs" => "🦀",
+            "py" => "🐍",
+            "js" | "ts" => "📜",
+            "md" => "📝",
+            "json" | "toml" | "yaml" | "yml" | "env" | "gitignore" => "⚙️",
+            "png" | "jpg" | "jpeg" | "gif" | "svg" => "🖼️",
+            "mp3" | "wav" | "flac" => "🎵",
+            "mp4" | "mov" | "mkv" => "🎬",
+            "sh" | "bash" => "⚡",
+            _ => "📄",
+        }
+    }
+
+    pub fn entry_icon(entry: &FileEntry) -> &'static str {
+        match entry.kind {
+            FileKind::Directory => directory_icon(),
+            FileKind::Symlink => symlink_icon(),
+            FileKind::File => file_icon(&entry.name),
+        }
+    }
 }
 
 fn build_project_tree() -> TreeNode {
@@ -422,6 +732,8 @@ impl Screen for FileBrowser {
                                 show_hidden: self.show_hidden,
                             });
                         }
+                        KeyCode::Enter => self.enter_selected_directory(),
+                        KeyCode::Backspace => self.go_up(),
                         _ => {}
                     }
                 }
@@ -479,11 +791,11 @@ impl Screen for FileBrowser {
             .selected_entry()
             .map(|e| {
                 let size = e.size.map(filesize::decimal).unwrap_or_default();
-                format!("{} {}", e.name, size)
+                format!("{} {} {}", icons::entry_icon(e), e.name, size)
             })
             .unwrap_or_else(|| "(no selection)".into());
         let status = format!(
-            "{} | h/l: panels | j/k: navigate | g/G: first/last | .: hidden",
+            "{} | h/l: panels | j/k: navigate | g/G: first/last | Enter: open | Backspace: up | .: hidden",
             entry_info
         );
         Paragraph::new(&*status)
@@ -551,6 +863,27 @@ mod tests {
         assert_eq!(screen.focus, Panel::FilePicker);
         assert_eq!(screen.title(), "File Browser");
         assert_eq!(screen.tab_label(), "Files");
+    }
+
+    #[test]
+    fn file_icons_are_distinct() {
+        assert_ne!(icons::file_icon("test.rs"), icons::file_icon("test.py"));
+        assert_ne!(icons::file_icon("test.md"), icons::file_icon("test.json"));
+    }
+
+    #[test]
+    fn directory_icon_different_from_file() {
+        let dir_icon = icons::directory_icon();
+        let file_icon = icons::file_icon("test.txt");
+        assert_ne!(dir_icon, file_icon);
+    }
+
+    #[test]
+    fn file_browser_navigates() {
+        let mut screen = FileBrowser::new();
+        let initial_path = screen.current_path().to_string();
+        screen.enter_selected_directory();
+        assert_ne!(screen.current_path(), initial_path);
     }
 
     #[test]

@@ -84,7 +84,11 @@ fn fuzzy_match(query: &str, target: &str) -> Option<FuzzyMatch> {
             }
 
             // Word boundary bonus (start of word)
-            if i == 0 || target_lower.get(i.saturating_sub(1)).map_or(true, |c| !c.is_alphanumeric()) {
+            if i == 0
+                || target_lower
+                    .get(i.saturating_sub(1))
+                    .is_none_or(|c| !c.is_alphanumeric())
+            {
                 score += 5;
             }
 
@@ -180,7 +184,11 @@ impl VirtualizedSearch {
                 };
                 format!(
                     "[{:05}] {} :: {} {} — payload_{}",
-                    i, category, component, action, i % 1000
+                    i,
+                    category,
+                    component,
+                    action,
+                    i % 1000
                 )
             })
             .collect();
@@ -230,9 +238,8 @@ impl VirtualizedSearch {
             }
 
             // Sort by score (descending), then by index for stable tie-breaking
-            self.filtered.sort_by(|a, b| {
-                b.score.cmp(&a.score).then_with(|| a.index.cmp(&b.index))
-            });
+            self.filtered
+                .sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.index.cmp(&b.index)));
         }
 
         // Reset selection and scroll
@@ -302,7 +309,11 @@ impl VirtualizedSearch {
 
         let block = Block::new()
             .borders(Borders::ALL)
-            .border_type(if is_focused { BorderType::Double } else { BorderType::Rounded })
+            .border_type(if is_focused {
+                BorderType::Double
+            } else {
+                BorderType::Rounded
+            })
             .title("Search (/ to focus, Esc to clear)")
             .title_alignment(Alignment::Left)
             .style(border_style);
@@ -389,7 +400,14 @@ impl VirtualizedSearch {
             let row_area = Rect::new(inner.x, y, inner.width, 1);
 
             // Render with match highlighting
-            self.render_highlighted_row(frame, row_area, item_text, &m.positions, is_selected, m.score);
+            self.render_highlighted_row(
+                frame,
+                row_area,
+                item_text,
+                &m.positions,
+                is_selected,
+                m.score,
+            );
         }
     }
 
@@ -410,60 +428,29 @@ impl VirtualizedSearch {
             Style::new().fg(theme::fg::SECONDARY)
         };
 
-        // If no matches to highlight, just render plain
-        if positions.is_empty() {
-            Paragraph::new(text)
-                .style(base_style)
-                .render(area, frame);
-            return;
-        }
+        // Format display text with score if we have matches
+        let display_text = if !positions.is_empty() && score != 0 {
+            format!("{} [{}]", text, score)
+        } else {
+            text.to_string()
+        };
 
-        // Render character by character with highlighting
-        let chars: Vec<char> = text.chars().collect();
-        let max_x = area.x + area.width;
-
-        for (i, ch) in chars.iter().enumerate() {
-            let x = area.x + i as u16;
-            if x >= max_x {
-                break;
-            }
-
-            let style = if positions.contains(&i) {
-                // Highlighted match character
-                if is_selected {
-                    Style::new()
-                        .fg(MATCH_HIGHLIGHT)
-                        .bg(theme::alpha::HIGHLIGHT)
-                        .bold()
-                } else {
-                    Style::new().fg(MATCH_HIGHLIGHT).bold()
-                }
+        // For now, use simple rendering without character-level highlighting
+        // TODO(bd-2zbk): Add character-level match highlighting
+        let style = if !positions.is_empty() {
+            // When there are matches, use a highlight indicator
+            if is_selected {
+                Style::new().fg(MATCH_HIGHLIGHT).bg(theme::alpha::HIGHLIGHT)
             } else {
-                base_style
-            };
-
-            frame.buffer.set_char(x, area.y, *ch, style);
-        }
-
-        // Show score at end if there's room and we have matches
-        if !positions.is_empty() && score != 0 {
-            let score_text = format!(" [{}]", score);
-            let score_start = area.x + chars.len() as u16;
-            if score_start + score_text.len() as u16 <= max_x {
-                for (i, ch) in score_text.chars().enumerate() {
-                    let x = score_start + i as u16;
-                    if x >= max_x {
-                        break;
-                    }
-                    frame.buffer.set_char(
-                        x,
-                        area.y,
-                        ch,
-                        Style::new().fg(theme::fg::MUTED),
-                    );
-                }
+                Style::new().fg(theme::fg::PRIMARY)
             }
-        }
+        } else {
+            base_style
+        };
+
+        Paragraph::new(display_text.as_str())
+            .style(style)
+            .render(area, frame);
     }
 
     fn render_stats_panel(&self, frame: &mut Frame, area: Rect) {
@@ -486,7 +473,14 @@ impl VirtualizedSearch {
         let stats = [
             format!("Total:    {} items", self.items.len()),
             format!("Matches:  {}", self.filtered.len()),
-            format!("Selected: {}", if self.filtered.is_empty() { 0 } else { self.selected + 1 }),
+            format!(
+                "Selected: {}",
+                if self.filtered.is_empty() {
+                    0
+                } else {
+                    self.selected + 1
+                }
+            ),
             format!("Query:    \"{}\"", self.query),
             format!("Top score: {}", top_score),
             String::new(),
@@ -521,84 +515,78 @@ impl Screen for VirtualizedSearch {
     type Message = ();
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
-        match event {
-            Event::Key(KeyEvent {
-                code,
-                modifiers,
-                kind: KeyEventKind::Press | KeyEventKind::Repeat,
-                ..
-            }) => {
-                let shift = modifiers.contains(Modifiers::SHIFT);
+        if let Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press | KeyEventKind::Repeat,
+            ..
+        }) = event
+        {
+            let shift = modifiers.contains(Modifiers::SHIFT);
 
-                match self.focus {
-                    Focus::Search => {
-                        match code {
-                            KeyCode::Esc => {
-                                // Clear search and return to list
-                                self.query.clear();
-                                self.search_input = TextInput::new()
-                                    .with_placeholder("Type to search...")
-                                    .with_style(Style::new().fg(theme::fg::PRIMARY))
-                                    .with_focused(false);
-                                self.focus = Focus::List;
-                                self.update_filter();
-                            }
-                            KeyCode::Enter => {
-                                // Return to list with current filter
-                                self.focus = Focus::List;
-                            }
-                            KeyCode::Backspace => {
-                                self.query.pop();
-                                self.update_filter();
-                            }
-                            KeyCode::Char(c) => {
-                                self.query.push(*c);
-                                self.update_filter();
-                            }
-                            _ => {}
+            match self.focus {
+                Focus::Search => match code {
+                    KeyCode::Escape => {
+                        // Clear search and return to list
+                        self.query.clear();
+                        self.search_input = TextInput::new()
+                            .with_placeholder("Type to search...")
+                            .with_style(Style::new().fg(theme::fg::PRIMARY))
+                            .with_focused(false);
+                        self.focus = Focus::List;
+                        self.update_filter();
+                    }
+                    KeyCode::Enter => {
+                        // Return to list with current filter
+                        self.focus = Focus::List;
+                    }
+                    KeyCode::Backspace => {
+                        self.query.pop();
+                        self.update_filter();
+                    }
+                    KeyCode::Char(c) => {
+                        self.query.push(*c);
+                        self.update_filter();
+                    }
+                    _ => {}
+                },
+                Focus::List => match code {
+                    KeyCode::Char('/') => {
+                        self.focus = Focus::Search;
+                    }
+                    KeyCode::Escape => {
+                        if !self.query.is_empty() {
+                            self.query.clear();
+                            self.update_filter();
                         }
                     }
-                    Focus::List => {
-                        match code {
-                            KeyCode::Char('/') => {
-                                self.focus = Focus::Search;
-                            }
-                            KeyCode::Esc => {
-                                if !self.query.is_empty() {
-                                    self.query.clear();
-                                    self.update_filter();
-                                }
-                            }
-                            KeyCode::Char('j') | KeyCode::Down => {
-                                self.select_next();
-                            }
-                            KeyCode::Char('k') | KeyCode::Up => {
-                                self.select_previous();
-                            }
-                            KeyCode::Char('g') if !shift => {
-                                self.select_first();
-                            }
-                            KeyCode::Char('G') | KeyCode::Char('g') if shift => {
-                                self.select_last();
-                            }
-                            KeyCode::Home => {
-                                self.select_first();
-                            }
-                            KeyCode::End => {
-                                self.select_last();
-                            }
-                            KeyCode::PageUp => {
-                                self.page_up();
-                            }
-                            KeyCode::PageDown => {
-                                self.page_down();
-                            }
-                            _ => {}
-                        }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        self.select_next();
                     }
-                }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        self.select_previous();
+                    }
+                    KeyCode::Char('g') if !shift => {
+                        self.select_first();
+                    }
+                    KeyCode::Char('G') | KeyCode::Char('g') if shift => {
+                        self.select_last();
+                    }
+                    KeyCode::Home => {
+                        self.select_first();
+                    }
+                    KeyCode::End => {
+                        self.select_last();
+                    }
+                    KeyCode::PageUp => {
+                        self.page_up();
+                    }
+                    KeyCode::PageDown => {
+                        self.page_down();
+                    }
+                    _ => {}
+                },
             }
-            _ => {}
         }
         Cmd::none()
     }
@@ -609,20 +597,24 @@ impl Screen for VirtualizedSearch {
         }
 
         // Layout: search bar (3 rows) + main content
-        let [search_area, content_area] = Flex::column()
+        let v_chunks = Flex::vertical()
             .constraints([Constraint::Fixed(3), Constraint::Fill])
             .split(area);
+        let search_area = v_chunks[0];
+        let content_area = v_chunks[1];
 
         self.render_search_bar(frame, search_area);
 
         // Main content: list (70%) + stats (30%)
-        let [list_area, stats_area] = Flex::row()
+        let h_chunks = Flex::horizontal()
             .constraints([Constraint::Percentage(70.0), Constraint::Percentage(30.0)])
             .split(content_area);
+        let list_area = h_chunks[0];
+        let stats_area = h_chunks[1];
 
         // Update viewport height for navigation (mutable through interior mutability would be ideal)
         // For now we just use the value from the area
-        let vp = list_area.height.saturating_sub(2) as usize; // -2 for borders
+        let _vp = list_area.height.saturating_sub(2) as usize; // -2 for borders
 
         // Note: We can't mutate self.viewport_height here since view takes &self
         // The navigation uses the last known value, which is fine for this demo
