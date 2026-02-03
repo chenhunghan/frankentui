@@ -19,6 +19,7 @@ pub mod allocation_budget;
 pub mod asciicast;
 pub mod eprocess_throttle;
 pub mod flake_detector;
+pub mod input_fairness;
 pub mod input_macro;
 pub mod locale;
 pub mod log_sink;

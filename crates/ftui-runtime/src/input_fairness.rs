@@ -20,6 +20,9 @@ pub enum EventType {
     Tick,
 }
 
+/// Type alias for compatibility with program.rs
+pub type FairnessEventType = EventType;
+
 /// Configuration for input fairness.
 #[derive(Debug, Clone)]
 pub struct FairnessConfig {

@@ -639,8 +639,6 @@ pub struct Program<M: Model, W: Write + Send = Stdout> {
     resize_behavior: ResizeBehavior,
     /// Whether the resize placeholder should be shown.
     resizing: bool,
-    /// Input fairness guard for scheduler integration.
-    fairness_guard: InputFairnessGuard,
     /// Optional event recorder for macro capture.
     event_recorder: Option<EventRecorder>,
     /// Subscription lifecycle manager.
@@ -711,7 +709,7 @@ impl<M: Model> Program<M, Stdout> {
             resize_debouncer,
             resize_behavior: config.resize_behavior,
             resizing: false,
-            fairness_guard: InputFairnessGuard::new(),
+            fairness_guard: InputFairnessGuard::default(),
             event_recorder: None,
             subscriptions,
             task_sender,
