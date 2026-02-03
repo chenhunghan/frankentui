@@ -202,8 +202,8 @@ pub fn render_help_overlay(
     // Build help text
     let mut text = String::from("Global:\n");
     text.push_str("  1-9, 0     Switch to screen by number\n");
-    text.push_str("  Tab        Next screen\n");
-    text.push_str("  Shift-Tab  Previous screen\n");
+    text.push_str("  Tab / L    Next screen\n");
+    text.push_str("  S-Tab / H  Previous screen\n");
     text.push_str("  ?          Toggle this help\n");
     text.push_str("  Ctrl+T     Cycle theme\n");
     text.push_str("  F12        Toggle debug overlay\n");

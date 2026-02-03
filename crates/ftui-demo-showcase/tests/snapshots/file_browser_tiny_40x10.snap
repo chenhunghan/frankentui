@@ -7,4 +7,4 @@
 ││       ├── user.rs    ││/target      │
 ││       └── post.rs    ││ main.rs     │
 ╰───────────────────────╯╰─────────────╯
-src  | Ctrl+←/→: panels | ↑/↓: navigate 
+src  | h/l: panels | j/k: navigate | g/G

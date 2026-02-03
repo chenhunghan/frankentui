@@ -1,6 +1,25 @@
 #![forbid(unsafe_code)]
 
 //! Shared theme styles for the demo showcase, backed by ftui-extras themes.
+//!
+//! # Spacing System
+//!
+//! This module provides a consistent spacing system with named tokens for visual rhythm:
+//!
+//! | Token | Value | Use Case |
+//! |-------|-------|----------|
+//! | `XS` | 1 | Tight spacing (inline elements, dense UI) |
+//! | `SM` | 2 | Compact (dense lists, item gaps) |
+//! | `MD` | 3 | Normal (default padding, panel content) |
+//! | `LG` | 4 | Generous (panel separation, section gaps) |
+//! | `XL` | 6 | Spacious (major sections, modal margins) |
+//!
+//! Semantic aliases map to these tokens:
+//! - `INLINE` (XS): Between inline elements
+//! - `ITEM_GAP` (SM): Between list/grid items
+//! - `PANEL_PADDING` (MD): Content padding inside panels
+//! - `SECTION_GAP` (LG): Between major sections
+//! - `MAJOR_GAP` (XL): Top-level layout separation
 
 use ftui_extras::theme as core_theme;
 use ftui_style::{Style, StyleFlags};
@@ -12,6 +31,80 @@ pub use core_theme::{
     priority, semantic_styles, status, syntax, syntax_theme, theme_count, with_alpha, with_opacity,
 };
 pub use core_theme::{palette, set_theme};
+
+// ---------------------------------------------------------------------------
+// Spacing tokens
+// ---------------------------------------------------------------------------
+
+/// Spacing tokens for consistent visual rhythm.
+///
+/// All values are in terminal cells (characters). These tokens create a
+/// harmonious scale that feels intentional and professional.
+///
+/// # Design Rationale
+///
+/// The scale follows a non-linear progression that matches human perception:
+/// - Small values (1-2) for tight, related elements
+/// - Medium values (3-4) for standard separation
+/// - Large values (6) for major visual breaks
+///
+/// This 1-2-3-4-6 scale is common in design systems (similar to 4px/8px/12px/16px/24px
+/// in web design, but adapted for terminal cell-based layouts).
+pub mod spacing {
+    /// Extra-small spacing (1 cell). Use for tight, inline elements.
+    pub const XS: u16 = 1;
+    /// Small spacing (2 cells). Use for compact lists and item gaps.
+    pub const SM: u16 = 2;
+    /// Medium spacing (3 cells). Default for padding and content gaps.
+    pub const MD: u16 = 3;
+    /// Large spacing (4 cells). Use for section separation.
+    pub const LG: u16 = 4;
+    /// Extra-large spacing (6 cells). Use for major layout gaps.
+    pub const XL: u16 = 6;
+
+    // Semantic spacing aliases - use these when the context is clear
+
+    /// Spacing between inline elements (maps to XS).
+    pub const INLINE: u16 = XS;
+    /// Gap between list/grid items (maps to SM).
+    pub const ITEM_GAP: u16 = SM;
+    /// Padding inside panels and containers (maps to MD).
+    pub const PANEL_PADDING: u16 = MD;
+    /// Gap between major sections (maps to LG).
+    pub const SECTION_GAP: u16 = LG;
+    /// Top-level layout separation (maps to XL).
+    pub const MAJOR_GAP: u16 = XL;
+
+    // Additional semantic spacing for specific use cases
+
+    /// Horizontal margin for content areas.
+    pub const CONTENT_MARGIN_H: u16 = SM;
+    /// Vertical margin for content areas.
+    pub const CONTENT_MARGIN_V: u16 = XS;
+    /// Gap between form fields.
+    pub const FORM_GAP: u16 = SM;
+    /// Gap between buttons in a button group.
+    pub const BUTTON_GAP: u16 = SM;
+    /// Padding inside a modal/dialog.
+    pub const MODAL_PADDING: u16 = LG;
+    /// Gap between tab bar and content.
+    pub const TAB_CONTENT_GAP: u16 = XS;
+    /// Gap between status bar and content.
+    pub const STATUS_BAR_GAP: u16 = XS;
+}
+
+/// Border radius tokens (for rounded corners in box-drawing contexts).
+///
+/// Note: Terminal UIs don't have true border radius, but these values
+/// can inform decisions about border character sets (e.g., rounded vs sharp).
+pub mod radius {
+    /// Small radius - subtle rounding.
+    pub const SM: u16 = 4;
+    /// Medium radius - noticeable rounding.
+    pub const MD: u16 = 8;
+    /// Large radius - prominent rounding.
+    pub const LG: u16 = 12;
+}
 
 /// Per-screen accent colors for visual distinction.
 pub mod screen_accent {
@@ -29,6 +122,383 @@ pub mod screen_accent {
     pub const PERFORMANCE: ColorToken = accent::ACCENT_10;
     pub const MARKDOWN: ColorToken = accent::ACCENT_11;
     pub const VISUAL_EFFECTS: ColorToken = accent::ACCENT_12;
+}
+
+// ---------------------------------------------------------------------------
+// Icon vocabulary
+// ---------------------------------------------------------------------------
+
+/// Semantic icons for visual indicators.
+///
+/// This module provides consistent iconography throughout the UI, with both
+/// emoji (Unicode) and ASCII fallback variants. Icons convey meaning instantly
+/// without requiring text labels.
+///
+/// # Design Principles
+///
+/// 1. **Semantic meaning**: Each icon represents a specific concept
+/// 2. **Visual distinctiveness**: Icons in the same category are visually distinct
+/// 3. **Graceful degradation**: ASCII fallbacks for limited terminals
+/// 4. **Consistent width**: Most icons are 1-2 cells wide
+///
+/// # Terminal Compatibility
+///
+/// - Modern terminals (iTerm2, Kitty, WezTerm, Ghostty): Full emoji support
+/// - Older terminals: Use ASCII fallback via `icons::ascii` module
+/// - Detection: Check `TERM`, `COLORTERM`, or use heuristics
+///
+/// # Usage
+///
+/// ```rust
+/// use crate::theme::icons;
+///
+/// // Direct emoji use (for modern terminals)
+/// let status = icons::STATUS_OPEN; // "🟢"
+///
+/// // ASCII fallback (for compatibility)
+/// let status_ascii = icons::ascii::STATUS_OPEN; // "[O]"
+///
+/// // Combine with color for maximum clarity
+/// let styled = format!("{} Open", icons::STATUS_OPEN);
+/// ```
+pub mod icons {
+    // -------------------------------------------------------------------------
+    // Status indicators
+    // -------------------------------------------------------------------------
+
+    /// Open/active status (green circle).
+    pub const STATUS_OPEN: &str = "🟢";
+    /// In-progress status (blue circle).
+    pub const STATUS_PROGRESS: &str = "🔵";
+    /// Blocked status (red circle).
+    pub const STATUS_BLOCKED: &str = "🔴";
+    /// Closed/completed status (black circle).
+    pub const STATUS_CLOSED: &str = "⚫";
+
+    // -------------------------------------------------------------------------
+    // Priority levels
+    // -------------------------------------------------------------------------
+
+    /// Critical priority (P0) - requires immediate attention.
+    pub const PRIORITY_CRITICAL: &str = "🔥";
+    /// High priority (P1) - important work.
+    pub const PRIORITY_HIGH: &str = "⚡";
+    /// Medium priority (P2) - standard work.
+    pub const PRIORITY_MEDIUM: &str = "🔹";
+    /// Low priority (P3) - can wait.
+    pub const PRIORITY_LOW: &str = "☕";
+    /// Minimal priority (P4) - backlog.
+    pub const PRIORITY_MINIMAL: &str = "💤";
+
+    // -------------------------------------------------------------------------
+    // Issue/item types
+    // -------------------------------------------------------------------------
+
+    /// Bug/defect.
+    pub const TYPE_BUG: &str = "🐛";
+    /// New feature.
+    pub const TYPE_FEATURE: &str = "✨";
+    /// Task/work item.
+    pub const TYPE_TASK: &str = "📋";
+    /// Epic/large initiative.
+    pub const TYPE_EPIC: &str = "🚀";
+    /// Chore/maintenance.
+    pub const TYPE_CHORE: &str = "🧹";
+    /// Documentation.
+    pub const TYPE_DOCS: &str = "📖";
+    /// Question/discussion.
+    pub const TYPE_QUESTION: &str = "❓";
+
+    // -------------------------------------------------------------------------
+    // Intent/feedback indicators
+    // -------------------------------------------------------------------------
+
+    /// Error/failure.
+    pub const INTENT_ERROR: &str = "❌";
+    /// Warning/caution.
+    pub const INTENT_WARNING: &str = "⚠️";
+    /// Information.
+    pub const INTENT_INFO: &str = "ℹ️";
+    /// Success/done.
+    pub const INTENT_SUCCESS: &str = "✅";
+
+    // -------------------------------------------------------------------------
+    // Action indicators
+    // -------------------------------------------------------------------------
+
+    /// Blocked/stopped.
+    pub const ACTION_BLOCKED: &str = "⛔";
+    /// Linked/connected.
+    pub const ACTION_LINKED: &str = "🔗";
+    /// Dependency.
+    pub const ACTION_DEPENDS: &str = "📦";
+    /// Search/find.
+    pub const ACTION_SEARCH: &str = "🔍";
+    /// Edit/modify.
+    pub const ACTION_EDIT: &str = "✏️";
+    /// Delete/remove.
+    pub const ACTION_DELETE: &str = "🗑️";
+    /// Add/create.
+    pub const ACTION_ADD: &str = "➕";
+    /// Refresh/reload.
+    pub const ACTION_REFRESH: &str = "🔄";
+
+    // -------------------------------------------------------------------------
+    // UI elements
+    // -------------------------------------------------------------------------
+
+    /// Right arrow.
+    pub const ARROW_RIGHT: &str = "→";
+    /// Left arrow.
+    pub const ARROW_LEFT: &str = "←";
+    /// Up arrow.
+    pub const ARROW_UP: &str = "↑";
+    /// Down arrow.
+    pub const ARROW_DOWN: &str = "↓";
+    /// Bullet point.
+    pub const BULLET: &str = "•";
+    /// Checkbox checked.
+    pub const CHECKBOX_ON: &str = "☑";
+    /// Checkbox unchecked.
+    pub const CHECKBOX_OFF: &str = "☐";
+    /// Radio selected.
+    pub const RADIO_ON: &str = "◉";
+    /// Radio unselected.
+    pub const RADIO_OFF: &str = "○";
+    /// Expand/collapsed indicator.
+    pub const EXPAND: &str = "▸";
+    /// Collapse/expanded indicator.
+    pub const COLLAPSE: &str = "▾";
+    /// Folder closed.
+    pub const FOLDER_CLOSED: &str = "📁";
+    /// Folder open.
+    pub const FOLDER_OPEN: &str = "📂";
+    /// File.
+    pub const FILE: &str = "📄";
+    /// Anchor/pin.
+    pub const ANCHOR: &str = "📍";
+    /// History/time.
+    pub const HISTORY: &str = "🕐";
+    /// Star/favorite.
+    pub const STAR: &str = "⭐";
+    /// Settings/gear.
+    pub const SETTINGS: &str = "⚙️";
+
+    // -------------------------------------------------------------------------
+    // Decorative/separators
+    // -------------------------------------------------------------------------
+
+    /// Vertical separator.
+    pub const SEPARATOR_V: &str = "│";
+    /// Horizontal separator.
+    pub const SEPARATOR_H: &str = "─";
+    /// Ellipsis (truncation indicator).
+    pub const ELLIPSIS: &str = "…";
+
+    /// ASCII fallback icons for terminals without emoji support.
+    ///
+    /// These provide equivalent semantic meaning using standard ASCII/box-drawing
+    /// characters that render correctly in any terminal.
+    pub mod ascii {
+        // Status
+        pub const STATUS_OPEN: &str = "[O]";
+        pub const STATUS_PROGRESS: &str = "[~]";
+        pub const STATUS_BLOCKED: &str = "[!]";
+        pub const STATUS_CLOSED: &str = "[x]";
+
+        // Priority
+        pub const PRIORITY_CRITICAL: &str = "[!!!]";
+        pub const PRIORITY_HIGH: &str = "[!!]";
+        pub const PRIORITY_MEDIUM: &str = "[!]";
+        pub const PRIORITY_LOW: &str = "[-]";
+        pub const PRIORITY_MINIMAL: &str = "[.]";
+
+        // Types
+        pub const TYPE_BUG: &str = "[bug]";
+        pub const TYPE_FEATURE: &str = "[+]";
+        pub const TYPE_TASK: &str = "[T]";
+        pub const TYPE_EPIC: &str = "[E]";
+        pub const TYPE_CHORE: &str = "[c]";
+        pub const TYPE_DOCS: &str = "[D]";
+        pub const TYPE_QUESTION: &str = "[?]";
+
+        // Intent
+        pub const INTENT_ERROR: &str = "[X]";
+        pub const INTENT_WARNING: &str = "[W]";
+        pub const INTENT_INFO: &str = "[i]";
+        pub const INTENT_SUCCESS: &str = "[v]";
+
+        // Actions
+        pub const ACTION_BLOCKED: &str = "[X]";
+        pub const ACTION_LINKED: &str = "<->";
+        pub const ACTION_DEPENDS: &str = "[d]";
+        pub const ACTION_SEARCH: &str = "[?]";
+        pub const ACTION_EDIT: &str = "[e]";
+        pub const ACTION_DELETE: &str = "[-]";
+        pub const ACTION_ADD: &str = "[+]";
+        pub const ACTION_REFRESH: &str = "[r]";
+
+        // UI elements
+        pub const ARROW_RIGHT: &str = "->";
+        pub const ARROW_LEFT: &str = "<-";
+        pub const ARROW_UP: &str = "^";
+        pub const ARROW_DOWN: &str = "v";
+        pub const BULLET: &str = "*";
+        pub const CHECKBOX_ON: &str = "[x]";
+        pub const CHECKBOX_OFF: &str = "[ ]";
+        pub const RADIO_ON: &str = "(*)";
+        pub const RADIO_OFF: &str = "( )";
+        pub const EXPAND: &str = ">";
+        pub const COLLAPSE: &str = "v";
+        pub const FOLDER_CLOSED: &str = "[+]";
+        pub const FOLDER_OPEN: &str = "[-]";
+        pub const FILE: &str = " - ";
+        pub const ANCHOR: &str = "@";
+        pub const HISTORY: &str = "[t]";
+        pub const STAR: &str = "*";
+        pub const SETTINGS: &str = "[S]";
+
+        // Decorative
+        pub const SEPARATOR_V: &str = "|";
+        pub const SEPARATOR_H: &str = "-";
+        pub const ELLIPSIS: &str = "...";
+    }
+}
+
+/// Helper to select emoji or ASCII icons based on terminal capability.
+///
+/// Returns `true` if the terminal likely supports emoji/Unicode icons.
+/// This is a heuristic based on common terminal environment variables.
+///
+/// # Detection Strategy
+///
+/// 1. Check `COLORTERM` for modern terminals (truecolor implies Unicode)
+/// 2. Check `TERM` for known Unicode-capable terminals
+/// 3. Check for known terminal-specific variables (KITTY, WEZTERM, etc.)
+/// 4. Default to `true` for most cases (graceful degradation)
+///
+/// # Usage
+///
+/// ```rust
+/// use crate::theme::{icons, supports_emoji_icons};
+///
+/// let status_icon = if supports_emoji_icons() {
+///     icons::STATUS_OPEN
+/// } else {
+///     icons::ascii::STATUS_OPEN
+/// };
+/// ```
+pub fn supports_emoji_icons() -> bool {
+    // Check for modern terminal indicators
+    if std::env::var("COLORTERM")
+        .map(|v| v.contains("truecolor") || v.contains("24bit"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    // Check for known modern terminals
+    if std::env::var("KITTY_WINDOW_ID").is_ok()
+        || std::env::var("WEZTERM_PANE").is_ok()
+        || std::env::var("GHOSTTY_RESOURCES_DIR").is_ok()
+    {
+        return true;
+    }
+
+    // Check TERM for known emoji-capable terminals
+    if let Ok(term) = std::env::var("TERM") {
+        let term_lower = term.to_lowercase();
+        if term_lower.contains("kitty")
+            || term_lower.contains("wezterm")
+            || term_lower.contains("alacritty")
+            || term_lower.contains("iterm")
+            || term_lower.contains("256color")
+            || term_lower.contains("xterm")
+        {
+            return true;
+        }
+    }
+
+    // Default to true - most modern terminals support emoji
+    // Users on limited terminals can set an override env var
+    !std::env::var("FTUI_NO_EMOJI")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false)
+}
+
+/// Get a status icon with appropriate fallback.
+pub fn status_icon(
+    is_emoji: bool,
+    is_open: bool,
+    is_progress: bool,
+    is_blocked: bool,
+) -> &'static str {
+    if is_blocked {
+        if is_emoji {
+            icons::STATUS_BLOCKED
+        } else {
+            icons::ascii::STATUS_BLOCKED
+        }
+    } else if is_progress {
+        if is_emoji {
+            icons::STATUS_PROGRESS
+        } else {
+            icons::ascii::STATUS_PROGRESS
+        }
+    } else if is_open {
+        if is_emoji {
+            icons::STATUS_OPEN
+        } else {
+            icons::ascii::STATUS_OPEN
+        }
+    } else {
+        if is_emoji {
+            icons::STATUS_CLOSED
+        } else {
+            icons::ascii::STATUS_CLOSED
+        }
+    }
+}
+
+/// Get a priority icon with appropriate fallback.
+pub fn priority_icon(is_emoji: bool, priority: u8) -> &'static str {
+    match priority {
+        0 => {
+            if is_emoji {
+                icons::PRIORITY_CRITICAL
+            } else {
+                icons::ascii::PRIORITY_CRITICAL
+            }
+        }
+        1 => {
+            if is_emoji {
+                icons::PRIORITY_HIGH
+            } else {
+                icons::ascii::PRIORITY_HIGH
+            }
+        }
+        2 => {
+            if is_emoji {
+                icons::PRIORITY_MEDIUM
+            } else {
+                icons::ascii::PRIORITY_MEDIUM
+            }
+        }
+        3 => {
+            if is_emoji {
+                icons::PRIORITY_LOW
+            } else {
+                icons::ascii::PRIORITY_LOW
+            }
+        }
+        _ => {
+            if is_emoji {
+                icons::PRIORITY_MINIMAL
+            } else {
+                icons::ascii::PRIORITY_MINIMAL
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -152,4 +622,291 @@ pub fn content_border() -> Style {
 /// Help overlay background.
 pub fn help_overlay() -> Style {
     Style::new().bg(alpha::OVERLAY).fg(fg::PRIMARY)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spacing_tokens_are_strictly_ordered() {
+        const _: () = {
+            // Tokens must form a strictly increasing sequence
+            assert!(spacing::XS < spacing::SM, "XS must be less than SM");
+            assert!(spacing::SM < spacing::MD, "SM must be less than MD");
+            assert!(spacing::MD < spacing::LG, "MD must be less than LG");
+            assert!(spacing::LG < spacing::XL, "LG must be less than XL");
+        };
+    }
+
+    #[test]
+    fn semantic_spacing_maps_to_correct_tokens() {
+        // Verify semantic aliases point to expected base tokens
+        assert_eq!(spacing::INLINE, spacing::XS);
+        assert_eq!(spacing::ITEM_GAP, spacing::SM);
+        assert_eq!(spacing::PANEL_PADDING, spacing::MD);
+        assert_eq!(spacing::SECTION_GAP, spacing::LG);
+        assert_eq!(spacing::MAJOR_GAP, spacing::XL);
+    }
+
+    #[test]
+    fn spacing_values_are_reasonable_for_tui() {
+        const _: () = {
+            // All spacing values should be <= 10 cells for terminal contexts
+            assert!(spacing::XS <= 10, "XS too large for TUI");
+            assert!(spacing::SM <= 10, "SM too large for TUI");
+            assert!(spacing::MD <= 10, "MD too large for TUI");
+            assert!(spacing::LG <= 10, "LG too large for TUI");
+            assert!(spacing::XL <= 10, "XL too large for TUI");
+        };
+    }
+
+    #[test]
+    fn spacing_values_are_positive() {
+        const _: () = {
+            // No zero or negative spacing
+            assert!(spacing::XS > 0, "XS must be positive");
+            assert!(spacing::SM > 0, "SM must be positive");
+            assert!(spacing::MD > 0, "MD must be positive");
+            assert!(spacing::LG > 0, "LG must be positive");
+            assert!(spacing::XL > 0, "XL must be positive");
+        };
+    }
+
+    #[test]
+    fn spacing_scale_has_expected_values() {
+        // Lock in the specific scale values (1-2-3-4-6)
+        assert_eq!(spacing::XS, 1);
+        assert_eq!(spacing::SM, 2);
+        assert_eq!(spacing::MD, 3);
+        assert_eq!(spacing::LG, 4);
+        assert_eq!(spacing::XL, 6);
+    }
+
+    #[test]
+    fn additional_semantic_spacing_uses_appropriate_tokens() {
+        const _: () = {
+            // Form-related spacing should use small/medium values
+            assert!(spacing::FORM_GAP <= spacing::MD);
+            assert!(spacing::BUTTON_GAP <= spacing::MD);
+
+            // Content margins should be compact
+            assert!(spacing::CONTENT_MARGIN_H <= spacing::MD);
+            assert!(spacing::CONTENT_MARGIN_V <= spacing::SM);
+
+            // Modal padding should be generous
+            assert!(spacing::MODAL_PADDING >= spacing::LG);
+
+            // Chrome gaps should be minimal
+            assert!(spacing::TAB_CONTENT_GAP <= spacing::SM);
+            assert!(spacing::STATUS_BAR_GAP <= spacing::SM);
+        };
+    }
+
+    #[test]
+    fn radius_tokens_are_ordered() {
+        const _: () = {
+            assert!(radius::SM < radius::MD, "SM radius must be less than MD");
+            assert!(radius::MD < radius::LG, "MD radius must be less than LG");
+        };
+    }
+
+    // -------------------------------------------------------------------------
+    // Icon tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn status_icons_are_distinct() {
+        let icons_list = [
+            icons::STATUS_OPEN,
+            icons::STATUS_PROGRESS,
+            icons::STATUS_BLOCKED,
+            icons::STATUS_CLOSED,
+        ];
+
+        for (i, a) in icons_list.iter().enumerate() {
+            for (j, b) in icons_list.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "Status icons {} and {} should be distinct", i, j);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn priority_icons_are_distinct() {
+        let icons_list = [
+            icons::PRIORITY_CRITICAL,
+            icons::PRIORITY_HIGH,
+            icons::PRIORITY_MEDIUM,
+            icons::PRIORITY_LOW,
+            icons::PRIORITY_MINIMAL,
+        ];
+
+        for (i, a) in icons_list.iter().enumerate() {
+            for (j, b) in icons_list.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "Priority icons {} and {} should be distinct", i, j);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn type_icons_are_distinct() {
+        let icons_list = [
+            icons::TYPE_BUG,
+            icons::TYPE_FEATURE,
+            icons::TYPE_TASK,
+            icons::TYPE_EPIC,
+            icons::TYPE_CHORE,
+            icons::TYPE_DOCS,
+            icons::TYPE_QUESTION,
+        ];
+
+        for (i, a) in icons_list.iter().enumerate() {
+            for (j, b) in icons_list.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "Type icons {} and {} should be distinct", i, j);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn intent_icons_are_distinct() {
+        let icons_list = [
+            icons::INTENT_ERROR,
+            icons::INTENT_WARNING,
+            icons::INTENT_INFO,
+            icons::INTENT_SUCCESS,
+        ];
+
+        for (i, a) in icons_list.iter().enumerate() {
+            for (j, b) in icons_list.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "Intent icons {} and {} should be distinct", i, j);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn icons_are_not_empty() {
+        // Status
+        assert!(!icons::STATUS_OPEN.is_empty());
+        assert!(!icons::STATUS_PROGRESS.is_empty());
+        assert!(!icons::STATUS_BLOCKED.is_empty());
+        assert!(!icons::STATUS_CLOSED.is_empty());
+
+        // Priority
+        assert!(!icons::PRIORITY_CRITICAL.is_empty());
+        assert!(!icons::PRIORITY_HIGH.is_empty());
+        assert!(!icons::PRIORITY_MEDIUM.is_empty());
+        assert!(!icons::PRIORITY_LOW.is_empty());
+
+        // Intent
+        assert!(!icons::INTENT_ERROR.is_empty());
+        assert!(!icons::INTENT_SUCCESS.is_empty());
+
+        // UI elements
+        assert!(!icons::ARROW_RIGHT.is_empty());
+        assert!(!icons::CHECKBOX_ON.is_empty());
+    }
+
+    #[test]
+    fn ascii_fallback_icons_are_not_empty() {
+        // Status
+        assert!(!icons::ascii::STATUS_OPEN.is_empty());
+        assert!(!icons::ascii::STATUS_PROGRESS.is_empty());
+        assert!(!icons::ascii::STATUS_BLOCKED.is_empty());
+        assert!(!icons::ascii::STATUS_CLOSED.is_empty());
+
+        // Priority
+        assert!(!icons::ascii::PRIORITY_CRITICAL.is_empty());
+        assert!(!icons::ascii::PRIORITY_HIGH.is_empty());
+        assert!(!icons::ascii::PRIORITY_MEDIUM.is_empty());
+        assert!(!icons::ascii::PRIORITY_LOW.is_empty());
+
+        // Intent
+        assert!(!icons::ascii::INTENT_ERROR.is_empty());
+        assert!(!icons::ascii::INTENT_SUCCESS.is_empty());
+    }
+
+    #[test]
+    fn ascii_status_icons_are_distinct() {
+        let icons_list = [
+            icons::ascii::STATUS_OPEN,
+            icons::ascii::STATUS_PROGRESS,
+            icons::ascii::STATUS_BLOCKED,
+            icons::ascii::STATUS_CLOSED,
+        ];
+
+        for (i, a) in icons_list.iter().enumerate() {
+            for (j, b) in icons_list.iter().enumerate() {
+                if i != j {
+                    assert_ne!(
+                        a, b,
+                        "ASCII status icons {} and {} should be distinct",
+                        i, j
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn status_icon_helper_returns_correct_icons() {
+        // Emoji mode
+        assert_eq!(status_icon(true, true, false, false), icons::STATUS_OPEN);
+        assert_eq!(
+            status_icon(true, false, true, false),
+            icons::STATUS_PROGRESS
+        );
+        assert_eq!(status_icon(true, false, false, true), icons::STATUS_BLOCKED);
+        assert_eq!(status_icon(true, false, false, false), icons::STATUS_CLOSED);
+
+        // ASCII mode
+        assert_eq!(
+            status_icon(false, true, false, false),
+            icons::ascii::STATUS_OPEN
+        );
+        assert_eq!(
+            status_icon(false, false, true, false),
+            icons::ascii::STATUS_PROGRESS
+        );
+        assert_eq!(
+            status_icon(false, false, false, true),
+            icons::ascii::STATUS_BLOCKED
+        );
+        assert_eq!(
+            status_icon(false, false, false, false),
+            icons::ascii::STATUS_CLOSED
+        );
+
+        // Blocked takes precedence
+        assert_eq!(status_icon(true, true, true, true), icons::STATUS_BLOCKED);
+    }
+
+    #[test]
+    fn priority_icon_helper_returns_correct_icons() {
+        // Emoji mode
+        assert_eq!(priority_icon(true, 0), icons::PRIORITY_CRITICAL);
+        assert_eq!(priority_icon(true, 1), icons::PRIORITY_HIGH);
+        assert_eq!(priority_icon(true, 2), icons::PRIORITY_MEDIUM);
+        assert_eq!(priority_icon(true, 3), icons::PRIORITY_LOW);
+        assert_eq!(priority_icon(true, 4), icons::PRIORITY_MINIMAL);
+        assert_eq!(priority_icon(true, 99), icons::PRIORITY_MINIMAL); // Out of range
+
+        // ASCII mode
+        assert_eq!(priority_icon(false, 0), icons::ascii::PRIORITY_CRITICAL);
+        assert_eq!(priority_icon(false, 1), icons::ascii::PRIORITY_HIGH);
+        assert_eq!(priority_icon(false, 2), icons::ascii::PRIORITY_MEDIUM);
+        assert_eq!(priority_icon(false, 3), icons::ascii::PRIORITY_LOW);
+        assert_eq!(priority_icon(false, 4), icons::ascii::PRIORITY_MINIMAL);
+    }
 }

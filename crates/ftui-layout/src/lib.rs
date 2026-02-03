@@ -6,15 +6,34 @@
 //!
 //! - [`Flex`] - 1D constraint-based layout (rows or columns)
 //! - [`Grid`] - 2D constraint-based layout with cell spanning
-//! - [`Constraint`] - Size constraints (Fixed, Percentage, Min, Max, Ratio)
+//! - [`Constraint`] - Size constraints (Fixed, Percentage, Min, Max, Ratio, FitContent)
 //! - [`debug`] - Layout constraint debugging and introspection
+//!
+//! # Intrinsic Sizing
+//!
+//! The layout system supports content-aware sizing via [`LayoutSizeHint`] and
+//! [`Flex::split_with_measurer`]:
+//!
+//! ```ignore
+//! use ftui_layout::{Flex, Constraint, LayoutSizeHint};
+//!
+//! let flex = Flex::horizontal()
+//!     .constraints([Constraint::FitContent, Constraint::Fill]);
+//!
+//! let rects = flex.split_with_measurer(area, |idx, available| {
+//!     match idx {
+//!         0 => LayoutSizeHint { min: 5, preferred: 20, max: None },
+//!         _ => LayoutSizeHint::ZERO,
+//!     }
+//! });
+//! ```
 
 pub mod debug;
 pub mod grid;
 #[cfg(test)]
 mod repro_max_constraint;
 
-pub use ftui_core::geometry::{Rect, Sides};
+pub use ftui_core::geometry::{Rect, Sides, Size};
 pub use grid::{Grid, GridArea, GridLayout};
 use std::cmp::min;
 
@@ -31,6 +50,95 @@ pub enum Constraint {
     Max(u16),
     /// A ratio of the remaining space (numerator, denominator).
     Ratio(u32, u32),
+    /// Fill remaining space (like Min(0) but semantically clearer).
+    Fill,
+    /// Size to fit content using widget's preferred size from [`LayoutSizeHint`].
+    ///
+    /// When used with [`Flex::split_with_measurer`], the measurer callback provides
+    /// the size hints. Falls back to Fill behavior if no measurer is provided.
+    FitContent,
+    /// Fit content but clamp to explicit bounds.
+    ///
+    /// The allocated size will be between `min` and `max`, using the widget's
+    /// preferred size when within range.
+    FitContentBounded {
+        /// Minimum allocation regardless of content size.
+        min: u16,
+        /// Maximum allocation regardless of content size.
+        max: u16,
+    },
+    /// Use widget's minimum size (shrink-to-fit).
+    ///
+    /// Allocates only the minimum space the widget requires.
+    FitMin,
+}
+
+/// Size hint returned by measurer callbacks for intrinsic sizing.
+///
+/// This is a 1D projection of a widget's size constraints along the layout axis.
+/// Use with [`Flex::split_with_measurer`] for content-aware layouts.
+///
+/// # Example
+///
+/// ```
+/// use ftui_layout::LayoutSizeHint;
+///
+/// // A label that needs 5-20 cells, ideally 15
+/// let hint = LayoutSizeHint {
+///     min: 5,
+///     preferred: 15,
+///     max: Some(20),
+/// };
+///
+/// // Clamp allocation to hint bounds
+/// assert_eq!(hint.clamp(10), 10); // Within range
+/// assert_eq!(hint.clamp(3), 5);   // Below min
+/// assert_eq!(hint.clamp(30), 20); // Above max
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LayoutSizeHint {
+    /// Minimum size (widget clips below this).
+    pub min: u16,
+    /// Preferred size (ideal for content).
+    pub preferred: u16,
+    /// Maximum useful size (None = unbounded).
+    pub max: Option<u16>,
+}
+
+impl LayoutSizeHint {
+    /// Zero hint (no minimum, no preferred, unbounded).
+    pub const ZERO: Self = Self {
+        min: 0,
+        preferred: 0,
+        max: None,
+    };
+
+    /// Create an exact size hint (min = preferred = max).
+    #[inline]
+    pub const fn exact(size: u16) -> Self {
+        Self {
+            min: size,
+            preferred: size,
+            max: Some(size),
+        }
+    }
+
+    /// Create a hint with minimum and preferred size, unbounded max.
+    #[inline]
+    pub const fn at_least(min: u16, preferred: u16) -> Self {
+        Self {
+            min,
+            preferred,
+            max: None,
+        }
+    }
+
+    /// Clamp a value to this hint's bounds.
+    #[inline]
+    pub fn clamp(&self, value: u16) -> u16 {
+        let max = self.max.unwrap_or(u16::MAX);
+        value.max(self.min).min(max)
+    }
 }
 
 /// The direction to layout items.
@@ -265,23 +373,94 @@ impl Flex {
 
         rects
     }
+
+    /// Split area using intrinsic sizing from a measurer callback.
+    ///
+    /// This method enables content-aware layout with [`Constraint::FitContent`],
+    /// [`Constraint::FitContentBounded`], and [`Constraint::FitMin`].
+    ///
+    /// # Arguments
+    ///
+    /// - `area`: Available rectangle
+    /// - `measurer`: Callback that returns [`LayoutSizeHint`] for item at index
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let flex = Flex::horizontal()
+    ///     .constraints([Constraint::FitContent, Constraint::Fill]);
+    ///
+    /// let rects = flex.split_with_measurer(area, |idx, available| {
+    ///     match idx {
+    ///         0 => LayoutSizeHint { min: 5, preferred: 20, max: None },
+    ///         _ => LayoutSizeHint::ZERO,
+    ///     }
+    /// });
+    /// ```
+    pub fn split_with_measurer<F>(&self, area: Rect, measurer: F) -> Vec<Rect>
+    where
+        F: Fn(usize, u16) -> LayoutSizeHint,
+    {
+        // Apply margin
+        let inner = area.inner(self.margin);
+        if inner.is_empty() {
+            return self.constraints.iter().map(|_| Rect::default()).collect();
+        }
+
+        let total_size = match self.direction {
+            Direction::Horizontal => inner.width,
+            Direction::Vertical => inner.height,
+        };
+
+        let count = self.constraints.len();
+        if count == 0 {
+            return Vec::new();
+        }
+
+        // Calculate gaps
+        let total_gap = self.gap.saturating_mul((count - 1) as u16);
+        let available_size = total_size.saturating_sub(total_gap);
+
+        // Solve constraints with hints from measurer
+        let sizes = solve_constraints_with_hints(&self.constraints, available_size, &measurer);
+
+        // Convert sizes to rects
+        self.sizes_to_rects(inner, &sizes)
+    }
 }
 
 /// Solve 1D constraints to determine sizes.
 ///
 /// This shared logic is used by both Flex and Grid layouts.
+/// For intrinsic sizing support, use [`solve_constraints_with_hints`].
 pub(crate) fn solve_constraints(constraints: &[Constraint], available_size: u16) -> Vec<u16> {
+    // Use the with_hints version with a no-op measurer
+    solve_constraints_with_hints(constraints, available_size, &|_, _| LayoutSizeHint::ZERO)
+}
+
+/// Solve 1D constraints with intrinsic sizing support.
+///
+/// The measurer callback provides size hints for FitContent, FitContentBounded, and FitMin
+/// constraints. It receives the constraint index and remaining available space.
+pub(crate) fn solve_constraints_with_hints<F>(
+    constraints: &[Constraint],
+    available_size: u16,
+    measurer: &F,
+) -> Vec<u16>
+where
+    F: Fn(usize, u16) -> LayoutSizeHint,
+{
     let mut sizes = vec![0u16; constraints.len()];
     let mut remaining = available_size;
     let mut grow_indices = Vec::new();
 
-    // 1. Allocate Fixed, Percentage, Min
+    // 1. First pass: Allocate Fixed, Percentage, Min, and intrinsic sizing constraints
     for (i, &constraint) in constraints.iter().enumerate() {
         match constraint {
             Constraint::Fixed(size) => {
                 let size = min(size, remaining);
                 sizes[i] = size;
-                remaining -= size;
+                remaining = remaining.saturating_sub(size);
             }
             Constraint::Percentage(p) => {
                 let size = (available_size as f32 * p / 100.0)
@@ -289,12 +468,12 @@ pub(crate) fn solve_constraints(constraints: &[Constraint], available_size: u16)
                     .min(u16::MAX as f32) as u16;
                 let size = min(size, remaining);
                 sizes[i] = size;
-                remaining -= size;
+                remaining = remaining.saturating_sub(size);
             }
             Constraint::Min(min_size) => {
                 let size = min(min_size, remaining);
                 sizes[i] = size;
-                remaining -= size;
+                remaining = remaining.saturating_sub(size);
                 grow_indices.push(i);
             }
             Constraint::Max(_) => {
@@ -303,6 +482,35 @@ pub(crate) fn solve_constraints(constraints: &[Constraint], available_size: u16)
             }
             Constraint::Ratio(_, _) => {
                 // Ratio takes 0 initially, candidate for growth
+                grow_indices.push(i);
+            }
+            Constraint::Fill => {
+                // Fill takes 0 initially, candidate for growth
+                grow_indices.push(i);
+            }
+            Constraint::FitContent => {
+                // Use measurer to get preferred size
+                let hint = measurer(i, remaining);
+                let size = min(hint.preferred, remaining);
+                sizes[i] = size;
+                remaining = remaining.saturating_sub(size);
+                // FitContent items don't grow beyond preferred
+            }
+            Constraint::FitContentBounded { min: min_bound, max: max_bound } => {
+                // Use measurer to get preferred size, clamped to bounds
+                let hint = measurer(i, remaining);
+                let preferred = hint.preferred.max(min_bound).min(max_bound);
+                let size = min(preferred, remaining);
+                sizes[i] = size;
+                remaining = remaining.saturating_sub(size);
+            }
+            Constraint::FitMin => {
+                // Use measurer to get minimum size
+                let hint = measurer(i, remaining);
+                let size = min(hint.min, remaining);
+                sizes[i] = size;
+                remaining = remaining.saturating_sub(size);
+                // FitMin items can grow to fill remaining space
                 grow_indices.push(i);
             }
         }

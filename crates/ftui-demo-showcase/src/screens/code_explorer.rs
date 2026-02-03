@@ -369,8 +369,12 @@ impl Screen for CodeExplorer {
                 (KeyCode::Char('u'), Modifiers::CTRL) | (KeyCode::PageUp, _) => {
                     self.scroll_by(-(self.viewport_height as i32 / 2));
                 }
-                (KeyCode::Home, _) => self.scroll_to(0),
-                (KeyCode::End, _) => self.scroll_to(self.total_lines()),
+                // Vim: g or Home for top
+                (KeyCode::Home, _) | (KeyCode::Char('g'), Modifiers::NONE) => self.scroll_to(0),
+                // Vim: G or End for bottom
+                (KeyCode::End, _) | (KeyCode::Char('G'), Modifiers::NONE) => {
+                    self.scroll_to(self.total_lines())
+                }
                 _ => {}
             }
         }
@@ -433,7 +437,11 @@ impl Screen for CodeExplorer {
                 action: "Scroll",
             },
             HelpEntry {
-                key: "PgUp/PgDn",
+                key: "g/G",
+                action: "Top/bottom",
+            },
+            HelpEntry {
+                key: "Ctrl+D/U",
                 action: "Page scroll",
             },
         ]

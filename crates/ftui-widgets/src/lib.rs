@@ -130,12 +130,16 @@ pub mod file_picker;
 pub mod group;
 pub mod help;
 pub mod input;
+/// UI Inspector overlay for debugging widget trees and hit-test regions.
+pub mod inspector;
 pub mod json_view;
 pub mod layout;
 pub mod layout_debugger;
 pub mod list;
 pub mod log_ring;
 pub mod log_viewer;
+/// Intrinsic sizing support for content-aware layout.
+pub mod measurable;
 pub mod padding;
 pub mod paginator;
 pub mod panel;
@@ -145,6 +149,7 @@ pub mod pretty;
 pub mod progress;
 pub mod rule;
 pub mod scrollbar;
+pub mod sparkline;
 pub mod spinner;
 pub mod status_line;
 pub mod stopwatch;
@@ -170,10 +175,19 @@ pub use log_ring::LogRing;
 pub use log_viewer::{LogViewer, LogViewerState, LogWrapMode};
 pub use paginator::{Paginator, PaginatorMode};
 pub use panel::Panel;
+pub use sparkline::Sparkline;
 pub use status_line::{StatusItem, StatusLine};
 pub use virtualized::{
     HeightCache, ItemHeight, RenderItem, Virtualized, VirtualizedList, VirtualizedListState,
     VirtualizedStorage,
+};
+
+// Measurable widget support for intrinsic sizing
+pub use measurable::{MeasurableWidget, SizeConstraints};
+
+// UI Inspector for debugging
+pub use inspector::{
+    HitInfo, InspectorMode, InspectorOverlay, InspectorState, InspectorStyle, WidgetInfo,
 };
 
 use ftui_core::geometry::Rect;

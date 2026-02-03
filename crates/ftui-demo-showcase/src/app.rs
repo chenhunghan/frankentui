@@ -375,9 +375,11 @@ impl From<Event> for AppMsg {
                 (KeyCode::F(12), _) => return Self::ToggleDebug,
                 // Theme cycling
                 (KeyCode::Char('t'), Modifiers::CTRL) => return Self::CycleTheme,
-                // Tab cycling
+                // Tab cycling (Tab/BackTab, or Shift+H/Shift+L for Vim users)
                 (KeyCode::Tab, Modifiers::NONE) => return Self::NextScreen,
                 (KeyCode::BackTab, _) => return Self::PrevScreen,
+                (KeyCode::Char('L'), Modifiers::SHIFT) => return Self::NextScreen,
+                (KeyCode::Char('H'), Modifiers::SHIFT) => return Self::PrevScreen,
                 // Number keys for direct screen access
                 (KeyCode::Char(ch @ '0'..='9'), Modifiers::NONE) => {
                     if let Some(id) = ScreenId::from_number_key(ch) {

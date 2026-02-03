@@ -138,6 +138,10 @@ impl LayoutRecord {
             Constraint::Min(n) => format!("Min({n})"),
             Constraint::Max(n) => format!("Max({n})"),
             Constraint::Ratio(n, d) => format!("Ratio({n}/{d})"),
+            Constraint::Fill => "Fill".to_string(),
+            Constraint::FitContent => "FitContent".to_string(),
+            Constraint::FitContentBounded { min, max } => format!("FitContent({min}..{max})"),
+            Constraint::FitMin => "FitMin".to_string(),
         }
     }
 

@@ -8,7 +8,7 @@
 //! - Item rendering with selection highlighting
 //! - Scroll position tracking and progress
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
@@ -212,51 +212,43 @@ impl Screen for Performance {
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
         if let Event::Key(KeyEvent {
+            code,
+            modifiers,
             kind: KeyEventKind::Press,
             ..
         }) = event
         {
-            match event {
-                Event::Key(KeyEvent {
-                    code: KeyCode::Up, ..
-                }) => {
+            match (*code, *modifiers) {
+                // Vim: k or Up for move up
+                (KeyCode::Up, _) | (KeyCode::Char('k'), Modifiers::NONE) => {
                     self.selected = self.selected.saturating_sub(1);
                     self.ensure_visible();
                 }
-                Event::Key(KeyEvent {
-                    code: KeyCode::Down,
-                    ..
-                }) => {
+                // Vim: j or Down for move down
+                (KeyCode::Down, _) | (KeyCode::Char('j'), Modifiers::NONE) => {
                     if self.selected + 1 < self.items.len() {
                         self.selected += 1;
                     }
                     self.ensure_visible();
                 }
-                Event::Key(KeyEvent {
-                    code: KeyCode::PageUp,
-                    ..
-                }) => {
+                // Vim: Ctrl+U or PageUp for page up
+                (KeyCode::PageUp, _) | (KeyCode::Char('u'), Modifiers::CTRL) => {
                     self.selected = self.selected.saturating_sub(self.viewport_height);
                     self.ensure_visible();
                 }
-                Event::Key(KeyEvent {
-                    code: KeyCode::PageDown,
-                    ..
-                }) => {
+                // Vim: Ctrl+D or PageDown for page down
+                (KeyCode::PageDown, _) | (KeyCode::Char('d'), Modifiers::CTRL) => {
                     self.selected = (self.selected + self.viewport_height)
                         .min(self.items.len().saturating_sub(1));
                     self.ensure_visible();
                 }
-                Event::Key(KeyEvent {
-                    code: KeyCode::Home,
-                    ..
-                }) => {
+                // Vim: g or Home for first item
+                (KeyCode::Home, _) | (KeyCode::Char('g'), Modifiers::NONE) => {
                     self.selected = 0;
                     self.ensure_visible();
                 }
-                Event::Key(KeyEvent {
-                    code: KeyCode::End, ..
-                }) => {
+                // Vim: G or End for last item
+                (KeyCode::End, _) | (KeyCode::Char('G'), Modifiers::NONE) => {
                     self.selected = self.items.len().saturating_sub(1);
                     self.ensure_visible();
                 }
@@ -291,7 +283,7 @@ impl Screen for Performance {
 
         // Status bar
         let status = format!(
-            "Item {}/{} | \u{2191}/\u{2193}: scroll | PgUp/PgDn: page | Home/End: jump",
+            "Item {}/{} | j/k: scroll | Ctrl+D/U: page | g/G: jump",
             self.selected + 1,
             self.items.len()
         );
@@ -303,16 +295,16 @@ impl Screen for Performance {
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {
-                key: "\u{2191}/\u{2193}",
+                key: "j/k or \u{2191}/\u{2193}",
                 action: "Scroll items",
             },
             HelpEntry {
-                key: "PgUp/PgDn",
+                key: "Ctrl+D/U",
                 action: "Page scroll",
             },
             HelpEntry {
-                key: "Home/End",
-                action: "Jump to start/end",
+                key: "g/G",
+                action: "Start/end",
             },
         ]
     }
@@ -383,5 +375,25 @@ mod tests {
         screen.selected = TOTAL_ITEMS - 1;
         screen.update(&press(KeyCode::Down));
         assert_eq!(screen.selected, TOTAL_ITEMS - 1);
+    }
+
+    #[test]
+    fn vim_jk_navigation() {
+        let mut screen = Performance::new();
+        screen.update(&press(KeyCode::Char('j')));
+        assert_eq!(screen.selected, 1);
+        screen.update(&press(KeyCode::Char('j')));
+        assert_eq!(screen.selected, 2);
+        screen.update(&press(KeyCode::Char('k')));
+        assert_eq!(screen.selected, 1);
+    }
+
+    #[test]
+    fn vim_gg_navigation() {
+        let mut screen = Performance::new();
+        screen.update(&press(KeyCode::Char('G')));
+        assert_eq!(screen.selected, TOTAL_ITEMS - 1);
+        screen.update(&press(KeyCode::Char('g')));
+        assert_eq!(screen.selected, 0);
     }
 }

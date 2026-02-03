@@ -32,6 +32,7 @@ use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::paragraph::Paragraph;
+use ftui_widgets::progress::{MiniBar, MiniBarColors};
 
 use super::{HelpEntry, Screen};
 use crate::data::SimulatedData;
@@ -345,9 +346,99 @@ impl Dashboard {
             self.fps, dashboard_size.0, dashboard_size.1, theme_name, self.tick_count
         );
 
+        if inner.height < 6 {
+            Paragraph::new(info)
+                .style(Style::new().fg(theme::fg::SECONDARY))
+                .render(inner, frame);
+            return;
+        }
+
+        let rows = Flex::vertical()
+            .constraints([Constraint::Min(2), Constraint::Fixed(3)])
+            .split(inner);
+
         Paragraph::new(info)
             .style(Style::new().fg(theme::fg::SECONDARY))
-            .render(inner, frame);
+            .render(rows[0], frame);
+
+        self.render_mini_bars(frame, rows[1]);
+    }
+
+    /// Render compact mini-bars for CPU/MEM/Disk usage.
+    fn render_mini_bars(&self, frame: &mut Frame, area: Rect) {
+        if area.is_empty() || area.height < 1 {
+            return;
+        }
+
+        let rows = Flex::vertical()
+            .constraints([
+                Constraint::Fixed(1),
+                Constraint::Fixed(1),
+                Constraint::Fixed(1),
+            ])
+            .split(area);
+
+        let cpu = self
+            .simulated_data
+            .cpu_history
+            .back()
+            .copied()
+            .unwrap_or(0.0)
+            / 100.0;
+        let mem = self
+            .simulated_data
+            .memory_history
+            .back()
+            .copied()
+            .unwrap_or(0.0)
+            / 100.0;
+        let disk = self
+            .simulated_data
+            .disk_usage
+            .first()
+            .map(|(_, v)| *v / 100.0)
+            .unwrap_or(0.0);
+
+        let colors = MiniBarColors::new(
+            theme::intent::success_text(),
+            theme::intent::warning_text(),
+            theme::intent::info_text(),
+            theme::intent::error_text(),
+        );
+
+        self.render_mini_bar_row(frame, rows[0], "CPU", cpu, colors);
+        self.render_mini_bar_row(frame, rows[1], "MEM", mem, colors);
+        self.render_mini_bar_row(frame, rows[2], "DSK", disk, colors);
+    }
+
+    fn render_mini_bar_row(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        label: &str,
+        value: f64,
+        colors: MiniBarColors,
+    ) {
+        if area.is_empty() {
+            return;
+        }
+
+        let label_width = 4.min(area.width);
+        let label_area = Rect::new(area.x, area.y, label_width, 1);
+        Paragraph::new(format!("{label} "))
+            .style(Style::new().fg(theme::fg::SECONDARY))
+            .render(label_area, frame);
+
+        let bar_width = area.width.saturating_sub(label_width);
+        if bar_width == 0 {
+            return;
+        }
+
+        let bar_area = Rect::new(area.x + label_width, area.y, bar_width, 1);
+        MiniBar::new(value, bar_width)
+            .colors(colors)
+            .show_percent(true)
+            .render(bar_area, frame);
     }
 
     /// Render markdown preview.

@@ -7,4 +7,4 @@
 │[    5]  INFO api::handler       Event│
 │[    6] DEBUG core::runtime      Event│
 ╰──────────────────────────────────────╯
-Item 1/10000 | ↑/↓: scroll | PgUp/PgDn: 
+Item 1/10000 | j/k: scroll | Ctrl+D/U: p

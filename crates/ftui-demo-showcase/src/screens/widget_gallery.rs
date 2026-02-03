@@ -752,7 +752,7 @@ impl WidgetGallery {
             .push(Column::new(col1, Constraint::Fixed(15)))
             .push(Column::new(col2, Constraint::Min(10)))
             .push(Column::new(col3, Constraint::Percentage(40.0)))
-            .gap(1);
+            .gap(theme::spacing::XS);
         columns.render(inner, frame);
     }
 
@@ -825,22 +825,28 @@ impl WidgetGallery {
     }
 
     fn render_padding_demo(&self, frame: &mut Frame, area: Rect) {
+        let pad_x = theme::spacing::SM;
+        let pad_y = theme::spacing::XS;
+
+        let title = format!("Padding ({pad_x},{pad_x},{pad_y},{pad_y})");
         let block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title("Padding (2,2,1,1)")
+            .title(title.as_str())
             .style(theme::content_border());
         let inner = block.inner(area);
         block.render(area, frame);
 
         // Apply padding manually to show the concept
         let padded = Rect {
-            x: inner.x + 2,
-            y: inner.y + 1,
-            width: inner.width.saturating_sub(4),
-            height: inner.height.saturating_sub(2),
+            x: inner.x + pad_x,
+            y: inner.y + pad_y,
+            width: inner.width.saturating_sub(pad_x * 2),
+            height: inner.height.saturating_sub(pad_y * 2),
         };
-        Paragraph::new("Content inside padding.\nPadding: left=2, right=2, top=1, bottom=1")
+        Paragraph::new(format!(
+            "Content inside padding.\nPadding: left={pad_x}, right={pad_x}, top={pad_y}, bottom={pad_y}"
+        ))
             .style(Style::new().fg(theme::accent::INFO))
             .render(padded, frame);
     }

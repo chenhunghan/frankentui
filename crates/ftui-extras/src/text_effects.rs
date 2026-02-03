@@ -1162,6 +1162,153 @@ impl StyledText {
         original
     }
 
+    /// Calculate the position offset for a character at index `idx`.
+    ///
+    /// Position-modifying effects are summed together:
+    /// - Wave: Sinusoidal offset
+    /// - Bounce: Damped bounce offset
+    /// - Shake: Random jitter offset
+    /// - Cascade: Slide-in offset during reveal
+    ///
+    /// Returns a `CharacterOffset` that can be added to the base position.
+    pub fn char_offset(&self, idx: usize, total: usize) -> CharacterOffset {
+        if self.effects.is_empty() || total == 0 {
+            return CharacterOffset::ZERO;
+        }
+
+        let mut offset = CharacterOffset::ZERO;
+
+        for effect in &self.effects {
+            match effect {
+                TextEffect::Wave {
+                    amplitude,
+                    wavelength,
+                    speed,
+                    direction,
+                } => {
+                    // Avoid division by zero
+                    let wl = if *wavelength > 0.0 { *wavelength } else { 1.0 };
+
+                    // Phase: position in wave + time advancement
+                    let phase = (idx as f64 / wl + self.time * speed) * TAU;
+                    let wave_value = (phase.sin() * amplitude).round() as i16;
+
+                    match direction {
+                        Direction::Up | Direction::Down => {
+                            // Vertical wave: negative for Up, positive for Down
+                            let sign = if matches!(direction, Direction::Down) {
+                                1
+                            } else {
+                                -1
+                            };
+                            offset.dy = offset.dy.saturating_add(wave_value * sign);
+                        }
+                        Direction::Left | Direction::Right => {
+                            // Horizontal wave: negative for Left, positive for Right
+                            let sign = if matches!(direction, Direction::Right) {
+                                1
+                            } else {
+                                -1
+                            };
+                            offset.dx = offset.dx.saturating_add(wave_value * sign);
+                        }
+                    }
+                }
+
+                TextEffect::Bounce {
+                    height,
+                    speed,
+                    stagger,
+                    damping,
+                } => {
+                    // Staggered start time for each character
+                    let char_delay = idx as f64 * stagger;
+                    let local_time = (self.time - char_delay).max(0.0);
+
+                    // Bounce physics: damped oscillation
+                    let bounce_phase = local_time * speed * TAU;
+                    let decay = damping.powf(local_time * speed);
+                    let bounce_value = (bounce_phase.cos().abs() * height * decay).round() as i16;
+
+                    // Bounce is always vertical (characters drop down from above)
+                    offset.dy = offset.dy.saturating_add(-bounce_value);
+                }
+
+                TextEffect::Shake {
+                    intensity,
+                    speed,
+                    seed,
+                } => {
+                    // Deterministic random based on time step and seed
+                    let time_step = (self.time * speed * 100.0) as u64;
+                    let hash1 = seed
+                        .wrapping_mul(idx as u64 + 1)
+                        .wrapping_mul(time_step.wrapping_add(1))
+                        .wrapping_add(0x9E3779B97F4A7C15);
+                    let hash2 = hash1.wrapping_mul(0x517CC1B727220A95);
+
+                    // Convert hash to offset in range [-intensity, +intensity]
+                    let x_rand = ((hash1 % 10000) as f64 / 5000.0 - 1.0) * intensity;
+                    let y_rand = ((hash2 % 10000) as f64 / 5000.0 - 1.0) * intensity;
+
+                    offset.dx = offset.dx.saturating_add(x_rand.round() as i16);
+                    offset.dy = offset.dy.saturating_add(y_rand.round() as i16);
+                }
+
+                TextEffect::Cascade {
+                    speed,
+                    direction,
+                    stagger,
+                } => {
+                    // Characters revealed per time unit
+                    let revealed_chars = self.time * speed;
+                    let char_reveal_time = idx as f64 * stagger;
+
+                    if revealed_chars < char_reveal_time {
+                        // Character not yet revealed: full offset in the "from" direction
+                        let slide_offset = 3_i16; // cells of slide distance
+                        match direction {
+                            Direction::Down => offset.dy = offset.dy.saturating_add(-slide_offset),
+                            Direction::Up => offset.dy = offset.dy.saturating_add(slide_offset),
+                            Direction::Left => offset.dx = offset.dx.saturating_add(slide_offset),
+                            Direction::Right => offset.dx = offset.dx.saturating_add(-slide_offset),
+                        }
+                    } else {
+                        // Smooth slide-in animation
+                        let progress = ((revealed_chars - char_reveal_time) / 0.3).clamp(0.0, 1.0);
+                        let eased = self.easing.apply(progress);
+                        let remaining = ((1.0 - eased) * 3.0).round() as i16;
+
+                        match direction {
+                            Direction::Down => offset.dy = offset.dy.saturating_add(-remaining),
+                            Direction::Up => offset.dy = offset.dy.saturating_add(remaining),
+                            Direction::Left => offset.dx = offset.dx.saturating_add(remaining),
+                            Direction::Right => offset.dx = offset.dx.saturating_add(-remaining),
+                        }
+                    }
+                }
+
+                // Non-position effects don't contribute offset
+                _ => {}
+            }
+        }
+
+        offset
+    }
+
+    /// Check if this text has any position-modifying effects.
+    pub fn has_position_effects(&self) -> bool {
+        self.effects.iter().any(|effect| {
+            matches!(
+                effect,
+                TextEffect::Wave { .. }
+                    | TextEffect::Bounce { .. }
+                    | TextEffect::Shake { .. }
+                    | TextEffect::Cascade { .. }
+            )
+        })
+    }
+
     /// Render at a specific position.
     pub fn render_at(&self, x: u16, y: u16, frame: &mut Frame) {
         let total = self.text.chars().count();

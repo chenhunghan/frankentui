@@ -1,10 +1,11 @@
 #![forbid(unsafe_code)]
 
 use crate::block::{Alignment, Block};
+use crate::measurable::{MeasurableWidget, SizeConstraints};
 use crate::{
     Widget, draw_text_span, draw_text_span_scrolled, draw_text_span_with_link, set_style_area,
 };
-use ftui_core::geometry::Rect;
+use ftui_core::geometry::{Rect, Size};
 use ftui_render::frame::Frame;
 use ftui_style::Style;
 use ftui_text::{Text, WrapMode, wrap_text};
@@ -248,6 +249,111 @@ impl Widget for Paragraph<'_> {
         }
     }
 }
+impl MeasurableWidget for Paragraph<'_> {
+    fn measure(&self, available: Size) -> SizeConstraints {
+        // Calculate text measurements
+        let text_width = self.text.width();
+        let text_height = self.text.height();
+
+        // Find the minimum width (longest word or longest non-breakable segment)
+        // This requires iterating through the text to find word boundaries
+        let min_width = self.calculate_min_width();
+
+        // Get block chrome if present
+        let (chrome_width, chrome_height) = self
+            .block
+            .as_ref()
+            .map(|b| b.chrome_size())
+            .unwrap_or((0, 0));
+
+        // If wrapping is enabled, calculate wrapped height
+        let (preferred_width, preferred_height) = if self.wrap.is_some() {
+            // When wrapping, preferred width is either the text width or available width
+            let wrap_width = if available.width > chrome_width {
+                (available.width - chrome_width) as usize
+            } else {
+                1
+            };
+
+            // Estimate wrapped height by calculating how text would wrap
+            let wrapped_height = self.estimate_wrapped_height(wrap_width);
+
+            // Preferred width is min(text_width, available_width - chrome)
+            let pref_w = text_width.min(wrap_width);
+            (pref_w, wrapped_height)
+        } else {
+            // No wrapping: preferred is natural text dimensions
+            (text_width, text_height)
+        };
+
+        // Convert to u16, saturating at MAX
+        let min_w = (min_width as u16).saturating_add(chrome_width);
+        let min_h = (1u16).saturating_add(chrome_height); // At least 1 line of content
+
+        let pref_w = (preferred_width as u16).saturating_add(chrome_width);
+        let pref_h = (preferred_height as u16).saturating_add(chrome_height);
+
+        SizeConstraints {
+            min: Size::new(min_w, min_h),
+            preferred: Size::new(pref_w, pref_h),
+            max: None, // Paragraph can use additional space for scrolling
+        }
+    }
+
+    fn has_intrinsic_size(&self) -> bool {
+        // Paragraph always has intrinsic size based on its text content
+        true
+    }
+}
+
+impl Paragraph<'_> {
+    /// Calculate the minimum width needed (longest word).
+    fn calculate_min_width(&self) -> usize {
+        let mut max_word_width = 0;
+
+        for line in self.text.lines() {
+            let plain = line.to_plain_text();
+            // Split on whitespace to find words
+            for word in plain.split_whitespace() {
+                let word_width = UnicodeWidthStr::width(word);
+                max_word_width = max_word_width.max(word_width);
+            }
+        }
+
+        // If there are no words, use the full text width
+        if max_word_width == 0 {
+            return self.text.width();
+        }
+
+        max_word_width
+    }
+
+    /// Estimate the height when text is wrapped at the given width.
+    fn estimate_wrapped_height(&self, wrap_width: usize) -> usize {
+        if wrap_width == 0 {
+            return self.text.height();
+        }
+
+        let wrap_mode = self.wrap.unwrap_or(WrapMode::Word);
+        let mut total_lines = 0;
+
+        for line in self.text.lines() {
+            let plain = line.to_plain_text();
+            let line_width = UnicodeWidthStr::width(plain.as_str());
+
+            if line_width <= wrap_width {
+                total_lines += 1;
+            } else {
+                // Wrap this line and count resulting lines
+                let wrapped = wrap_text(&plain, wrap_width, wrap_mode);
+                total_lines += wrapped.len().max(1);
+            }
+        }
+
+        total_lines.max(1)
+    }
+}
+
 /// Calculate the starting x position for a line given alignment.
 fn align_x(area: Rect, line_width: usize, alignment: Alignment) -> u16 {
     let line_width_u16 = u16::try_from(line_width).unwrap_or(u16::MAX);
@@ -546,5 +652,121 @@ mod tests {
             PackedRgba::RED,
             "Span fg color should be ignored at NoStyling"
         );
+    }
+
+    // --- MeasurableWidget tests ---
+
+    use crate::MeasurableWidget;
+    use ftui_core::geometry::Size;
+
+    #[test]
+    fn measure_simple_text() {
+        let para = Paragraph::new(Text::raw("Hello"));
+        let constraints = para.measure(Size::MAX);
+
+        // "Hello" is 5 chars wide, 1 line tall
+        assert_eq!(constraints.preferred, Size::new(5, 1));
+        assert_eq!(constraints.min.height, 1);
+        // Min width is the longest word = "Hello" = 5
+        assert_eq!(constraints.min.width, 5);
+    }
+
+    #[test]
+    fn measure_multiline_text() {
+        let para = Paragraph::new(Text::raw("Line1\nLine22\nL3"));
+        let constraints = para.measure(Size::MAX);
+
+        // Max width is "Line22" = 6, height = 3 lines
+        assert_eq!(constraints.preferred, Size::new(6, 3));
+        assert_eq!(constraints.min.height, 1);
+        // Min width is longest word = "Line22" = 6
+        assert_eq!(constraints.min.width, 6);
+    }
+
+    #[test]
+    fn measure_with_block() {
+        let block = crate::block::Block::bordered();
+        let para = Paragraph::new(Text::raw("Hi")).block(block);
+        let constraints = para.measure(Size::MAX);
+
+        // "Hi" = 2 wide, 1 tall, plus 2 for borders on each axis
+        assert_eq!(constraints.preferred, Size::new(4, 3));
+        // Min width: "Hi" = 2 + 2 (borders) = 4
+        assert_eq!(constraints.min.width, 4);
+        // Min height: 1 + 2 (borders) = 3
+        assert_eq!(constraints.min.height, 3);
+    }
+
+    #[test]
+    fn measure_with_word_wrap() {
+        let para = Paragraph::new(Text::raw("hello world")).wrap(WrapMode::Word);
+        // Measure with narrow available width
+        let constraints = para.measure(Size::new(6, 10));
+
+        // With 6 chars available, "hello" fits, "world" wraps
+        // Preferred width = 6 (available), height = 2 lines
+        assert_eq!(constraints.preferred.height, 2);
+        // Min width is longest word = "hello" = 5
+        assert_eq!(constraints.min.width, 5);
+    }
+
+    #[test]
+    fn measure_empty_text() {
+        let para = Paragraph::new(Text::raw(""));
+        let constraints = para.measure(Size::MAX);
+
+        // Empty text: 0 width, 0 height (no lines)
+        assert_eq!(constraints.preferred.width, 0);
+        assert_eq!(constraints.preferred.height, 0);
+        // Min height is still 1 (chrome calculation adds 1 for content)
+        assert_eq!(constraints.min.height, 1);
+    }
+
+    #[test]
+    fn calculate_min_width_single_long_word() {
+        let para = Paragraph::new(Text::raw("supercalifragilistic"));
+        assert_eq!(para.calculate_min_width(), 20);
+    }
+
+    #[test]
+    fn calculate_min_width_multiple_words() {
+        let para = Paragraph::new(Text::raw("the quick brown fox"));
+        // Longest word is "quick" or "brown" = 5
+        assert_eq!(para.calculate_min_width(), 5);
+    }
+
+    #[test]
+    fn calculate_min_width_multiline() {
+        let para = Paragraph::new(Text::raw("short\nlongword\na"));
+        // Longest word is "longword" = 8
+        assert_eq!(para.calculate_min_width(), 8);
+    }
+
+    #[test]
+    fn estimate_wrapped_height_no_wrap_needed() {
+        let para = Paragraph::new(Text::raw("short")).wrap(WrapMode::Word);
+        // Width 10 is enough for "short" (5 chars)
+        assert_eq!(para.estimate_wrapped_height(10), 1);
+    }
+
+    #[test]
+    fn estimate_wrapped_height_needs_wrap() {
+        let para = Paragraph::new(Text::raw("hello world")).wrap(WrapMode::Word);
+        // Width 6: "hello " fits (6 chars), "world" (5 chars) wraps
+        assert_eq!(para.estimate_wrapped_height(6), 2);
+    }
+
+    #[test]
+    fn has_intrinsic_size() {
+        let para = Paragraph::new(Text::raw("test"));
+        assert!(para.has_intrinsic_size());
+    }
+
+    #[test]
+    fn measure_is_pure() {
+        let para = Paragraph::new(Text::raw("Hello World"));
+        let a = para.measure(Size::new(100, 50));
+        let b = para.measure(Size::new(100, 50));
+        assert_eq!(a, b);
     }
 }

@@ -19,6 +19,6 @@
 ││└── .gitignore         ││                             ││                    ││
 ││                       ││                             ││                    ││
 │╰───────────────────────╯╰─────────────────────────────╯╰────────────────────╯│
-│src  | Ctrl+←/→: panels | ↑/↓: navigate | h: toggle hidden                    │
+│src  | h/l: panels | j/k: navigate | g/G: first/last | .: hidden              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
  File Browser [8/12]  Cyberpunk Aurora          tick:0 frm:0          0x0 00:00 

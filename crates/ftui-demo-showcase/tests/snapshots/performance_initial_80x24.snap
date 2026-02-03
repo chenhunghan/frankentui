@@ -21,4 +21,4 @@
 │[   19] TRACE api::handler       Event #000││                                 │
 │[   20]  INFO core::runtime      Event #000││                                 │
 ╰───────────────────────────────────────────╯╰─────────────────────────────────╯
-Item 1/10000 | ↑/↓: scroll | PgUp/PgDn: page | Home/End: jump                   
+Item 1/10000 | j/k: scroll | Ctrl+D/U: page | g/G: jump                         

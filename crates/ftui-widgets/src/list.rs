@@ -5,11 +5,13 @@
 //! A widget to display a list of items with selection support.
 
 use crate::block::Block;
+use crate::measurable::{MeasurableWidget, SizeConstraints};
 use crate::{StatefulWidget, Widget, draw_text_span, draw_text_span_with_link, set_style_area};
-use ftui_core::geometry::Rect;
+use ftui_core::geometry::{Rect, Size};
 use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_style::Style;
 use ftui_text::Text;
+use unicode_width::UnicodeWidthStr;
 
 /// A single item in a list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,6 +270,92 @@ impl<'a> Widget for List<'a> {
     }
 }
 
+impl MeasurableWidget for ListItem<'_> {
+    fn measure(&self, _available: Size) -> SizeConstraints {
+        // ListItem is a single line of text with optional marker
+        let marker_width = UnicodeWidthStr::width(self.marker) as u16;
+        let space_after_marker = if self.marker.is_empty() { 0u16 } else { 1 };
+
+        // Get text width from the first line (List currently renders only first line)
+        let text_width = self
+            .content
+            .lines()
+            .first()
+            .map(|line| line.width())
+            .unwrap_or(0) as u16;
+
+        let total_width = marker_width
+            .saturating_add(space_after_marker)
+            .saturating_add(text_width);
+
+        // ListItem is always 1 line tall
+        SizeConstraints::exact(Size::new(total_width, 1))
+    }
+
+    fn has_intrinsic_size(&self) -> bool {
+        true
+    }
+}
+
+impl MeasurableWidget for List<'_> {
+    fn measure(&self, available: Size) -> SizeConstraints {
+        // Get block chrome if present
+        let (chrome_width, chrome_height) = self
+            .block
+            .as_ref()
+            .map(|b| b.chrome_size())
+            .unwrap_or((0, 0));
+
+        if self.items.is_empty() {
+            // Empty list: just the chrome
+            return SizeConstraints {
+                min: Size::new(chrome_width, chrome_height),
+                preferred: Size::new(chrome_width, chrome_height),
+                max: None,
+            };
+        }
+
+        // Calculate inner available space
+        let inner_available = Size::new(
+            available.width.saturating_sub(chrome_width),
+            available.height.saturating_sub(chrome_height),
+        );
+
+        // Measure all items
+        let mut max_width: u16 = 0;
+        let mut total_height: u16 = 0;
+
+        for item in &self.items {
+            let item_constraints = item.measure(inner_available);
+            max_width = max_width.max(item_constraints.preferred.width);
+            total_height = total_height.saturating_add(item_constraints.preferred.height);
+        }
+
+        // Add highlight symbol width if present
+        if let Some(symbol) = self.highlight_symbol {
+            let symbol_width = UnicodeWidthStr::width(symbol) as u16 + 1; // +1 for space
+            max_width = max_width.saturating_add(symbol_width);
+        }
+
+        // Add chrome
+        let preferred_width = max_width.saturating_add(chrome_width);
+        let preferred_height = total_height.saturating_add(chrome_height);
+
+        // Minimum is chrome + 1 item height (can scroll)
+        let min_height = chrome_height.saturating_add(1.min(total_height));
+
+        SizeConstraints {
+            min: Size::new(chrome_width, min_height),
+            preferred: Size::new(preferred_width, preferred_height),
+            max: None, // Lists can scroll, so no max
+        }
+    }
+
+    fn has_intrinsic_size(&self) -> bool {
+        !self.items.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,5 +598,123 @@ mod tests {
 
         // hit_test returns None when no hit grid
         assert!(frame.hit_test(5, 0).is_none());
+    }
+
+    // --- MeasurableWidget tests ---
+
+    use crate::MeasurableWidget;
+    use ftui_core::geometry::Size;
+
+    #[test]
+    fn list_item_measure_simple() {
+        let item = ListItem::new("Hello"); // 5 chars
+        let constraints = item.measure(Size::MAX);
+
+        assert_eq!(constraints.preferred, Size::new(5, 1));
+        assert_eq!(constraints.min, Size::new(5, 1));
+        assert_eq!(constraints.max, Some(Size::new(5, 1)));
+    }
+
+    #[test]
+    fn list_item_measure_with_marker() {
+        let item = ListItem::new("Hi").marker("•"); // • + space + Hi = 1 + 1 + 2 = 4
+        let constraints = item.measure(Size::MAX);
+
+        assert_eq!(constraints.preferred.width, 4);
+        assert_eq!(constraints.preferred.height, 1);
+    }
+
+    #[test]
+    fn list_item_has_intrinsic_size() {
+        let item = ListItem::new("test");
+        assert!(item.has_intrinsic_size());
+    }
+
+    #[test]
+    fn list_measure_empty() {
+        let list = List::new(Vec::<ListItem>::new());
+        let constraints = list.measure(Size::MAX);
+
+        assert_eq!(constraints.preferred, Size::new(0, 0));
+        assert!(!list.has_intrinsic_size());
+    }
+
+    #[test]
+    fn list_measure_single_item() {
+        let items = vec![ListItem::new("Hello")]; // 5 chars, 1 line
+        let list = List::new(items);
+        let constraints = list.measure(Size::MAX);
+
+        assert_eq!(constraints.preferred, Size::new(5, 1));
+        assert_eq!(constraints.min.height, 1);
+    }
+
+    #[test]
+    fn list_measure_multiple_items() {
+        let items = vec![
+            ListItem::new("Short"),    // 5 chars
+            ListItem::new("LongerItem"), // 10 chars
+            ListItem::new("Tiny"),     // 4 chars
+        ];
+        let list = List::new(items);
+        let constraints = list.measure(Size::MAX);
+
+        // Width is max of all items = 10
+        assert_eq!(constraints.preferred.width, 10);
+        // Height is sum of all items = 3
+        assert_eq!(constraints.preferred.height, 3);
+    }
+
+    #[test]
+    fn list_measure_with_block() {
+        let block = crate::block::Block::bordered(); // 2x2 chrome
+        let items = vec![ListItem::new("Hi")]; // 2 chars, 1 line
+        let list = List::new(items).block(block);
+        let constraints = list.measure(Size::MAX);
+
+        // 2 (text) + 2 (chrome) = 4 width
+        // 1 (line) + 2 (chrome) = 3 height
+        assert_eq!(constraints.preferred, Size::new(4, 3));
+    }
+
+    #[test]
+    fn list_measure_with_highlight_symbol() {
+        let items = vec![ListItem::new("Item")]; // 4 chars
+        let list = List::new(items).highlight_symbol(">"); // 1 char + space = 2
+
+        let constraints = list.measure(Size::MAX);
+
+        // 4 (text) + 2 (symbol + space) = 6
+        assert_eq!(constraints.preferred.width, 6);
+    }
+
+    #[test]
+    fn list_has_intrinsic_size() {
+        let items = vec![ListItem::new("X")];
+        let list = List::new(items);
+        assert!(list.has_intrinsic_size());
+    }
+
+    #[test]
+    fn list_min_height_is_one_row() {
+        let items: Vec<ListItem> = (0..100)
+            .map(|i| ListItem::new(format!("Item {i}")))
+            .collect();
+        let list = List::new(items);
+        let constraints = list.measure(Size::MAX);
+
+        // Min height should be 1 (can scroll to see rest)
+        assert_eq!(constraints.min.height, 1);
+        // Preferred height is all items
+        assert_eq!(constraints.preferred.height, 100);
+    }
+
+    #[test]
+    fn list_measure_is_pure() {
+        let items = vec![ListItem::new("Test")];
+        let list = List::new(items);
+        let a = list.measure(Size::new(100, 50));
+        let b = list.measure(Size::new(100, 50));
+        assert_eq!(a, b);
     }
 }

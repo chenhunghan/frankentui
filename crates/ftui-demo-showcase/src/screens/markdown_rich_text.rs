@@ -176,6 +176,24 @@ Math notation: x<sup>2</sup> + y<sup>2</sup> = r<sup>2</sup>
 | Math | ✓ | LaTeX → Unicode |
 | Admonitions | ✓ | Note, tip, warning, etc. |
 
+## ASCII Diagrams (Auto-Corrected)
+
+Misaligned borders inside code blocks are fixed automatically:
+
+```text
++----------+
+| Diagram |
++-----+
+```
+
+Already-aligned:
+
+```text
++----------+
+| Diagram |
++----------+
+```
+
 ## Mermaid Diagrams
 
 ```mermaid
@@ -466,7 +484,7 @@ impl MarkdownRichText {
         Table::new(rows, widths)
             .header(header)
             .style(Style::new().fg(theme::fg::SECONDARY))
-            .column_spacing(1)
+            .column_spacing(theme::spacing::XS)
             .render(inner, frame);
     }
 

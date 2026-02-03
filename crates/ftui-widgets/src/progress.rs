@@ -3,9 +3,9 @@
 //! Progress bar widget.
 
 use crate::block::Block;
-use crate::{Widget, set_style_area};
+use crate::{Widget, apply_style, set_style_area};
 use ftui_core::geometry::Rect;
-use ftui_render::cell::Cell;
+use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::frame::Frame;
 use ftui_style::Style;
 
@@ -146,6 +146,301 @@ impl<'a> Widget for ProgressBar<'a> {
                 label,
                 label_style,
                 bar_area.right(),
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MiniBar
+// ---------------------------------------------------------------------------
+
+/// Color thresholds for [`MiniBar`].
+#[derive(Debug, Clone, Copy)]
+pub struct MiniBarColors {
+    pub high: PackedRgba,
+    pub mid: PackedRgba,
+    pub low: PackedRgba,
+    pub critical: PackedRgba,
+}
+
+impl MiniBarColors {
+    pub fn new(high: PackedRgba, mid: PackedRgba, low: PackedRgba, critical: PackedRgba) -> Self {
+        Self {
+            high,
+            mid,
+            low,
+            critical,
+        }
+    }
+}
+
+impl Default for MiniBarColors {
+    fn default() -> Self {
+        Self {
+            high: PackedRgba::rgb(64, 200, 120),
+            mid: PackedRgba::rgb(255, 180, 64),
+            low: PackedRgba::rgb(80, 200, 240),
+            critical: PackedRgba::rgb(160, 160, 160),
+        }
+    }
+}
+
+/// Thresholds for mapping values to colors.
+#[derive(Debug, Clone, Copy)]
+pub struct MiniBarThresholds {
+    pub high: f64,
+    pub mid: f64,
+    pub low: f64,
+}
+
+impl Default for MiniBarThresholds {
+    fn default() -> Self {
+        Self {
+            high: 0.75,
+            mid: 0.50,
+            low: 0.25,
+        }
+    }
+}
+
+/// Compact progress indicator for dashboard-style metrics.
+#[derive(Debug, Clone)]
+pub struct MiniBar {
+    value: f64,
+    width: u16,
+    show_percent: bool,
+    style: Style,
+    filled_char: char,
+    empty_char: char,
+    colors: MiniBarColors,
+    thresholds: MiniBarThresholds,
+}
+
+impl MiniBar {
+    /// Create a new MiniBar with value in the 0.0..=1.0 range.
+    pub fn new(value: f64, width: u16) -> Self {
+        Self {
+            value,
+            width,
+            show_percent: false,
+            style: Style::new(),
+            filled_char: '█',
+            empty_char: '░',
+            colors: MiniBarColors::default(),
+            thresholds: MiniBarThresholds::default(),
+        }
+    }
+
+    /// Override the value (clamped to 0.0..=1.0).
+    pub fn value(mut self, value: f64) -> Self {
+        self.value = value;
+        self
+    }
+
+    /// Override the displayed width.
+    pub fn width(mut self, width: u16) -> Self {
+        self.width = width;
+        self
+    }
+
+    /// Enable or disable percentage text.
+    pub fn show_percent(mut self, show: bool) -> Self {
+        self.show_percent = show;
+        self
+    }
+
+    /// Set the base style for the bar.
+    pub fn style(mut self, style: Style) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// Override the filled block character.
+    pub fn filled_char(mut self, ch: char) -> Self {
+        self.filled_char = ch;
+        self
+    }
+
+    /// Override the empty block character.
+    pub fn empty_char(mut self, ch: char) -> Self {
+        self.empty_char = ch;
+        self
+    }
+
+    /// Override the color thresholds.
+    pub fn thresholds(mut self, thresholds: MiniBarThresholds) -> Self {
+        self.thresholds = thresholds;
+        self
+    }
+
+    /// Override the color palette.
+    pub fn colors(mut self, colors: MiniBarColors) -> Self {
+        self.colors = colors;
+        self
+    }
+
+    /// Map a value to a color using default thresholds.
+    pub fn color_for_value(value: f64) -> PackedRgba {
+        let v = if value.is_finite() { value } else { 0.0 };
+        let v = v.clamp(0.0, 1.0);
+        let thresholds = MiniBarThresholds::default();
+        let colors = MiniBarColors::default();
+        if v > thresholds.high {
+            colors.high
+        } else if v > thresholds.mid {
+            colors.mid
+        } else if v > thresholds.low {
+            colors.low
+        } else {
+            colors.critical
+        }
+    }
+
+    /// Render the bar as a string (for testing/debugging).
+    pub fn render_string(&self) -> String {
+        let width = self.width as usize;
+        if width == 0 {
+            return String::new();
+        }
+        let filled = self.filled_cells(width);
+        let empty = width.saturating_sub(filled);
+        let mut out = String::with_capacity(width);
+        out.extend(std::iter::repeat_n(self.filled_char, filled));
+        out.extend(std::iter::repeat_n(self.empty_char, empty));
+        out
+    }
+
+    fn normalized_value(&self) -> f64 {
+        if self.value.is_finite() {
+            self.value.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
+    fn filled_cells(&self, width: usize) -> usize {
+        if width == 0 {
+            return 0;
+        }
+        let v = self.normalized_value();
+        let filled = (v * width as f64).round() as usize;
+        filled.min(width)
+    }
+
+    fn color_for_value_with_palette(&self, value: f64) -> PackedRgba {
+        let v = if value.is_finite() { value } else { 0.0 };
+        let v = v.clamp(0.0, 1.0);
+        if v > self.thresholds.high {
+            self.colors.high
+        } else if v > self.thresholds.mid {
+            self.colors.mid
+        } else if v > self.thresholds.low {
+            self.colors.low
+        } else {
+            self.colors.critical
+        }
+    }
+}
+
+impl Widget for MiniBar {
+    fn render(&self, area: Rect, frame: &mut Frame) {
+        #[cfg(feature = "tracing")]
+        let _span = tracing::debug_span!(
+            "widget_render",
+            widget = "MiniBar",
+            x = area.x,
+            y = area.y,
+            w = area.width,
+            h = area.height
+        )
+        .entered();
+
+        if area.is_empty() {
+            return;
+        }
+
+        let deg = frame.buffer.degradation;
+        if !deg.render_content() {
+            return;
+        }
+
+        let value = self.normalized_value();
+
+        if !deg.render_decorative() {
+            if self.show_percent {
+                let pct = format!("{:3.0}%", value * 100.0);
+                crate::draw_text_span(frame, area.x, area.y, &pct, Style::default(), area.right());
+            }
+            return;
+        }
+
+        let mut bar_width = self.width.min(area.width) as usize;
+        let mut render_percent = false;
+        let mut percent_text = String::new();
+        let percent_width = if self.show_percent {
+            percent_text = format!(" {:3.0}%", value * 100.0);
+            render_percent = true;
+            percent_text.chars().count() as u16
+        } else {
+            0
+        };
+
+        if render_percent {
+            let available = area.width.saturating_sub(percent_width);
+            if available == 0 {
+                render_percent = false;
+            } else {
+                bar_width = bar_width.min(available as usize);
+            }
+        }
+
+        if bar_width == 0 {
+            if render_percent {
+                crate::draw_text_span(
+                    frame,
+                    area.x,
+                    area.y,
+                    &percent_text,
+                    Style::default(),
+                    area.right(),
+                );
+            }
+            return;
+        }
+
+        let color = self.color_for_value_with_palette(value);
+        let filled = self.filled_cells(bar_width);
+
+        for i in 0..bar_width {
+            let x = area.x + i as u16;
+            if x >= area.right() {
+                break;
+            }
+            let ch = if i < filled {
+                self.filled_char
+            } else {
+                self.empty_char
+            };
+            let mut cell = Cell::from_char(ch);
+            if deg.apply_styling() {
+                apply_style(&mut cell, self.style);
+                if i < filled {
+                    cell.fg = color;
+                }
+            }
+            frame.buffer.set(x, area.y, cell);
+        }
+
+        if render_percent {
+            let text_x = area.x + bar_width as u16;
+            crate::draw_text_span(
+                frame,
+                text_x,
+                area.y,
+                &percent_text,
+                Style::default(),
+                area.right(),
             );
         }
     }
@@ -387,6 +682,48 @@ mod tests {
                 PackedRgba::BLUE,
                 "cell at x={x} should have gauge bg at Full"
             );
+        }
+    }
+
+    // --- MiniBar tests ---
+
+    #[test]
+    fn minibar_zero_is_empty() {
+        let bar = MiniBar::new(0.0, 10);
+        let filled = bar.render_string().chars().filter(|c| *c == '█').count();
+        assert_eq!(filled, 0);
+    }
+
+    #[test]
+    fn minibar_full_is_complete() {
+        let bar = MiniBar::new(1.0, 10);
+        let filled = bar.render_string().chars().filter(|c| *c == '█').count();
+        assert_eq!(filled, 10);
+    }
+
+    #[test]
+    fn minibar_half_is_half() {
+        let bar = MiniBar::new(0.5, 10);
+        let filled = bar.render_string().chars().filter(|c| *c == '█').count();
+        assert!((4..=6).contains(&filled));
+    }
+
+    #[test]
+    fn minibar_color_thresholds() {
+        let high = MiniBar::color_for_value(0.80);
+        let mid = MiniBar::color_for_value(0.60);
+        let low = MiniBar::color_for_value(0.30);
+        let crit = MiniBar::color_for_value(0.10);
+        assert_ne!(high, mid);
+        assert_ne!(mid, low);
+        assert_ne!(low, crit);
+    }
+
+    #[test]
+    fn minibar_respects_width() {
+        for width in [5, 10, 20] {
+            let bar = MiniBar::new(0.5, width);
+            assert_eq!(bar.render_string().chars().count(), width as usize);
         }
     }
 }

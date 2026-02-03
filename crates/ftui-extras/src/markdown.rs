@@ -38,6 +38,8 @@
 //! }
 //! ```
 
+#[cfg(feature = "diagram")]
+use crate::diagram;
 use ftui_render::cell::PackedRgba;
 use ftui_style::Style;
 use ftui_text::text::{Line, Span, Text};
@@ -1567,13 +1569,25 @@ impl<'t> RenderState<'t> {
     }
 
     fn flush_code_block(&mut self) {
-        let code = std::mem::take(&mut self.code_block_lines).join("");
+        let mut code = std::mem::take(&mut self.code_block_lines).join("");
         let lang = self.code_block_lang.take();
         let style = self.theme.code_block;
+        let lang_lower = lang.as_ref().map(|value| value.to_ascii_lowercase());
+
+        #[cfg(feature = "diagram")]
+        {
+            let is_excluded = matches!(
+                lang_lower.as_deref(),
+                Some("mermaid" | "math" | "latex" | "tex")
+            );
+            if !is_excluded && diagram::is_likely_diagram(&code) {
+                code = diagram::correct_diagram(&code);
+            }
+        }
 
         // Handle special languages
         if let Some(ref lang_str) = lang {
-            let lang_lower = lang_str.to_ascii_lowercase();
+            let lang_lower = lang_lower.as_deref().unwrap_or("");
 
             // Mermaid diagrams - show with diagram indicator
             if lang_lower == "mermaid" {
@@ -1643,7 +1657,7 @@ impl<'t> RenderState<'t> {
                 "markdown",
                 "md",
             ];
-            if common_langs.contains(&lang_lower.as_str()) {
+            if common_langs.contains(&lang_lower) {
                 self.lines.push(Line::styled(
                     format!("─── {lang_str} ───"),
                     self.theme.code_inline.dim(),
@@ -1810,6 +1824,30 @@ mod tests {
         let text = render_markdown(md);
         let content = plain(&text);
         assert!(content.contains("fn main()"));
+    }
+
+    #[cfg(feature = "diagram")]
+    #[test]
+    fn render_code_block_diagram_correction_applied() {
+        let md = "```\n+----+\n|Hi|\n+----+\n```";
+        let text = render_markdown(md);
+        let content = plain(&text);
+        let corrected = crate::diagram::correct_diagram("+----+\n|Hi|\n+----+\n");
+        let expected = corrected
+            .lines()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(content.contains(&expected));
+    }
+
+    #[cfg(feature = "diagram")]
+    #[test]
+    fn render_code_block_non_diagram_unchanged() {
+        let md = "```\nfn main() {}\n```";
+        let text = render_markdown(md);
+        let content = plain(&text);
+        assert!(content.contains("  fn main() {}"));
     }
 
     #[test]

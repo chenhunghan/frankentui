@@ -7,8 +7,9 @@
 
 use crate::block::Alignment;
 use crate::borders::BorderType;
+use crate::measurable::{MeasurableWidget, SizeConstraints};
 use crate::{Widget, apply_style, draw_text_span};
-use ftui_core::geometry::Rect;
+use ftui_core::geometry::{Rect, Size};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
@@ -217,6 +218,33 @@ impl Widget for Rule<'_> {
                 self.fill_rule_char(&mut frame.buffer, y, right_rule_start, area.right());
             }
         }
+    }
+}
+
+impl MeasurableWidget for Rule<'_> {
+    fn measure(&self, _available: Size) -> SizeConstraints {
+        // Rule is always exactly 1 cell tall
+        // Minimum width is 1 (single rule char), preferred depends on title
+        let min_width = 1u16;
+
+        let preferred_width = if let Some(title) = self.title {
+            // Title + padding (1 space on each side) + at least 2 rule chars
+            let title_width = UnicodeWidthStr::width(title) as u16;
+            title_width.saturating_add(4) // title + 2 spaces + 2 rule chars minimum
+        } else {
+            1 // Just a single rule char is fine
+        };
+
+        SizeConstraints {
+            min: Size::new(min_width, 1),
+            preferred: Size::new(preferred_width, 1),
+            max: Some(Size::new(u16::MAX, 1)), // Fixed height of 1
+        }
+    }
+
+    fn has_intrinsic_size(&self) -> bool {
+        // Rule always has intrinsic height of 1
+        true
     }
 }
 
@@ -613,5 +641,66 @@ mod tests {
             row.iter().all(|&c| c == '─'),
             "Expected all ─, got: {row:?}"
         );
+    }
+
+    // --- MeasurableWidget tests ---
+
+    use crate::MeasurableWidget;
+    use ftui_core::geometry::Size;
+
+    #[test]
+    fn measure_no_title() {
+        let rule = Rule::new();
+        let constraints = rule.measure(Size::MAX);
+
+        // Min is 1x1, preferred is 1x1, max height is 1
+        assert_eq!(constraints.min, Size::new(1, 1));
+        assert_eq!(constraints.preferred, Size::new(1, 1));
+        assert_eq!(constraints.max, Some(Size::new(u16::MAX, 1)));
+    }
+
+    #[test]
+    fn measure_with_title() {
+        let rule = Rule::new().title("Test");
+        let constraints = rule.measure(Size::MAX);
+
+        // "Test" is 4 chars, plus 2 spaces padding, plus 2 rule chars = 8
+        assert_eq!(constraints.min, Size::new(1, 1));
+        assert_eq!(constraints.preferred, Size::new(8, 1));
+        assert_eq!(constraints.max.unwrap().height, 1);
+    }
+
+    #[test]
+    fn measure_with_long_title() {
+        let rule = Rule::new().title("Very Long Title");
+        let constraints = rule.measure(Size::MAX);
+
+        // "Very Long Title" is 15 chars, + 4 = 19
+        assert_eq!(constraints.preferred, Size::new(19, 1));
+    }
+
+    #[test]
+    fn measure_fixed_height() {
+        let rule = Rule::new().title("Hi");
+        let constraints = rule.measure(Size::MAX);
+
+        // Height is always exactly 1
+        assert_eq!(constraints.min.height, 1);
+        assert_eq!(constraints.preferred.height, 1);
+        assert_eq!(constraints.max.unwrap().height, 1);
+    }
+
+    #[test]
+    fn rule_has_intrinsic_size() {
+        let rule = Rule::new();
+        assert!(rule.has_intrinsic_size());
+    }
+
+    #[test]
+    fn rule_measure_is_pure() {
+        let rule = Rule::new().title("Hello");
+        let a = rule.measure(Size::new(100, 50));
+        let b = rule.measure(Size::new(100, 50));
+        assert_eq!(a, b);
     }
 }

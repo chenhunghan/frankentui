@@ -201,8 +201,8 @@ impl DataViz {
         let chart = BarChart::new(groups)
             .direction(direction)
             .bar_width(2)
-            .bar_gap(1)
-            .group_gap(2)
+            .bar_gap(theme::spacing::XS)
+            .group_gap(theme::spacing::SM)
             .colors(chart_palette().to_vec())
             .style(Style::new().fg(theme::fg::PRIMARY));
 

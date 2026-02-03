@@ -37,4 +37,4 @@
 │[   35]  INFO server::http       Event #00035: simulated log entry with payload dat││                                 │
 │[   36] DEBUG db::pool           Event #00036: simulated log entry with payload dat││                                 │
 ╰───────────────────────────────────────────────────────────────────────────────────╯╰─────────────────────────────────╯
-Item 1/10000 | ↑/↓: scroll | PgUp/PgDn: page | Home/End: jump                                                           
+Item 1/10000 | j/k: scroll | Ctrl+D/U: page | g/G: jump                                                                 

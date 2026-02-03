@@ -122,7 +122,7 @@ impl LayoutLab {
             alignment_idx: 0,
             gap: 0,
             margin: 0,
-            padding_amount: 1,
+            padding_amount: theme::spacing::XS,
             align_pos: 4, // Center/Middle
             debugger,
             show_debug: false,
@@ -645,12 +645,12 @@ impl LayoutLab {
             .split(demo_inner);
 
         let top_demos = Flex::horizontal()
-            .gap(1)
+            .gap(theme::spacing::XS)
             .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
             .split(demo_rows[0]);
 
         let bottom_demos = Flex::horizontal()
-            .gap(1)
+            .gap(theme::spacing::XS)
             .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
             .split(demo_rows[1]);
 
@@ -710,7 +710,7 @@ impl LayoutLab {
         let col_c = Paragraph::new("C").style(Style::new().fg(colors[2]).attrs(StyleFlags::BOLD));
 
         let columns = Columns::new()
-            .gap(1)
+            .gap(theme::spacing::XS)
             .column(col_a, Constraint::Ratio(1, 3))
             .column(col_b, Constraint::Ratio(1, 3))
             .column(col_c, Constraint::Ratio(1, 3));

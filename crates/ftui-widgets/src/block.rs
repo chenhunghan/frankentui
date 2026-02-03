@@ -2,8 +2,9 @@
 
 use crate::Widget;
 use crate::borders::{BorderType, Borders};
+use crate::measurable::{MeasurableWidget, SizeConstraints};
 use crate::{apply_style, draw_text_span, set_style_area};
-use ftui_core::geometry::Rect;
+use ftui_core::geometry::{Rect, Size};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
@@ -99,6 +100,18 @@ impl<'a> Block<'a> {
         }
 
         inner
+    }
+
+    /// Calculate the chrome (border) size consumed by this block.
+    ///
+    /// Returns `(horizontal_chrome, vertical_chrome)` representing the
+    /// total width and height consumed by borders.
+    pub fn chrome_size(&self) -> (u16, u16) {
+        let horizontal = self.borders.contains(Borders::LEFT) as u16
+            + self.borders.contains(Borders::RIGHT) as u16;
+        let vertical = self.borders.contains(Borders::TOP) as u16
+            + self.borders.contains(Borders::BOTTOM) as u16;
+        (horizontal, vertical)
     }
 
     /// Create a styled border cell.
@@ -354,6 +367,24 @@ impl Widget for Block<'_> {
                 }
             }
         }
+    }
+}
+
+impl MeasurableWidget for Block<'_> {
+    fn measure(&self, _available: Size) -> SizeConstraints {
+        let (chrome_width, chrome_height) = self.chrome_size();
+        let chrome = Size::new(chrome_width, chrome_height);
+
+        // Block's intrinsic size is just its chrome (borders).
+        // The minimum is the chrome size - less than this and borders overlap.
+        // Preferred is also the chrome size - any inner content adds to this.
+        // Maximum is unbounded - block can fill available space.
+        SizeConstraints::at_least(chrome, chrome)
+    }
+
+    fn has_intrinsic_size(&self) -> bool {
+        // Block has intrinsic size only if it has borders
+        self.borders != Borders::empty()
     }
 }
 
@@ -659,5 +690,85 @@ mod tests {
     #[test]
     fn alignment_default_is_left() {
         assert_eq!(Alignment::default(), Alignment::Left);
+    }
+
+    // --- MeasurableWidget tests ---
+
+    use crate::MeasurableWidget;
+    use ftui_core::geometry::Size;
+
+    #[test]
+    fn chrome_size_no_borders() {
+        let block = Block::new();
+        assert_eq!(block.chrome_size(), (0, 0));
+    }
+
+    #[test]
+    fn chrome_size_all_borders() {
+        let block = Block::bordered();
+        assert_eq!(block.chrome_size(), (2, 2));
+    }
+
+    #[test]
+    fn chrome_size_partial_borders() {
+        let block = Block::new().borders(Borders::TOP | Borders::LEFT);
+        assert_eq!(block.chrome_size(), (1, 1));
+    }
+
+    #[test]
+    fn chrome_size_horizontal_only() {
+        let block = Block::new().borders(Borders::LEFT | Borders::RIGHT);
+        assert_eq!(block.chrome_size(), (2, 0));
+    }
+
+    #[test]
+    fn chrome_size_vertical_only() {
+        let block = Block::new().borders(Borders::TOP | Borders::BOTTOM);
+        assert_eq!(block.chrome_size(), (0, 2));
+    }
+
+    #[test]
+    fn measure_no_borders() {
+        let block = Block::new();
+        let constraints = block.measure(Size::MAX);
+        assert_eq!(constraints.min, Size::ZERO);
+        assert_eq!(constraints.preferred, Size::ZERO);
+    }
+
+    #[test]
+    fn measure_all_borders() {
+        let block = Block::bordered();
+        let constraints = block.measure(Size::MAX);
+        assert_eq!(constraints.min, Size::new(2, 2));
+        assert_eq!(constraints.preferred, Size::new(2, 2));
+        assert_eq!(constraints.max, None); // Unbounded
+    }
+
+    #[test]
+    fn measure_partial_borders() {
+        let block = Block::new().borders(Borders::TOP | Borders::RIGHT);
+        let constraints = block.measure(Size::MAX);
+        assert_eq!(constraints.min, Size::new(1, 1));
+        assert_eq!(constraints.preferred, Size::new(1, 1));
+    }
+
+    #[test]
+    fn has_intrinsic_size_with_borders() {
+        let block = Block::bordered();
+        assert!(block.has_intrinsic_size());
+    }
+
+    #[test]
+    fn has_no_intrinsic_size_without_borders() {
+        let block = Block::new();
+        assert!(!block.has_intrinsic_size());
+    }
+
+    #[test]
+    fn measure_is_pure() {
+        let block = Block::bordered();
+        let a = block.measure(Size::new(100, 50));
+        let b = block.measure(Size::new(100, 50));
+        assert_eq!(a, b);
     }
 }

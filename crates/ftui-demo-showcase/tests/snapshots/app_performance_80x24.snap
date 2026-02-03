@@ -19,6 +19,6 @@
 ││[   15]  INFO db::pool           Event #0││                                 ││
 ││[   16] DEBUG auth::jwt          Event #0││                                 ││
 │╰─────────────────────────────────────────╯╰─────────────────────────────────╯│
-│Item 1/10000 | ↑/↓: scroll | PgUp/PgDn: page | Home/End: jump                 │
+│Item 1/10000 | j/k: scroll | Ctrl+D/U: page | g/G: jump                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
  Performance [10/12]  Cyberpunk Aurora          tick:0 frm:0          0x0 00:00 

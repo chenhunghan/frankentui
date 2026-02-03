@@ -2,6 +2,100 @@
 
 //! Geometric primitives.
 
+/// A 2D size in terminal cells.
+///
+/// Represents dimensions (width and height) using `u16` for terminal coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub struct Size {
+    /// Width in cells.
+    pub width: u16,
+    /// Height in cells.
+    pub height: u16,
+}
+
+impl Size {
+    /// Zero size (0x0).
+    pub const ZERO: Self = Self {
+        width: 0,
+        height: 0,
+    };
+
+    /// Maximum size (u16::MAX x u16::MAX).
+    ///
+    /// Useful as a sentinel for "unbounded" or "as large as needed".
+    pub const MAX: Self = Self {
+        width: u16::MAX,
+        height: u16::MAX,
+    };
+
+    /// Create a new size.
+    #[inline]
+    pub const fn new(width: u16, height: u16) -> Self {
+        Self { width, height }
+    }
+
+    /// Check if this size has zero area.
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+
+    /// Area in cells.
+    #[inline]
+    pub const fn area(&self) -> u32 {
+        self.width as u32 * self.height as u32
+    }
+
+    /// Clamp width and height to the given maximums.
+    #[inline]
+    pub const fn clamp_max(&self, max: Size) -> Size {
+        Size {
+            width: if self.width > max.width {
+                max.width
+            } else {
+                self.width
+            },
+            height: if self.height > max.height {
+                max.height
+            } else {
+                self.height
+            },
+        }
+    }
+
+    /// Clamp width and height to the given minimums.
+    #[inline]
+    pub const fn clamp_min(&self, min: Size) -> Size {
+        Size {
+            width: if self.width < min.width {
+                min.width
+            } else {
+                self.width
+            },
+            height: if self.height < min.height {
+                min.height
+            } else {
+                self.height
+            },
+        }
+    }
+}
+
+impl From<(u16, u16)> for Size {
+    fn from((width, height): (u16, u16)) -> Self {
+        Self { width, height }
+    }
+}
+
+impl From<Rect> for Size {
+    fn from(rect: Rect) -> Self {
+        Self {
+            width: rect.width,
+            height: rect.height,
+        }
+    }
+}
+
 /// A rectangle for scissor regions, layout bounds, and hit testing.
 ///
 /// Uses terminal coordinates (0-indexed, origin at top-left).
@@ -241,7 +335,7 @@ impl From<(u16, u16, u16, u16)> for Sides {
 
 #[cfg(test)]
 mod tests {
-    use super::{Rect, Sides};
+    use super::{Rect, Sides, Size};
 
     #[test]
     fn rect_contains_edges() {
@@ -531,5 +625,66 @@ mod tests {
     fn sides_sums_saturating() {
         let s = Sides::new(u16::MAX, 0, u16::MAX, 0);
         assert_eq!(s.vertical_sum(), u16::MAX);
+    }
+
+    // --- Size tests ---
+
+    #[test]
+    fn size_new_and_constants() {
+        let s = Size::new(80, 24);
+        assert_eq!(s.width, 80);
+        assert_eq!(s.height, 24);
+
+        assert_eq!(Size::ZERO, Size::new(0, 0));
+        assert_eq!(Size::MAX, Size::new(u16::MAX, u16::MAX));
+    }
+
+    #[test]
+    fn size_default_is_zero() {
+        assert_eq!(Size::default(), Size::ZERO);
+    }
+
+    #[test]
+    fn size_is_empty() {
+        assert!(Size::ZERO.is_empty());
+        assert!(Size::new(0, 10).is_empty());
+        assert!(Size::new(10, 0).is_empty());
+        assert!(!Size::new(1, 1).is_empty());
+    }
+
+    #[test]
+    fn size_area() {
+        assert_eq!(Size::new(10, 20).area(), 200);
+        assert_eq!(Size::ZERO.area(), 0);
+        assert_eq!(Size::new(1, 1).area(), 1);
+    }
+
+    #[test]
+    fn size_clamp_max() {
+        let s = Size::new(100, 50);
+        assert_eq!(s.clamp_max(Size::new(80, 40)), Size::new(80, 40));
+        assert_eq!(s.clamp_max(Size::new(200, 200)), s);
+        assert_eq!(s.clamp_max(Size::new(80, 100)), Size::new(80, 50));
+    }
+
+    #[test]
+    fn size_clamp_min() {
+        let s = Size::new(10, 5);
+        assert_eq!(s.clamp_min(Size::new(20, 10)), Size::new(20, 10));
+        assert_eq!(s.clamp_min(Size::new(5, 3)), s);
+        assert_eq!(s.clamp_min(Size::new(15, 3)), Size::new(15, 5));
+    }
+
+    #[test]
+    fn size_from_tuple() {
+        let s: Size = (80, 24).into();
+        assert_eq!(s, Size::new(80, 24));
+    }
+
+    #[test]
+    fn size_from_rect() {
+        let r = Rect::new(5, 10, 80, 24);
+        let s: Size = r.into();
+        assert_eq!(s, Size::new(80, 24));
     }
 }

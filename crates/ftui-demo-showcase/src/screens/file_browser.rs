@@ -365,64 +365,63 @@ impl Screen for FileBrowser {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
-        // Panel switching
+        // Panel switching (Ctrl+Left/Right or h/l)
         if let Event::Key(KeyEvent {
-            code: KeyCode::Right,
+            code,
             modifiers,
             kind: KeyEventKind::Press,
             ..
         }) = event
-            && modifiers.contains(Modifiers::CTRL)
         {
-            self.focus = self.focus.next();
-            return Cmd::None;
-        }
-        if let Event::Key(KeyEvent {
-            code: KeyCode::Left,
-            modifiers,
-            kind: KeyEventKind::Press,
-            ..
-        }) = event
-            && modifiers.contains(Modifiers::CTRL)
-        {
-            self.focus = self.focus.prev();
-            return Cmd::None;
+            let next_panel = (*code == KeyCode::Right && modifiers.contains(Modifiers::CTRL))
+                || (*code == KeyCode::Char('l') && *modifiers == Modifiers::NONE);
+            let prev_panel = (*code == KeyCode::Left && modifiers.contains(Modifiers::CTRL))
+                || (*code == KeyCode::Char('h') && *modifiers == Modifiers::NONE);
+
+            if next_panel {
+                self.focus = self.focus.next();
+                return Cmd::None;
+            }
+            if prev_panel {
+                self.focus = self.focus.prev();
+                return Cmd::None;
+            }
         }
 
         match self.focus {
             Panel::FilePicker => {
                 if let Event::Key(KeyEvent {
+                    code,
                     kind: KeyEventKind::Press,
+                    modifiers,
                     ..
                 }) = event
                 {
-                    match event {
-                        Event::Key(KeyEvent {
-                            code: KeyCode::Up, ..
-                        }) => self.picker.move_up(),
-                        Event::Key(KeyEvent {
-                            code: KeyCode::Down,
-                            ..
-                        }) => self.picker.move_down(),
-                        Event::Key(KeyEvent {
-                            code: KeyCode::Home,
-                            ..
-                        }) => self.picker.move_to_first(),
-                        Event::Key(KeyEvent {
-                            code: KeyCode::End, ..
-                        }) => self.picker.move_to_last(),
-                        Event::Key(KeyEvent {
-                            code: KeyCode::PageUp,
-                            ..
-                        }) => self.picker.page_up(),
-                        Event::Key(KeyEvent {
-                            code: KeyCode::PageDown,
-                            ..
-                        }) => self.picker.page_down(),
-                        Event::Key(KeyEvent {
-                            code: KeyCode::Char('h'),
-                            ..
-                        }) => {
+                    match code {
+                        // Vim: k or Up for move up
+                        KeyCode::Up | KeyCode::Char('k') => self.picker.move_up(),
+                        // Vim: j or Down for move down
+                        KeyCode::Down | KeyCode::Char('j') => self.picker.move_down(),
+                        // Vim: g or Home for first (gg would require state, so single g)
+                        KeyCode::Home | KeyCode::Char('g')
+                            if !modifiers.contains(Modifiers::SHIFT) =>
+                        {
+                            self.picker.move_to_first()
+                        }
+                        // Vim: G or End for last
+                        KeyCode::End | KeyCode::Char('G') => self.picker.move_to_last(),
+                        // Vim: Ctrl+U for half-page up, or PageUp
+                        KeyCode::PageUp => self.picker.page_up(),
+                        KeyCode::Char('u') if modifiers.contains(Modifiers::CTRL) => {
+                            self.picker.page_up()
+                        }
+                        // Vim: Ctrl+D for half-page down, or PageDown
+                        KeyCode::PageDown => self.picker.page_down(),
+                        KeyCode::Char('d') if modifiers.contains(Modifiers::CTRL) => {
+                            self.picker.page_down()
+                        }
+                        // Toggle hidden files: '.' (unix convention, frees 'h' for navigation)
+                        KeyCode::Char('.') => {
                             self.show_hidden = !self.show_hidden;
                             self.picker.set_filter(FilePickerFilter {
                                 allowed_extensions: vec![],
@@ -435,20 +434,22 @@ impl Screen for FileBrowser {
             }
             Panel::Preview => {
                 if let Event::Key(KeyEvent {
-                    code: KeyCode::Up,
+                    code,
                     kind: KeyEventKind::Press,
                     ..
                 }) = event
                 {
-                    self.preview_scroll = self.preview_scroll.saturating_sub(1);
-                }
-                if let Event::Key(KeyEvent {
-                    code: KeyCode::Down,
-                    kind: KeyEventKind::Press,
-                    ..
-                }) = event
-                {
-                    self.preview_scroll = self.preview_scroll.saturating_add(1);
+                    match code {
+                        // Vim: k or Up for scroll up
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.preview_scroll = self.preview_scroll.saturating_sub(1);
+                        }
+                        // Vim: j or Down for scroll down
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.preview_scroll = self.preview_scroll.saturating_add(1);
+                        }
+                        _ => {}
+                    }
                 }
             }
             Panel::FileTree => {}
@@ -488,7 +489,7 @@ impl Screen for FileBrowser {
             })
             .unwrap_or_else(|| "(no selection)".into());
         let status = format!(
-            "{} | Ctrl+\u{2190}/\u{2192}: panels | \u{2191}/\u{2193}: navigate | h: toggle hidden",
+            "{} | h/l: panels | j/k: navigate | g/G: first/last | .: hidden",
             entry_info
         );
         Paragraph::new(&*status)
@@ -499,24 +500,24 @@ impl Screen for FileBrowser {
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {
-                key: "Ctrl+\u{2190}/\u{2192}",
+                key: "h/l",
                 action: "Switch panel",
             },
             HelpEntry {
-                key: "\u{2191}/\u{2193}",
-                action: "Navigate files",
+                key: "j/k or \u{2191}/\u{2193}",
+                action: "Navigate",
             },
             HelpEntry {
-                key: "Home/End",
+                key: "g/G",
                 action: "First/last",
             },
             HelpEntry {
-                key: "PgUp/PgDn",
+                key: "Ctrl+D/U",
                 action: "Page scroll",
             },
             HelpEntry {
-                key: "h",
-                action: "Toggle hidden files",
+                key: ".",
+                action: "Toggle hidden",
             },
         ]
     }
@@ -583,8 +584,28 @@ mod tests {
     fn toggle_hidden() {
         let mut screen = FileBrowser::new();
         assert!(!screen.show_hidden);
-        screen.update(&press(KeyCode::Char('h')));
+        screen.update(&press(KeyCode::Char('.')));
         assert!(screen.show_hidden);
+    }
+
+    #[test]
+    fn vim_navigation_jk() {
+        let mut screen = FileBrowser::new();
+        assert_eq!(screen.picker.selected_index(), 0);
+        screen.update(&press(KeyCode::Char('j')));
+        assert_eq!(screen.picker.selected_index(), 1);
+        screen.update(&press(KeyCode::Char('k')));
+        assert_eq!(screen.picker.selected_index(), 0);
+    }
+
+    #[test]
+    fn vim_navigation_hl_panels() {
+        let mut screen = FileBrowser::new();
+        assert_eq!(screen.focus, Panel::FilePicker);
+        screen.update(&press(KeyCode::Char('l')));
+        assert_eq!(screen.focus, Panel::Preview);
+        screen.update(&press(KeyCode::Char('h')));
+        assert_eq!(screen.focus, Panel::FilePicker);
     }
 
     #[test]
