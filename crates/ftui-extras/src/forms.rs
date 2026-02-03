@@ -14,7 +14,7 @@ use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
-use ftui_widgets::{StatefulWidget, Widget};
+use ftui_widgets::{StatefulWidget, ValidationErrorDisplay, ValidationErrorState, Widget};
 
 // ---------------------------------------------------------------------------
 // FormField – the individual field types
@@ -372,6 +372,8 @@ pub struct FormState {
     dirty: Vec<bool>,
     /// Initial field values for dirty tracking (set via `init_tracking`).
     initial_values: Option<Vec<FormValue>>,
+    /// Per-field validation error display state (for animation/accessibility).
+    error_states: Vec<ValidationErrorState>,
 }
 
 impl FormState {
@@ -402,6 +404,7 @@ impl FormState {
         let count = form.field_count();
         self.touched = vec![false; count];
         self.dirty = vec![false; count];
+        self.ensure_error_states(count);
         self.initial_values = Some(
             form.fields
                 .iter()
@@ -523,6 +526,14 @@ impl FormState {
     /// Check if form is pristine (no fields touched or dirty).
     pub fn is_pristine(&self) -> bool {
         !self.any_touched() && !self.any_dirty()
+    }
+
+    fn ensure_error_states(&mut self, count: usize) {
+        if self.error_states.len() != count {
+            self.error_states = (0..count)
+                .map(|i| ValidationErrorState::default().with_aria_id(i as u32 + 1))
+                .collect();
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -859,12 +870,16 @@ impl StatefulWidget for Form {
         let value_width = area.width.saturating_sub(label_w);
 
         let visible_rows = area.height as usize;
+        state.ensure_error_states(self.fields.len());
 
-        // Ensure focused field is visible
-        if state.focused >= state.scroll + visible_rows {
-            state.scroll = state.focused - visible_rows + 1;
-        } else if state.focused < state.scroll {
-            state.scroll = state.focused;
+        // Compute row heights (1 line for field + optional error line).
+        let mut row_heights = Vec::with_capacity(self.fields.len());
+        let mut total_rows = 0usize;
+        for i in 0..self.fields.len() {
+            let has_error = state.errors.iter().any(|e| e.field == i);
+            let height = if has_error { 2 } else { 1 };
+            row_heights.push(height);
+            total_rows = total_rows.saturating_add(height);
         }
 
         // Clamp focus
@@ -872,14 +887,32 @@ impl StatefulWidget for Form {
             state.focused = self.fields.len().saturating_sub(1);
         }
 
-        for (i, field) in self
-            .fields
-            .iter()
-            .enumerate()
-            .skip(state.scroll)
-            .take(visible_rows)
-        {
-            let y = area.y.saturating_add((i - state.scroll) as u16);
+        let focus_row_start: usize = row_heights.iter().take(state.focused).sum();
+        let focus_row_end =
+            focus_row_start.saturating_add(row_heights[state.focused].saturating_sub(1));
+
+        // Ensure focused field is visible
+        if focus_row_end >= state.scroll.saturating_add(visible_rows) {
+            state.scroll = focus_row_end.saturating_sub(visible_rows.saturating_sub(1));
+        } else if focus_row_start < state.scroll {
+            state.scroll = focus_row_start;
+        }
+        let max_scroll = total_rows.saturating_sub(visible_rows);
+        state.scroll = state.scroll.min(max_scroll);
+
+        let mut row_cursor = 0usize;
+        for (i, field) in self.fields.iter().enumerate() {
+            let row_start = row_cursor;
+            let row_height = row_heights[i];
+            row_cursor = row_cursor.saturating_add(row_height);
+
+            if row_start >= state.scroll.saturating_add(visible_rows) {
+                break;
+            }
+            if row_start.saturating_add(row_height) <= state.scroll {
+                continue;
+            }
+
             let is_focused = i == state.focused;
 
             // Find error for this field
@@ -889,55 +922,74 @@ impl StatefulWidget for Form {
                 .find(|e| e.field == i)
                 .map(|e| e.message.as_str());
 
-            // Draw label
-            let label_style = if is_focused {
-                self.focused_style
-            } else {
-                self.label_style
-            };
+            // Sync error display state
+            if let Some(error_state) = state.error_states.get_mut(i) {
+                if error_msg.is_some() {
+                    error_state.show();
+                } else {
+                    error_state.hide();
+                }
+            }
 
-            let label = field.label();
-            draw_str(
-                frame,
-                area.x,
-                y,
-                label,
-                label_style,
-                label_w.saturating_sub(2),
-            );
+            // Draw label + value on the primary line if visible
+            if row_start >= state.scroll {
+                let y = area.y.saturating_add((row_start - state.scroll) as u16);
 
-            // Draw ": " separator
-            let sep_x = area.x.saturating_add(
-                unicode_width::UnicodeWidthStr::width(label)
-                    .min((label_w.saturating_sub(2)) as usize) as u16,
-            );
-            draw_str(frame, sep_x, y, ": ", label_style, 2);
+                let label_style = if is_focused {
+                    self.focused_style
+                } else {
+                    self.label_style
+                };
 
-            // Draw field value
-            let field_style = if is_focused {
-                self.focused_style
-            } else {
-                self.style
-            };
+                let label = field.label();
+                draw_str(
+                    frame,
+                    area.x,
+                    y,
+                    label,
+                    label_style,
+                    label_w.saturating_sub(2),
+                );
 
-            self.render_field(
-                frame,
-                field,
-                value_x,
-                y,
-                value_width,
-                field_style,
-                is_focused,
-                state,
-            );
+                // Draw ": " separator
+                let sep_x = area.x.saturating_add(
+                    unicode_width::UnicodeWidthStr::width(label)
+                        .min((label_w.saturating_sub(2)) as usize) as u16,
+                );
+                draw_str(frame, sep_x, y, ": ", label_style, 2);
 
-            // Draw error indicator
-            if let Some(msg) = error_msg {
-                // Show error after value if space allows
-                let msg_w = (unicode_width::UnicodeWidthStr::width(msg) as u16).saturating_add(2);
-                let err_x = value_x.saturating_add(value_width.saturating_sub(msg_w));
-                if err_x > value_x {
-                    draw_str(frame, err_x, y, msg, self.error_style, value_width);
+                // Draw field value
+                let field_style = if is_focused {
+                    self.focused_style
+                } else {
+                    self.style
+                };
+
+                self.render_field(
+                    frame,
+                    field,
+                    value_x,
+                    y,
+                    value_width,
+                    field_style,
+                    is_focused,
+                    state,
+                );
+            }
+
+            // Draw error on the line below if visible
+            if let (Some(msg), Some(error_state)) = (error_msg, state.error_states.get_mut(i)) {
+                let error_row = row_start.saturating_add(1);
+                if error_row >= state.scroll
+                    && error_row < state.scroll.saturating_add(visible_rows)
+                    && value_width > 0
+                {
+                    let y = area.y.saturating_add((error_row - state.scroll) as u16);
+                    let error_area = Rect::new(value_x, y, value_width, 1);
+                    let display = ValidationErrorDisplay::new(msg)
+                        .with_style(self.error_style)
+                        .with_icon_style(self.error_style);
+                    StatefulWidget::render(&display, error_area, frame, error_state);
                 }
             }
         }
@@ -1275,6 +1327,18 @@ mod tests {
     use super::*;
     use ftui_core::event::{KeyEvent, KeyEventKind};
     use ftui_render::grapheme_pool::GraphemePool;
+
+    fn row_to_string(buffer: &Buffer, y: u16, width: u16) -> String {
+        let mut out = String::with_capacity(width as usize);
+        for x in 0..width {
+            let ch = buffer
+                .get(x, y)
+                .and_then(|cell| cell.content.as_char())
+                .unwrap_or(' ');
+            out.push(ch);
+        }
+        out
+    }
 
     fn press(code: KeyCode) -> Event {
         Event::Key(KeyEvent {
@@ -2040,6 +2104,27 @@ mod tests {
         let mut frame = Frame::new(30, 2, &mut pool);
         StatefulWidget::render(&form, area, &mut frame, &mut state);
         assert!(state.scroll >= 3); // Must scroll to show field 4
+    }
+
+    #[test]
+    fn error_renders_below_field() {
+        let form = Form::new(vec![FormField::text("Name")])
+            .validate(0, Box::new(|_| Some("Required".to_string())));
+        let mut state = FormState {
+            errors: form.validate_all(),
+            ..Default::default()
+        };
+
+        let area = Rect::new(0, 0, 30, 2);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 2, &mut pool);
+        StatefulWidget::render(&form, area, &mut frame, &mut state);
+
+        let row0 = row_to_string(&frame.buffer, 0, 30);
+        let row1 = row_to_string(&frame.buffer, 1, 30);
+        assert!(!row0.contains('⚠'));
+        assert!(row1.contains('⚠'));
+        assert!(row1.contains("Required"));
     }
 
     // -- Space inserts into text field --

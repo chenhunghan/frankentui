@@ -2384,30 +2384,236 @@ impl StyledText {
                 )
             }
 
-            TextEffect::Scanline {
-                intensity,
-                line_gap: _,
-                scroll: _,
-                scroll_speed: _,
-                flicker,
-            } => {
-                // For single-line text, we can only apply the flicker component
-                // (row-based scanlines need multi-line context via char_color_2d)
-                if *flicker > 0.0 {
-                    // Use time-based pseudo-random flicker
-                    let flicker_seed = (self.time * 60.0) as u64; // ~60Hz flicker
-                    let hash = flicker_seed
-                        .wrapping_mul(2654435761)
-                        .wrapping_add(idx as u64 * 2246822519);
-                    let rand = (hash % 10000) as f64 / 10000.0;
-                    let flicker_factor = 1.0 - (*flicker * rand);
-                    apply_alpha(base, flicker_factor)
-                } else {
-                    // No flicker, apply subtle phosphor-like dimming
-                    apply_alpha(base, 1.0 - intensity * 0.5)
+            // Scanline is handled directly in char_color, not via effect_color
+            TextEffect::Scanline { .. } => base,
+        }
+    }
+
+    /// Calculate the color for a character at 2D position (row, col).
+    ///
+    /// Uses the full text block dimensions for proper gradient mapping:
+    /// - Horizontal gradients use `col / total_width`
+    /// - Vertical components use `row / total_height`
+    #[allow(dead_code)] // Used in tests
+    fn char_color_2d(
+        &self,
+        row: usize,
+        col: usize,
+        total_width: usize,
+        total_height: usize,
+    ) -> PackedRgba {
+        let total_width = total_width.max(1);
+        let total_height = total_height.max(1);
+        let idx = row.saturating_mul(total_width).saturating_add(col);
+        let total = total_width.saturating_mul(total_height).max(1);
+
+        if self.effects.is_empty() {
+            return self.base_color;
+        }
+
+        let t_x = if total_width > 1 {
+            col as f64 / (total_width - 1) as f64
+        } else {
+            0.5
+        };
+        let t_y = if total_height > 1 {
+            row as f64 / (total_height - 1) as f64
+        } else {
+            0.5
+        };
+
+        let mut color = self.base_color;
+        let mut alpha_multiplier = 1.0;
+
+        for effect in &self.effects {
+            match effect {
+                TextEffect::FadeIn { progress } => {
+                    alpha_multiplier *= progress;
                 }
+                TextEffect::FadeOut { progress } => {
+                    alpha_multiplier *= 1.0 - progress;
+                }
+                TextEffect::Pulse { speed, min_alpha } => {
+                    let alpha = min_alpha
+                        + (1.0 - min_alpha) * (0.5 + 0.5 * (self.time * speed * TAU).sin());
+                    alpha_multiplier *= alpha;
+                }
+                TextEffect::OrganicPulse {
+                    speed,
+                    min_brightness,
+                    asymmetry,
+                    phase_variation,
+                    seed,
+                } => {
+                    let phase_offset = organic_char_phase_offset(idx, *seed, *phase_variation);
+                    let cycle_t = (self.time * speed + phase_offset).rem_euclid(1.0);
+                    let brightness = min_brightness
+                        + (1.0 - min_brightness) * breathing_curve(cycle_t, *asymmetry);
+                    alpha_multiplier *= brightness;
+                }
+                TextEffect::Typewriter { visible_chars } => {
+                    if (idx as f64) >= *visible_chars {
+                        return PackedRgba::TRANSPARENT;
+                    }
+                }
+                TextEffect::Reveal {
+                    mode,
+                    progress,
+                    seed,
+                } => {
+                    if !mode.is_visible(idx, total, *progress, *seed, &self.text) {
+                        return PackedRgba::TRANSPARENT;
+                    }
+                }
+                TextEffect::HorizontalGradient { gradient } => {
+                    color = gradient.sample(t_x);
+                }
+                TextEffect::AnimatedGradient { gradient, speed } => {
+                    let t = (t_x + self.time * speed).rem_euclid(1.0);
+                    color = gradient.sample(t);
+                }
+                TextEffect::RainbowGradient { speed } => {
+                    let hue = (t_x + t_y * 0.3 + self.time * speed).rem_euclid(1.0);
+                    color = hsv_to_rgb(hue, 0.9, 1.0);
+                }
+                TextEffect::VerticalGradient { gradient } => {
+                    color = gradient.sample(t_y);
+                }
+                TextEffect::DiagonalGradient { gradient, angle } => {
+                    let angle_rad = angle.to_radians();
+                    let cos_a = angle_rad.cos();
+                    let sin_a = angle_rad.sin();
+                    let projected = t_x * cos_a + t_y * sin_a;
+                    let normalized = (projected + FRAC_1_SQRT_2) / SQRT_2;
+                    color = gradient.sample(normalized.clamp(0.0, 1.0));
+                }
+                TextEffect::RadialGradient {
+                    gradient,
+                    center,
+                    aspect,
+                } => {
+                    let dx = (t_x - center.0) * aspect;
+                    let dy = t_y - center.1;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    let max_dist = {
+                        let corner_dx = (0.5_f64.max(center.0) - center.0.min(0.5)) * aspect;
+                        let corner_dy = 0.5_f64.max(center.1) - center.1.min(0.5);
+                        (corner_dx * corner_dx + corner_dy * corner_dy).sqrt()
+                    };
+                    let normalized = if max_dist > 0.0 {
+                        (dist / max_dist).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    color = gradient.sample(normalized);
+                }
+                TextEffect::ColorCycle { colors, speed } => {
+                    if !colors.is_empty() {
+                        let t = (self.time * speed).rem_euclid(colors.len() as f64);
+                        let idx = t as usize % colors.len();
+                        let next = (idx + 1) % colors.len();
+                        let frac = t.fract();
+                        color = lerp_color(colors[idx], colors[next], frac);
+                    }
+                }
+                TextEffect::ColorWave {
+                    color1,
+                    color2,
+                    speed,
+                    wavelength,
+                } => {
+                    let t = ((col as f64 + row as f64 * 0.5) / wavelength + self.time * speed)
+                        .sin()
+                        * 0.5
+                        + 0.5;
+                    color = lerp_color(*color1, *color2, t);
+                }
+                TextEffect::Glow {
+                    color: glow_color,
+                    intensity,
+                } => {
+                    color = lerp_color(color, *glow_color, *intensity);
+                }
+                TextEffect::PulsingGlow {
+                    color: glow_color,
+                    speed,
+                } => {
+                    let intensity = ((self.time * speed * TAU).sin() * 0.5 + 0.5) * 0.6;
+                    color = lerp_color(color, *glow_color, intensity);
+                }
+                TextEffect::ChromaticAberration {
+                    offset,
+                    direction,
+                    animated,
+                    speed,
+                } => {
+                    let effective_offset = if *animated {
+                        let oscillation = (self.time * speed * TAU).sin();
+                        (*offset as f64 * oscillation).abs()
+                    } else {
+                        *offset as f64
+                    };
+
+                    let center = total as f64 / 2.0;
+                    let distance = if total > 1 {
+                        (idx as f64 - center) / center
+                    } else {
+                        0.0
+                    };
+
+                    let shift = match direction {
+                        Direction::Left | Direction::Right => distance * effective_offset * 30.0,
+                        Direction::Up | Direction::Down => distance * effective_offset * 30.0,
+                    };
+
+                    let red_boost = (-shift).clamp(-50.0, 50.0);
+                    let blue_boost = shift.clamp(-50.0, 50.0);
+
+                    color = PackedRgba::rgb(
+                        (color.r() as i16 + red_boost as i16).clamp(0, 255) as u8,
+                        color.g(),
+                        (color.b() as i16 + blue_boost as i16).clamp(0, 255) as u8,
+                    );
+                }
+                TextEffect::Scanline {
+                    intensity,
+                    line_gap,
+                    scroll,
+                    scroll_speed,
+                    flicker,
+                } => {
+                    let scroll_offset = if *scroll {
+                        (self.time * scroll_speed) as usize
+                    } else {
+                        0
+                    };
+
+                    let effective_row = row + scroll_offset;
+                    let is_scanline =
+                        *line_gap > 0 && effective_row.is_multiple_of(*line_gap as usize);
+
+                    let mut dim_factor = if is_scanline { 1.0 - *intensity } else { 1.0 };
+
+                    if *flicker > 0.0 {
+                        let flicker_seed = (self.time * 60.0) as u64;
+                        let hash = flicker_seed
+                            .wrapping_mul(2654435761)
+                            .wrapping_add((row * total_width + col) as u64 * 2246822519);
+                        let rand = (hash % 10000) as f64 / 10000.0;
+                        dim_factor *= 1.0 - (*flicker * rand);
+                    }
+
+                    color = apply_alpha(color, dim_factor);
+                }
+                _ => {}
             }
         }
+
+        if alpha_multiplier < 1.0 {
+            color = apply_alpha(color, alpha_multiplier);
+        }
+
+        color
     }
 
     /// Calculate the color for a character at position `idx`.
@@ -2548,75 +2754,6 @@ impl StyledText {
         // Apply accumulated alpha
         if alpha_multiplier < 1.0 {
             color = apply_alpha(color, alpha_multiplier);
-        }
-
-        color
-    }
-
-    /// Compute color at 2D position for multi-line effects (test helper).
-    ///
-    /// Args are `(row, col, total_width, total_height)` to match scanline tests.
-    #[cfg(test)]
-    fn char_color_2d(
-        &self,
-        row: usize,
-        col: usize,
-        total_width: usize,
-        total_height: usize,
-    ) -> PackedRgba {
-        let linear_idx = row.saturating_mul(total_width).saturating_add(col);
-        let total = total_width.saturating_mul(total_height).max(1);
-
-        let mut color = if self
-            .effects
-            .iter()
-            .any(|e| matches!(e, TextEffect::Scanline { .. }))
-        {
-            let mut filtered = self.clone();
-            filtered
-                .effects
-                .retain(|e| !matches!(e, TextEffect::Scanline { .. }));
-            filtered.char_color(linear_idx, total)
-        } else {
-            self.char_color(linear_idx, total)
-        };
-
-        for effect in &self.effects {
-            if let TextEffect::Scanline {
-                intensity,
-                line_gap,
-                scroll,
-                scroll_speed,
-                flicker,
-            } = effect
-            {
-                let scroll_offset = if *scroll {
-                    (self.time * scroll_speed).floor() as i64
-                } else {
-                    0
-                };
-                let effective_row = row as i64 + scroll_offset;
-                let mut dim_factor = 1.0;
-
-                if *line_gap > 0 {
-                    let gap = *line_gap as i64;
-                    let row_mod = ((effective_row % gap) + gap) % gap;
-                    if row_mod == 0 {
-                        dim_factor *= 1.0 - intensity.clamp(0.0, 1.0);
-                    }
-                }
-
-                if *flicker > 0.0 {
-                    let flicker_seed = (self.time * 60.0) as u64;
-                    let hash = flicker_seed
-                        .wrapping_mul(2654435761)
-                        .wrapping_add(linear_idx as u64 * 2246822519);
-                    let rand = (hash % 10000) as f64 / 10000.0;
-                    dim_factor *= 1.0 - (*flicker * rand);
-                }
-
-                color = apply_alpha(color, dim_factor);
-            }
         }
 
         color
@@ -7659,7 +7796,8 @@ impl StyledMultiLine {
 
                     // Determine if this row is a scanline (dimmed)
                     let effective_row = row + scroll_offset;
-                    let is_scanline = *line_gap > 0 && effective_row % (*line_gap as usize) == 0;
+                    let is_scanline =
+                        *line_gap > 0 && effective_row.is_multiple_of(*line_gap as usize);
 
                     // Apply scanline dimming
                     let mut dim_factor = if is_scanline { 1.0 - *intensity } else { 1.0 };
