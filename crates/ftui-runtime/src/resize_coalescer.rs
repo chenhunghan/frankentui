@@ -724,6 +724,20 @@ impl ResizeCoalescer {
         &self.logs
     }
 
+    /// Record that a resize was applied externally (e.g. immediate mode).
+    ///
+    /// Updates internal tracking so the coalescer knows the current applied
+    /// size and clears any pending resize that matches.
+    pub fn record_external_apply(&mut self, width: u16, height: u16, now: Instant) {
+        self.last_applied = (width, height);
+        self.last_render = now;
+        if self.pending_size == Some((width, height)) {
+            self.pending_size = None;
+            self.window_start = None;
+            self.last_event = None;
+        }
+    }
+
     /// Clear decision logs.
     pub fn clear_logs(&mut self) {
         self.logs.clear();

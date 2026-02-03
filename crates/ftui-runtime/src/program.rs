@@ -64,7 +64,6 @@ use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_core::terminal_session::{SessionOptions, TerminalSession};
 use ftui_render::budget::{FrameBudgetConfig, RenderBudget};
 use ftui_render::buffer::Buffer;
-use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_render::sanitize::sanitize;
 use std::io::{self, Stdout, Write};
@@ -1469,9 +1468,9 @@ impl<M: Model> AppBuilder<M> {
         self
     }
 
-    /// Set the resize debounce duration.
+    /// Set the resize debounce duration (steady-state delay).
     pub fn resize_debounce(mut self, debounce: Duration) -> Self {
-        self.config.resize_debounce = debounce;
+        self.config.resize_coalescer.steady_delay_ms = debounce.as_millis() as u64;
         self
     }
 
@@ -1800,8 +1799,11 @@ mod tests {
         assert!(matches!(config.screen_mode, ScreenMode::Inline { .. }));
         assert!(!config.mouse);
         assert!(config.bracketed_paste);
-        assert_eq!(config.resize_debounce, Duration::from_millis(100));
-        assert_eq!(config.resize_behavior, ResizeBehavior::Placeholder);
+        assert_eq!(config.resize_behavior, ResizeBehavior::Throttled);
+        assert_eq!(
+            config.resize_coalescer.steady_delay_ms,
+            CoalescerConfig::default().steady_delay_ms
+        );
     }
 
     #[test]
@@ -1854,48 +1856,7 @@ mod tests {
         assert!(matches!(cmd, Cmd::None));
     }
 
-    #[test]
-    fn resize_debouncer_applies_after_delay() {
-        let mut debouncer = ResizeDebouncer::new(Duration::from_millis(100), (80, 24));
-        let now = Instant::now();
-
-        assert!(matches!(
-            debouncer.handle_resize_at(100, 40, now),
-            ResizeAction::ShowPlaceholder
-        ));
-
-        assert!(matches!(
-            debouncer.tick_at(now + Duration::from_millis(50)),
-            ResizeAction::None
-        ));
-
-        assert!(matches!(
-            debouncer.tick_at(now + Duration::from_millis(120)),
-            ResizeAction::ApplyResize {
-                width: 100,
-                height: 40,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn resize_debouncer_uses_latest_size() {
-        let mut debouncer = ResizeDebouncer::new(Duration::from_millis(100), (80, 24));
-        let now = Instant::now();
-
-        debouncer.handle_resize_at(100, 40, now);
-        debouncer.handle_resize_at(120, 50, now + Duration::from_millis(10));
-
-        assert!(matches!(
-            debouncer.tick_at(now + Duration::from_millis(120)),
-            ResizeAction::ApplyResize {
-                width: 120,
-                height: 50,
-                ..
-            }
-        ));
-    }
+    // Resize coalescer behavior is covered by resize_coalescer.rs tests.
 
     // =========================================================================
     // DETERMINISM TESTS - Program loop determinism (bd-2nu8.10.1)
