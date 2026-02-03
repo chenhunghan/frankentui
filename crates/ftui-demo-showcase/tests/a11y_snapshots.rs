@@ -17,14 +17,13 @@ use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
 use ftui_demo_showcase::app::{AppModel, AppMsg};
 use ftui_demo_showcase::screens::Screen;
-use ftui_demo_showcase::theme::{self, ScopedThemeLock};
+use ftui_demo_showcase::theme::{self, ScopedA11yLock, ScopedThemeLock};
 use ftui_harness::assert_snapshot;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_runtime::program::Model;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
 // ---------------------------------------------------------------------------
@@ -153,17 +152,11 @@ fn log_transition_e2e(
 // Test Helpers
 // ---------------------------------------------------------------------------
 
-fn a11y_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
-
-fn a11y_guard() -> MutexGuard<'static, ()> {
-    a11y_lock().lock().expect("a11y lock poisoned")
-}
+// NOTE: This module uses ScopedA11yLock from theme.rs which acquires GLOBAL_A11Y_LOCK,
+// ensuring proper coordination with unit tests that also use the same lock.
+// This prevents race conditions when unit tests and integration tests run in parallel.
 
 struct A11yTestContext {
-    _guard: MutexGuard<'static, ()>,
     app: AppModel,
     run_id: String,
     setup_start: Instant,
@@ -172,9 +165,7 @@ struct A11yTestContext {
 impl A11yTestContext {
     fn new() -> Self {
         let setup_start = Instant::now();
-        let guard = a11y_guard();
         Self {
-            _guard: guard,
             app: AppModel::new(),
             run_id: generate_run_id(),
             setup_start,
@@ -204,6 +195,15 @@ impl A11yTestContext {
     fn render_and_snapshot(mut self, name: &str, width: u16, height: u16) {
         let setup_elapsed = self.setup_start.elapsed();
 
+        // Acquire the global a11y lock with the desired settings.
+        // This uses GLOBAL_A11Y_LOCK from theme.rs, coordinating with unit tests.
+        let motion_scale = if self.app.a11y.reduced_motion {
+            0.0
+        } else {
+            1.0
+        };
+        let _a11y_lock = ScopedA11yLock::new(self.app.a11y.large_text, motion_scale);
+
         // Always set theme state explicitly for test isolation
         // Use HighContrast theme to match app behavior in apply_a11y_settings()
         let theme_id = if self.app.a11y.high_contrast {
@@ -212,12 +212,6 @@ impl A11yTestContext {
             theme::ThemeId::CyberpunkAurora
         };
         let _theme_lock = ScopedThemeLock::new(theme_id);
-        theme::set_motion_scale(if self.app.a11y.reduced_motion {
-            0.0
-        } else {
-            1.0
-        });
-        theme::set_large_text(self.app.a11y.large_text);
 
         // Update terminal dimensions for proper rendering
         self.app.terminal_width = width;
@@ -262,7 +256,11 @@ fn render_screen_with_a11y<S: Screen>(
     width: u16,
     height: u16,
 ) -> Frame<'static> {
-    let _guard = a11y_guard();
+    // Acquire the global a11y lock with the desired settings.
+    // This uses GLOBAL_A11Y_LOCK from theme.rs, coordinating with unit tests.
+    let motion_scale = if a11y.reduced_motion { 0.0 } else { 1.0 };
+    let _a11y_lock = ScopedA11yLock::new(a11y.large_text, motion_scale);
+
     // Always set theme state explicitly for test isolation
     let theme_id = if a11y.high_contrast {
         theme::ThemeId::HighContrast
@@ -270,8 +268,6 @@ fn render_screen_with_a11y<S: Screen>(
         theme::ThemeId::CyberpunkAurora
     };
     let _theme_lock = ScopedThemeLock::new(theme_id);
-    theme::set_motion_scale(if a11y.reduced_motion { 0.0 } else { 1.0 });
-    theme::set_large_text(a11y.large_text);
 
     let pool = Box::leak(Box::new(GraphemePool::new()));
     let mut frame = Frame::new(width, height, pool);
@@ -682,7 +678,8 @@ fn a11y_dashboard_screen_reduced_motion_80x24() {
 
 #[test]
 fn a11y_zero_area_high_contrast() {
-    let _guard = a11y_guard();
+    // Use ScopedA11yLock for coordination with unit tests
+    let _a11y_lock = ScopedA11yLock::new(false, 1.0);
     let _theme_lock = ScopedThemeLock::new(theme::ThemeId::HighContrast);
     let mut app = AppModel::new();
     app.a11y.high_contrast = true;
@@ -694,10 +691,10 @@ fn a11y_zero_area_high_contrast() {
 
 #[test]
 fn a11y_zero_area_large_text() {
-    let _guard = a11y_guard();
+    // Use ScopedA11yLock for coordination with unit tests - sets large_text=true
+    let _a11y_lock = ScopedA11yLock::new(true, 1.0);
     let mut app = AppModel::new();
     app.a11y.large_text = true;
-    theme::set_large_text(true);
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(1, 1, &mut pool);
     app.view(&mut frame);
@@ -706,12 +703,11 @@ fn a11y_zero_area_large_text() {
 
 #[test]
 fn a11y_zero_area_all_modes() {
-    let _guard = a11y_guard();
+    // Use ScopedA11yLock for coordination with unit tests - sets large_text=true, motion_scale=0.0
+    let _a11y_lock = ScopedA11yLock::new(true, 0.0);
     let _theme_lock = ScopedThemeLock::new(theme::ThemeId::HighContrast);
     let mut app = AppModel::new();
     app.a11y = theme::A11ySettings::all();
-    theme::set_motion_scale(0.0);
-    theme::set_large_text(true);
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(1, 1, &mut pool);
     app.view(&mut frame);
@@ -768,7 +764,8 @@ fn a11y_settings_none_equals_default() {
 #[test]
 fn a11y_transition_high_contrast_roundtrip() {
     // Invariant: toggling high-contrast on/off should round-trip to baseline.
-    let _guard = a11y_guard();
+    // Use ScopedA11yLock for coordination with unit tests
+    let _a11y_lock = ScopedA11yLock::new(false, 1.0);
     let mut app = AppModel::new();
     let run_id = generate_run_id();
     let start = Instant::now();
@@ -833,7 +830,8 @@ fn a11y_transition_high_contrast_roundtrip() {
 #[test]
 fn a11y_transition_reduced_motion_roundtrip() {
     // Invariant: reduced-motion toggles should be stable and round-trip cleanly.
-    let _guard = a11y_guard();
+    // Use ScopedA11yLock for coordination with unit tests
+    let _a11y_lock = ScopedA11yLock::new(false, 1.0);
     let mut app = AppModel::new();
     app.current_screen = ftui_demo_showcase::app::ScreenId::DataViz;
     let run_id = generate_run_id();
@@ -899,7 +897,8 @@ fn a11y_transition_reduced_motion_roundtrip() {
 #[test]
 fn a11y_transition_large_text_roundtrip() {
     // Invariant: large-text toggles should be stable and round-trip cleanly.
-    let _guard = a11y_guard();
+    // Use ScopedA11yLock for coordination with unit tests
+    let _a11y_lock = ScopedA11yLock::new(false, 1.0);
     let mut app = AppModel::new();
     let run_id = generate_run_id();
     let start = Instant::now();
@@ -964,7 +963,8 @@ fn a11y_transition_large_text_roundtrip() {
 #[test]
 fn a11y_transition_all_modes_roundtrip() {
     // Failure modes: theme globals leak or motion scale persists after toggling off.
-    let _guard = a11y_guard();
+    // Use ScopedA11yLock for coordination with unit tests
+    let _a11y_lock = ScopedA11yLock::new(false, 1.0);
     let mut app = AppModel::new();
     let run_id = generate_run_id();
     let start = Instant::now();
@@ -1094,7 +1094,8 @@ fn a11y_panel_with_all_modes_120x40() {
 
 #[test]
 fn a11y_determinism_high_contrast() {
-    let _guard = a11y_guard();
+    // Use ScopedA11yLock for coordination with unit tests
+    let _a11y_lock = ScopedA11yLock::new(false, 1.0);
     let _theme_lock = ScopedThemeLock::new(theme::ThemeId::HighContrast);
     // Render twice and verify identical output
     let mut app1 = AppModel::new();
@@ -1119,13 +1120,12 @@ fn a11y_determinism_high_contrast() {
 
 #[test]
 fn a11y_determinism_all_modes() {
-    let _guard = a11y_guard();
+    // Use ScopedA11yLock for coordination with unit tests - sets large_text=true, motion_scale=0.0
+    let _a11y_lock = ScopedA11yLock::new(true, 0.0);
     let _theme_lock = ScopedThemeLock::new(theme::ThemeId::HighContrast);
     // Render twice with all a11y modes and verify identical output
     let mut app1 = AppModel::new();
     app1.a11y = theme::A11ySettings::all();
-    theme::set_motion_scale(0.0);
-    theme::set_large_text(true);
     let mut pool1 = GraphemePool::new();
     let mut frame1 = Frame::new(120, 40, &mut pool1);
     app1.view(&mut frame1);
@@ -1133,8 +1133,6 @@ fn a11y_determinism_all_modes() {
 
     let mut app2 = AppModel::new();
     app2.a11y = theme::A11ySettings::all();
-    theme::set_motion_scale(0.0);
-    theme::set_large_text(true);
     let mut pool2 = GraphemePool::new();
     let mut frame2 = Frame::new(120, 40, &mut pool2);
     app2.view(&mut frame2);

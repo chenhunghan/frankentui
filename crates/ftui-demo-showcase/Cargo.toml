@@ -42,6 +42,8 @@ unicode-width = "0.2.2"
 debug-render = []
 caps-probe = ["ftui-core/caps-probe"]
 default = ["caps-probe"]
+# Enable test-support to expose test infrastructure (locks, guards) to integration tests
+test-support = []
 
 [dev-dependencies]
 ftui-harness = { path = "../ftui-harness" }
