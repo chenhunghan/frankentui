@@ -1129,15 +1129,15 @@ impl TinyLfuWidthCache {
     pub fn contains(&self, text: &str) -> bool {
         let hash = hash_text(text);
         let fp = fingerprint_hash(text);
-        if let Some(e) = self.main.peek(&hash) {
-            if e.fingerprint == fp {
-                return true;
-            }
+        if let Some(e) = self.main.peek(&hash)
+            && e.fingerprint == fp
+        {
+            return true;
         }
-        if let Some(e) = self.window.peek(&hash) {
-            if e.fingerprint == fp {
-                return true;
-            }
+        if let Some(e) = self.window.peek(&hash)
+            && e.fingerprint == fp
+        {
+            return true;
         }
         false
     }
