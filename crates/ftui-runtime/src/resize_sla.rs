@@ -573,9 +573,14 @@ mod tests {
     fn jsonl_format() {
         let monitor = ResizeSlaMonitor::new(test_config());
 
-        for i in 0..6 {
+        // Calibrate with 5 events (min_calibration=5), then 1 observation.
+        // The 6th value must fall within conformal bounds to be "observe"
+        // rather than "alert". Calibration on values 10-14 yields mean=12,
+        // threshold=2.0, so use 12.0 (residual=0) for the observation.
+        for i in 0..5 {
             monitor.process_latency(10.0 + i as f64, (80, 24), false);
         }
+        monitor.process_latency(12.0, (80, 24), false);
 
         let jsonl = monitor.logs_to_jsonl();
         assert!(jsonl.contains(r#""event":"sla""#));
@@ -789,6 +794,9 @@ mod tests {
     #[test]
     fn voi_sampling_forced_sample_records_event() {
         let mut config = test_config();
+        // Skip calibration so the first sampled event reaches the observe
+        // phase and returns Some(AlertDecision) instead of None.
+        config.min_calibration = 0;
         config.voi_sampling = Some(VoiConfig {
             sample_cost: 10.0,
             max_interval_events: 1,
