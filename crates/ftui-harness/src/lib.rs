@@ -43,12 +43,10 @@ pub mod time_travel_inspector;
 #[cfg(feature = "pty-capture")]
 pub mod pty_capture;
 
-use std::ffi::OsString;
 use std::fmt::Write as FmtWrite;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 
-use ftui_core::terminal_capabilities::TerminalProfile;
+use ftui_core::terminal_capabilities::{TerminalCapabilities, TerminalProfile};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{PackedRgba, StyleFlags};
 
@@ -528,46 +526,13 @@ pub struct ProfileSnapshot {
     pub checksum: String,
 }
 
-fn profile_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
-
-/// Guard for temporarily forcing `FTUI_TEST_PROFILE`.
-pub struct TestProfileGuard {
-    _lock: std::sync::MutexGuard<'static, ()>,
-    previous: Option<OsString>,
-}
-
-impl TestProfileGuard {
-    #[must_use]
-    pub fn new(profile: TerminalProfile) -> Self {
-        let lock = profile_lock().lock().expect("profile lock poisoned");
-        let previous = std::env::var_os("FTUI_TEST_PROFILE");
-        std::env::set_var("FTUI_TEST_PROFILE", profile.as_str());
-        Self {
-            _lock: lock,
-            previous,
-        }
-    }
-}
-
-impl Drop for TestProfileGuard {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            Some(value) => std::env::set_var("FTUI_TEST_PROFILE", value),
-            None => std::env::remove_var("FTUI_TEST_PROFILE"),
-        }
-    }
-}
-
 /// Run a test closure across multiple profiles and optionally compare outputs.
 ///
 /// Use `FTUI_TEST_PROFILE_COMPARE=strict` to fail on differences or
 /// `FTUI_TEST_PROFILE_COMPARE=report` to emit diffs without failing.
 pub fn profile_matrix_text<F>(profiles: &[TerminalProfile], mut render: F) -> Vec<ProfileSnapshot>
 where
-    F: FnMut(TerminalProfile) -> String,
+    F: FnMut(TerminalProfile, &TerminalCapabilities) -> String,
 {
     profile_matrix_text_with_options(
         profiles,
@@ -585,12 +550,12 @@ pub fn profile_matrix_text_with_options<F>(
     render: &mut F,
 ) -> Vec<ProfileSnapshot>
 where
-    F: FnMut(TerminalProfile) -> String,
+    F: FnMut(TerminalProfile, &TerminalCapabilities) -> String,
 {
     let mut outputs = Vec::with_capacity(profiles.len());
     for profile in profiles {
-        let _guard = TestProfileGuard::new(*profile);
-        let text = render(*profile);
+        let caps = TerminalCapabilities::from_profile(*profile);
+        let text = render(*profile, &caps);
         let checksum = crate::golden::compute_text_checksum(&text);
         outputs.push(ProfileSnapshot {
             profile: *profile,
