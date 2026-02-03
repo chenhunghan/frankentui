@@ -65,6 +65,7 @@ use ftui_widgets::status_line::{StatusItem, StatusLine};
 use ftui_widgets::table::{Row, Table, TableState};
 use ftui_widgets::tree::{Tree, TreeNode};
 use ftui_widgets::{StatefulWidget, Widget};
+use ftui_harness::flicker_detection;
 
 /// Application state for the agent harness.
 struct AgentHarness {
@@ -1210,6 +1211,10 @@ impl AgentHarness {
 }
 
 fn main() -> std::io::Result<()> {
+    if std::env::var("FTUI_HARNESS_FLICKER_ANALYZE").is_ok() {
+        return run_flicker_analysis();
+    }
+
     let input_mode = std::env::var("FTUI_HARNESS_INPUT_MODE")
         .unwrap_or_else(|_| "runtime".to_string())
         .to_ascii_lowercase();

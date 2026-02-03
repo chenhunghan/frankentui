@@ -1166,7 +1166,7 @@ impl<M: Model, W: Write + Send> Program<M, W> {
         let render_start = Instant::now();
         if let (Some((min_height, max_height)), true) = (auto_bounds, needs_measure) {
             let hint_height = self.writer.render_height_hint().max(1);
-            let measure_buffer = self.render_measure_buffer(hint_height);
+            let (measure_buffer, _) = self.render_measure_buffer(hint_height);
             let measured_height = measure_buffer.content_height();
             let clamped = measured_height.clamp(min_height, max_height);
             self.writer.set_auto_ui_height(clamped);
@@ -1180,7 +1180,7 @@ impl<M: Model, W: Write + Send> Program<M, W> {
             duration_us = tracing::field::Empty
         )
         .entered();
-        let buffer = self.render_buffer(frame_height);
+        let (buffer, cursor) = self.render_buffer(frame_height);
         let render_elapsed = render_start.elapsed();
 
         // Check if render phase overspent its budget
@@ -1202,7 +1202,7 @@ impl<M: Model, W: Write + Send> Program<M, W> {
             let present_start = Instant::now();
             {
                 let _present_span = debug_span!("ftui.render.present").entered();
-                self.writer.present_ui_owned(buffer, None)?;
+                self.writer.present_ui_owned(buffer, cursor)?;
             }
             let present_elapsed = present_start.elapsed();
 
@@ -1227,7 +1227,7 @@ impl<M: Model, W: Write + Send> Program<M, W> {
         Ok(())
     }
 
-    fn render_buffer(&mut self, frame_height: u16) -> Buffer {
+    fn render_buffer(&mut self, frame_height: u16) -> (Buffer, Option<(u16, u16)>) {
         // Note: Frame borrows the pool and links from writer.
         // We scope it so it drops before we call present_ui (which needs exclusive writer access).
         let (pool, links) = self.writer.pool_and_links_mut();
@@ -1246,10 +1246,10 @@ impl<M: Model, W: Write + Send> Program<M, W> {
         tracing::Span::current().record("duration_us", view_start.elapsed().as_micros() as u64);
         // widget_count would require tracking in Frame
 
-        frame.buffer
+        (frame.buffer, frame.cursor_position)
     }
 
-    fn render_measure_buffer(&mut self, frame_height: u16) -> Buffer {
+    fn render_measure_buffer(&mut self, frame_height: u16) -> (Buffer, Option<(u16, u16)>) {
         let pool = self.writer.pool_mut();
         let mut frame = Frame::new(self.width, frame_height, pool);
         frame.set_degradation(self.budget.degradation());
@@ -1264,7 +1264,7 @@ impl<M: Model, W: Write + Send> Program<M, W> {
         self.model.view(&mut frame);
         tracing::Span::current().record("duration_us", view_start.elapsed().as_micros() as u64);
 
-        frame.buffer
+        (frame.buffer, frame.cursor_position)
     }
 
     /// Calculate the effective poll timeout.

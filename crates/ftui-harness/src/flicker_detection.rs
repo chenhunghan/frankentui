@@ -811,10 +811,32 @@ pub fn assert_flicker_free_str(s: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::golden::compute_text_checksum;
 
     // DEC private mode sequences
     const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
     const SYNC_END: &[u8] = b"\x1b[?2026l";
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+
+        fn next_u32(&mut self) -> u32 {
+            // Deterministic LCG (Numerical Recipes)
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (self.0 >> 32) as u32
+        }
+
+        fn next_range(&mut self, max: usize) -> usize {
+            if max == 0 {
+                return 0;
+            }
+            (self.next_u32() as usize) % max
+        }
+    }
 
     fn make_synced_frame(content: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -1139,5 +1161,59 @@ mod tests {
         let analysis = analyze_stream(&stream);
         // Should complete without panic
         assert!(analysis.stats.total_frames >= 1);
+    }
+
+    #[test]
+    fn property_synced_frames_are_flicker_free() {
+        for seed in 0..8u64 {
+            let mut rng = Lcg::new(seed);
+            let mut stream = Vec::new();
+            let frames = 5 + rng.next_range(8);
+            for _ in 0..frames {
+                let len = 8 + rng.next_range(32);
+                let mut content = Vec::with_capacity(len);
+                for _ in 0..len {
+                    let byte = b'A' + (rng.next_range(26) as u8);
+                    content.push(byte);
+                }
+                stream.extend(make_synced_frame(&content));
+            }
+            let analysis = analyze_stream(&stream);
+            assert!(analysis.flicker_free, "seed {seed} should be flicker-free");
+            assert_eq!(
+                analysis.stats.total_frames,
+                frames as u64,
+                "seed {seed} should count all frames"
+            );
+        }
+    }
+
+    #[test]
+    fn property_gap_detected_when_unsynced_bytes_present() {
+        for seed in 0..8u64 {
+            let mut rng = Lcg::new(seed ^ 0x5a5a5a5a);
+            let mut stream = Vec::new();
+            stream.extend(make_synced_frame(b"Frame 1"));
+            let gap_len = 3 + rng.next_range(10);
+            for _ in 0..gap_len {
+                stream.push(b'Z');
+            }
+            stream.extend(make_synced_frame(b"Frame 2"));
+            let analysis = analyze_stream(&stream);
+            assert!(
+                analysis.stats.sync_gaps > 0,
+                "seed {seed} should detect sync gap"
+            );
+            assert!(!analysis.flicker_free, "seed {seed} should not be flicker-free");
+        }
+    }
+
+    #[test]
+    fn golden_jsonl_checksum_fixture() {
+        let stream = make_synced_frame(b"Flicker");
+        let analysis = analyze_stream_with_id("golden", &stream);
+        let checksum = compute_text_checksum(&analysis.jsonl);
+        const EXPECTED: &str = "sha256:3c0a5c7df4f9c8a8";
+        assert_eq!(checksum, EXPECTED, "golden JSONL checksum drifted");
     }
 }

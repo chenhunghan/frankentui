@@ -1134,6 +1134,18 @@ mod tests {
     }
 
     #[test]
+    fn screen_immediate_wrap_quirk_wraps_on_last_column() {
+        let mut vt = VirtualTerminal::with_quirks(5, 3, QuirkSet::gnu_screen());
+        vt.feed(b"ABCDE");
+        assert_eq!(vt.row_text(0), "ABCDE");
+        assert_eq!(vt.cursor(), (0, 1));
+
+        vt.feed(b"F");
+        assert_eq!(vt.row_text(1), "F");
+        assert_eq!(vt.cursor(), (1, 1));
+    }
+
+    #[test]
     fn scroll_on_overflow() {
         let mut vt = VirtualTerminal::new(10, 3);
         vt.feed(b"AAA\r\nBBB\r\nCCC\r\nDDD");
@@ -1248,6 +1260,17 @@ mod tests {
     }
 
     #[test]
+    fn tmux_nested_cursor_quirk_ignores_save_restore_in_alt_screen() {
+        let mut vt = VirtualTerminal::with_quirks(80, 24, QuirkSet::tmux_nested());
+        vt.feed(b"\x1b[?1049h"); // Enter alt screen
+        vt.feed(b"\x1b[5;10H"); // Move to (9, 4)
+        vt.feed(b"\x1b7"); // Save (ignored)
+        vt.feed(b"\x1b[1;1H"); // Move to (0, 0)
+        vt.feed(b"\x1b8"); // Restore (ignored)
+        assert_eq!(vt.cursor(), (0, 0));
+    }
+
+    #[test]
     fn cursor_visibility() {
         let mut vt = VirtualTerminal::new(80, 24);
         assert!(vt.cursor_visible());
@@ -1273,6 +1296,17 @@ mod tests {
         vt.feed(b"\x1b[?1049l"); // Exit alt screen
         assert!(!vt.is_alternate_screen());
         assert_eq!(vt.row_text(0), "Main"); // Main screen restored
+    }
+
+    #[test]
+    fn windows_no_alt_screen_quirk_ignores_alternate_buffer() {
+        let mut vt = VirtualTerminal::with_quirks(10, 3, QuirkSet::windows_console());
+        vt.feed(b"Main");
+        vt.feed(b"\x1b[?1049h"); // Ignored
+        vt.feed(b"Alt");
+        vt.feed(b"\x1b[?1049l"); // Ignored
+        assert!(!vt.is_alternate_screen());
+        assert_eq!(vt.row_text(0), "MainAlt");
     }
 
     #[test]

@@ -1195,7 +1195,7 @@ mod tests {
             writer.set_size(10, 10);
 
             let buffer = Buffer::new(10, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
         }
 
         // Should contain cursor save and restore
@@ -1220,7 +1220,7 @@ mod tests {
             writer.set_size(10, 10);
 
             let buffer = Buffer::new(10, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
         }
 
         // Should contain sync begin and end
@@ -1275,7 +1275,7 @@ mod tests {
 
         // Present a buffer
         let buffer = Buffer::new(10, 5);
-        writer.present_ui(&buffer).unwrap();
+        writer.present_ui(&buffer, None).unwrap();
         assert!(writer.prev_buffer.is_some());
 
         // Clear screen should reset
@@ -1379,15 +1379,15 @@ mod tests {
         // First frame - full draw
         let mut buffer1 = Buffer::new(10, 5);
         buffer1.set_raw(0, 0, Cell::from_char('A'));
-        writer.present_ui(&buffer1).unwrap();
+        writer.present_ui(&buffer1, None).unwrap();
 
         // Second frame - same content (diff is empty, minimal output)
-        writer.present_ui(&buffer1).unwrap();
+        writer.present_ui(&buffer1, None).unwrap();
 
         // Third frame - change one cell
         let mut buffer2 = buffer1.clone();
         buffer2.set_raw(1, 0, Cell::from_char('B'));
-        writer.present_ui(&buffer2).unwrap();
+        writer.present_ui(&buffer2, None).unwrap();
 
         // Test passes if it doesn't panic - the diffing is working
         // (Detailed output length verification would require more complex setup)
@@ -1409,7 +1409,7 @@ mod tests {
             buffer.set_raw(0, 0, Cell::from_char('H'));
             buffer.set_raw(1, 0, Cell::from_char('i'));
             buffer.set_raw(2, 0, Cell::from_char('!'));
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
         }
 
         let output_str = String::from_utf8_lossy(&output);
@@ -1517,7 +1517,7 @@ mod tests {
             writer.set_size(10, 10);
 
             let buffer = Buffer::new(10, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
         }
 
         // Should NOT contain full screen clear (ED2 = "\x1b[2J")
@@ -1542,13 +1542,13 @@ mod tests {
 
             // Present UI first
             let buffer = Buffer::new(10, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
 
             // Write a log
             writer.write_log("log line\n").unwrap();
 
             // Present UI again
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
         }
 
         // Should have cursor save before each UI present
@@ -1599,7 +1599,7 @@ mod tests {
             );
             writer.set_size(8, 3);
             let buffer = Buffer::new(8, 10);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
         }
 
         let max_row = max_cursor_row(&output);
@@ -1627,10 +1627,10 @@ mod tests {
 
             let buffer = Buffer::new(10, 6);
             writer.set_auto_ui_height(6);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
 
             writer.set_auto_ui_height(3);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
         }
 
         let second_save = find_nth(&output, CURSOR_SAVE, 2).expect("expected second cursor save");
@@ -1686,7 +1686,7 @@ mod tests {
             );
             writer.set_size(10, 10);
             let buffer = Buffer::new(10, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
         }
 
         let seq = b"\x1b[1;5r";
@@ -1708,7 +1708,7 @@ mod tests {
             );
             writer.set_size(10, 10);
             let buffer = Buffer::new(10, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
         }
 
         let seq = b"\x1b[6;10r";
@@ -1736,7 +1736,7 @@ mod tests {
             writer.set_size(5, 5);
             let mut buffer = Buffer::new(5, 2);
             buffer.set_raw(0, 0, Cell::from_char('X').with_fg(PackedRgba::RED));
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
         }
 
         let seq = b"\x1b[0m\x1b8";
@@ -1799,7 +1799,7 @@ mod tests {
             assert!(!writer.scroll_region_active());
 
             let buffer = Buffer::new(80, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
             assert!(writer.scroll_region_active());
         }
 
@@ -1824,7 +1824,7 @@ mod tests {
             writer.set_size(80, 24);
 
             let buffer = Buffer::new(80, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
             assert!(!writer.scroll_region_active());
         }
 
@@ -1849,7 +1849,7 @@ mod tests {
             writer.set_size(80, 24);
 
             let buffer = Buffer::new(80, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
             assert!(!writer.scroll_region_active());
         }
 
@@ -1874,7 +1874,7 @@ mod tests {
             writer.set_size(80, 24);
 
             let buffer = Buffer::new(80, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
             // Dropped here - cleanup should reset scroll region
         }
 
@@ -1920,7 +1920,7 @@ mod tests {
 
             // First present activates scroll region
             let buffer = Buffer::new(80, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
             assert!(writer.scroll_region_active());
 
             // Resize deactivates
@@ -1929,7 +1929,7 @@ mod tests {
 
             // Next present re-activates with new dimensions
             let buffer2 = Buffer::new(80, 5);
-            writer.present_ui(&buffer2).unwrap();
+            writer.present_ui(&buffer2, None).unwrap();
             assert!(writer.scroll_region_active());
         }
 
@@ -1954,7 +1954,7 @@ mod tests {
             writer.set_size(80, 24);
 
             let buffer = Buffer::new(80, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
             assert!(writer.scroll_region_active());
         }
 
@@ -1978,7 +1978,7 @@ mod tests {
         writer.set_size(80, 24);
 
         let buffer = Buffer::new(80, 24);
-        writer.present_ui(&buffer).unwrap();
+        writer.present_ui(&buffer, None).unwrap();
         assert!(!writer.scroll_region_active());
     }
 
@@ -1995,7 +1995,7 @@ mod tests {
             writer.set_size(80, 24);
 
             let buffer = Buffer::new(80, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
         }
 
         // Even with scroll region, cursor save/restore is used for UI presents
@@ -2128,7 +2128,7 @@ mod tests {
 
             // Present UI first
             let buffer = Buffer::new(80, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
 
             // Then write log
             writer.write_log("after UI\n").unwrap();
@@ -2183,7 +2183,7 @@ mod tests {
 
             // Present UI to activate scroll region
             let buffer = Buffer::new(80, 5);
-            writer.present_ui(&buffer).unwrap();
+            writer.present_ui(&buffer, None).unwrap();
             assert!(writer.scroll_region_active());
 
             // Log write should still position cursor

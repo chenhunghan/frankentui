@@ -79,6 +79,18 @@ Notes:
 - Scroll region optimization is optional and disabled in multiplexers.
 - Cursor save/restore is universally supported.
 
+## Quirk Catalog (Simulator)
+
+The PTY simulator (`ftui-pty` `VirtualTerminal`) can apply explicit quirk
+profiles via `QuirkSet` to reproduce known terminal oddities in tests.
+
+- **tmux nested cursor save/restore**: In alt-screen, DEC save/restore (`ESC 7/8`)
+  is ignored to model nested tmux cursor quirks.
+- **GNU screen immediate wrap**: Writing the last column immediately wraps to
+  the next line (cursor moves to column 0 after the write).
+- **Windows console no alt-screen**: DEC 1049/1047 alternate screen sequences
+  are ignored; output stays on the main buffer.
+
 ## Recommended Test Matrix
 
 For CI or manual verification, test against:

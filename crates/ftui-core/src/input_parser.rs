@@ -91,6 +91,8 @@ pub struct InputParser {
     utf8_buffer: [u8; 4],
     /// Whether we're in bracketed paste mode.
     in_paste: bool,
+    /// Event queued for the next iteration (allows emitting 2 events per byte).
+    pending_event: Option<Event>,
 }
 
 impl Default for InputParser {
@@ -109,6 +111,7 @@ impl InputParser {
             paste_buffer: Vec::new(),
             utf8_buffer: [0; 4],
             in_paste: false,
+            pending_event: None,
         }
     }
 
@@ -118,6 +121,9 @@ impl InputParser {
         for &byte in input {
             if let Some(event) = self.process_byte(byte) {
                 events.push(event);
+            }
+            if let Some(pending) = self.pending_event.take() {
+                events.push(pending);
             }
         }
         events
@@ -350,6 +356,7 @@ impl InputParser {
             (b"200", b'~') => {
                 self.in_paste = true;
                 self.paste_buffer.clear();
+                self.buffer.clear(); // Ensure tail buffer is clean
                 return None;
             }
             (b"201", b'~') => {
@@ -811,9 +818,14 @@ impl InputParser {
     fn process_utf8(&mut self, byte: u8, collected: u8, expected: u8) -> Option<Event> {
         // Check for valid continuation byte
         if (byte & 0xC0) != 0x80 {
-            // Invalid - return to ground and re-process the unexpected byte
+            // Invalid - return to ground and re-process the unexpected byte.
+            // Also emit a replacement character for the invalid sequence we just aborted.
             self.state = ParserState::Ground;
-            return self.process_ground(byte);
+            
+            // Queue the replacement event for the next iteration of the parse loop
+            self.pending_event = self.process_ground(byte);
+            
+            return Some(Event::Key(KeyEvent::new(KeyCode::Char(std::char::REPLACEMENT_CHARACTER))));
         }
 
         self.utf8_buffer[collected as usize] = byte;
@@ -837,29 +849,75 @@ impl InputParser {
 
     /// Process bytes while in paste mode.
     fn process_paste_byte(&mut self, byte: u8) -> Option<Event> {
-        self.paste_buffer.push(byte);
-
-        // DoS protection: if buffer exceeds limit, truncate from start
-        // We keep the last 64 bytes to ensure we can still detect the end sequence
-        // even if the paste is massive. This prevents getting stuck in paste mode.
-        if self.paste_buffer.len() > MAX_PASTE_LEN {
-            let keep = 64;
-            let remove = self.paste_buffer.len().saturating_sub(keep);
-            self.paste_buffer.drain(0..remove);
-        }
-
-        // Check for end sequence: ESC [ 2 0 1 ~
-        // We need to detect this pattern while still collecting bytes
         const END_SEQ: &[u8] = b"\x1b[201~";
 
-        // Check if buffer ends with the end sequence
-        if self.paste_buffer.ends_with(END_SEQ) {
-            self.in_paste = false;
-            // Remove the end sequence from content
-            let content_len = self.paste_buffer.len() - END_SEQ.len();
-            let content = String::from_utf8_lossy(&self.paste_buffer[..content_len]).into_owned();
-            self.paste_buffer.clear();
-            return Some(Event::Paste(PasteEvent::bracketed(content)));
+        // Logic:
+        // 1. If we have room in paste_buffer, push it.
+        // 2. If we are full, push to self.buffer (used as a tail tracker) to detect END_SEQ.
+        // 3. Always check if the effective stream ends with END_SEQ.
+        
+        if self.paste_buffer.len() < MAX_PASTE_LEN {
+            self.paste_buffer.push(byte);
+            
+            // Check for end sequence in paste_buffer
+            if self.paste_buffer.ends_with(END_SEQ) {
+                 self.in_paste = false;
+                 // Remove the end sequence from content
+                 let content_len = self.paste_buffer.len() - END_SEQ.len();
+                 let content = String::from_utf8_lossy(&self.paste_buffer[..content_len]).into_owned();
+                 self.paste_buffer.clear();
+                 return Some(Event::Paste(PasteEvent::bracketed(content)));
+            }
+        } else {
+            // Buffer is full. DoS protection active.
+            // We stop collecting content, but we MUST track the end sequence.
+            // Use self.buffer as a sliding window for the tail.
+            
+            self.buffer.push(byte);
+            if self.buffer.len() > END_SEQ.len() {
+                self.buffer.remove(0);
+            }
+            
+            // Check if we found the end sequence.
+            // The sequence might be split between paste_buffer and buffer.
+            // We only need to check the last 6 bytes.
+            // Since `buffer` contains the most recent bytes (up to 6), and `paste_buffer` is full...
+            
+            // Construct a view of the last 6 bytes
+            let mut last_bytes = [0u8; 6];
+            let tail_len = self.buffer.len();
+            let paste_len = self.paste_buffer.len();
+            
+            if tail_len + paste_len >= 6 {
+                // Fill from buffer (reverse order)
+                for i in 0..tail_len {
+                    last_bytes[6 - tail_len + i] = self.buffer[i];
+                }
+                // Fill remaining from paste_buffer
+                let remaining = 6 - tail_len;
+                if remaining > 0 {
+                    let start = paste_len - remaining;
+                    for i in 0..remaining {
+                        last_bytes[i] = self.paste_buffer[start + i];
+                    }
+                }
+                
+                if last_bytes == END_SEQ {
+                    self.in_paste = false;
+                    
+                    // We found the end sequence.
+                    // The content is `paste_buffer` MINUS the part of END_SEQ that was in it.
+                    // `remaining` bytes of END_SEQ were in paste_buffer.
+                    
+                    let content_len = paste_len - remaining;
+                    let content = String::from_utf8_lossy(&self.paste_buffer[..content_len]).into_owned();
+                    
+                    self.paste_buffer.clear();
+                    self.buffer.clear();
+                    
+                    return Some(Event::Paste(PasteEvent::bracketed(content)));
+                }
+            }
         }
 
         None

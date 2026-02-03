@@ -105,7 +105,7 @@ impl WidgetGallery {
     pub fn new() -> Self {
         let file_picker_state = FilePickerState::from_path(".").ok();
 
-        let mut log_viewer = LogViewer::new(128).wrap_mode(LogWrapMode::Wrap);
+        let mut log_viewer = LogViewer::new(128).wrap_mode(LogWrapMode::WordWrap);
         let sample_logs = [
             "INFO  boot: FrankenTUI demo started",
             "DEBUG layout: resolved 6 constraints",
@@ -1603,9 +1603,8 @@ impl WidgetGallery {
             return;
         }
 
-        let mut viewer = self.log_viewer.borrow_mut();
+        let viewer = self.log_viewer.borrow();
         let mut state = self.log_viewer_state.borrow_mut();
-        viewer.wrap_mode(LogWrapMode::Wrap);
         StatefulWidget::render(&*viewer, inner, frame, &mut *state);
     }
 

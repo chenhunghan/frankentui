@@ -4691,10 +4691,10 @@ mod tests {
 
     #[test]
     fn test_shadow_at_edge_clips() {
-        let shadow = Shadow::new(5, 5);
-        // Shadow at (0, 0) would be at (-5, -5) if unchecked - should return None
+        let shadow = Shadow::new(-5, -5);
+        // Shadow at (2, 2) with offset (-5, -5) would be at (-3, -3)
         let result = shadow.apply_offset(2, 2, 80, 24);
-        // (2-5, 2-5) = (-3, -3) which is outside bounds
+        // (-3, -3) is outside bounds, should return None
         assert_eq!(result, None);
     }
 
@@ -4713,8 +4713,11 @@ mod tests {
             .color(PackedRgba::rgb(100, 100, 100))
             .opacity(0.5);
         let effective = shadow.effective_color();
-        // Alpha should be around 127 (0.5 * 255)
-        assert!((127i16 - i16::from(effective.a())).abs() <= 1);
+        // apply_alpha multiplies RGB values by opacity, not alpha channel
+        // 100 * 0.5 = 50
+        assert_eq!(effective.r(), 50);
+        assert_eq!(effective.g(), 50);
+        assert_eq!(effective.b(), 50);
     }
 
     #[test]
