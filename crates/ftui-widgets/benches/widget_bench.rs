@@ -415,13 +415,29 @@ fn bench_scorer_corpus(c: &mut Criterion) {
     group.finish();
 }
 
+fn compute_word_starts(title_lower: &str) -> Vec<usize> {
+    let bytes = title_lower.as_bytes();
+    title_lower
+        .char_indices()
+        .filter_map(|(i, _)| {
+            let is_word_start = i == 0 || {
+                let prev = bytes.get(i.saturating_sub(1)).copied().unwrap_or(b' ');
+                prev == b' ' || prev == b'-' || prev == b'_'
+            };
+            is_word_start.then_some(i)
+        })
+        .collect()
+}
+
 fn bench_scorer_incremental_query(c: &mut Criterion) {
     let mut group = c.benchmark_group("command_palette/incremental_query");
     let scorer = BayesianScorer::fast();
     let corpus = make_command_corpus(100);
-    let corpus_refs: Vec<&str> = corpus.iter().map(|s| s.as_str()).collect();
     let corpus_lower: Vec<String> = corpus.iter().map(|s| s.to_lowercase()).collect();
-    let corpus_lower_refs: Vec<&str> = corpus_lower.iter().map(|s| s.as_str()).collect();
+    let corpus_word_starts: Vec<Vec<usize>> = corpus_lower
+        .iter()
+        .map(|title_lower| compute_word_starts(title_lower))
+        .collect();
 
     // Simulate typing "git commit" one character at a time
     let queries = ["g", "gi", "git", "git ", "git c", "git co", "git com"];
@@ -444,10 +460,11 @@ fn bench_scorer_incremental_query(c: &mut Criterion) {
         b.iter(|| {
             let mut inc = IncrementalScorer::new();
             for query in &queries {
-                let results = inc.score_corpus_with_lowered(
+                let results = inc.score_corpus_with_lowered_and_words(
                     black_box(query),
-                    &corpus_refs,
-                    &corpus_lower_refs,
+                    &corpus,
+                    &corpus_lower,
+                    &corpus_word_starts,
                     None,
                 );
                 black_box(&results);
@@ -470,18 +487,21 @@ fn bench_scorer_incremental_corpus_sizes(c: &mut Criterion) {
         (5000, "5K"),
     ] {
         let corpus = make_command_corpus(size);
-        let corpus_refs: Vec<&str> = corpus.iter().map(|s| s.as_str()).collect();
         let corpus_lower: Vec<String> = corpus.iter().map(|s| s.to_lowercase()).collect();
-        let corpus_lower_refs: Vec<&str> = corpus_lower.iter().map(|s| s.as_str()).collect();
+        let corpus_word_starts: Vec<Vec<usize>> = corpus_lower
+            .iter()
+            .map(|title_lower| compute_word_starts(title_lower))
+            .collect();
 
         group.bench_function(BenchmarkId::new("incremental", label), |b| {
             b.iter(|| {
                 let mut inc = IncrementalScorer::new();
                 for query in &queries {
-                    let results = inc.score_corpus_with_lowered(
+                    let results = inc.score_corpus_with_lowered_and_words(
                         black_box(query),
-                        &corpus_refs,
-                        &corpus_lower_refs,
+                        &corpus,
+                        &corpus_lower,
+                        &corpus_word_starts,
                         None,
                     );
                     black_box(&results);
