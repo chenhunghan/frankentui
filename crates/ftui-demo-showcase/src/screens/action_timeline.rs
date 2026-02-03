@@ -176,6 +176,7 @@ impl ActionTimeline {
             let event = timeline.synthetic_event();
             timeline.push_event(event);
         }
+        timeline.sync_selection();
         timeline
     }
 

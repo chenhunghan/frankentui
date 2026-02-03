@@ -5216,6 +5216,7 @@ impl StyledMultiLine {
     }
 
     /// Render one line of the multi-line block.
+    #[allow(clippy::too_many_arguments)]
     fn render_line(
         &self,
         line: &str,

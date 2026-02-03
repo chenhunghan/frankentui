@@ -1173,7 +1173,7 @@ mod tests {
 
     #[test]
     fn crlf_handling() {
-        let mut ed = Editor::with_text("hello\r\nworld");
+        let ed = Editor::with_text("hello\r\nworld");
         assert_eq!(ed.line_count(), 2);
         assert_eq!(ed.line_text(0), Some("hello".to_string()));
         assert_eq!(ed.line_text(1), Some("world".to_string()));
@@ -1181,7 +1181,7 @@ mod tests {
 
     #[test]
     fn mixed_newlines() {
-        let mut ed = Editor::with_text("line1\nline2\r\nline3");
+        let ed = Editor::with_text("line1\nline2\r\nline3");
         assert_eq!(ed.line_count(), 3);
         assert_eq!(ed.line_text(0), Some("line1".to_string()));
         assert_eq!(ed.line_text(1), Some("line2".to_string()));

@@ -1960,6 +1960,18 @@ mod tests {
     }
 
     #[test]
+    fn program_config_with_legacy_resize_enabled() {
+        let config = ProgramConfig::default().with_legacy_resize(true);
+        assert_eq!(config.resize_behavior, ResizeBehavior::Immediate);
+    }
+
+    #[test]
+    fn program_config_with_legacy_resize_disabled_keeps_default() {
+        let config = ProgramConfig::default().with_legacy_resize(false);
+        assert_eq!(config.resize_behavior, ResizeBehavior::Placeholder);
+    }
+
+    #[test]
     fn nested_cmd_msg_executes_recursively() {
         // Verify that Cmd::Msg triggers recursive update
         use crate::simulator::ProgramSimulator;

@@ -194,7 +194,10 @@ pub fn key_to_sequence(event: KeyEvent) -> Vec<u8> {
 /// Convert a character with modifiers to an escape sequence.
 fn char_sequence(c: char, modifiers: Modifiers) -> Vec<u8> {
     // Handle Ctrl+<key> combinations
-    if modifiers.ctrl && !modifiers.alt && let Some(ctrl_byte) = ctrl_char(c) {
+    if modifiers.ctrl
+        && !modifiers.alt
+        && let Some(ctrl_byte) = ctrl_char(c)
+    {
         return vec![ctrl_byte];
     }
 
@@ -212,7 +215,10 @@ fn char_sequence(c: char, modifiers: Modifiers) -> Vec<u8> {
     }
 
     // Handle Ctrl+Alt combinations
-    if modifiers.ctrl && modifiers.alt && let Some(ctrl_byte) = ctrl_char(c) {
+    if modifiers.ctrl
+        && modifiers.alt
+        && let Some(ctrl_byte) = ctrl_char(c)
+    {
         return vec![0x1b, ctrl_byte]; // ESC + Ctrl code
     }
 
