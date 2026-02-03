@@ -17,6 +17,7 @@
 
 pub mod allocation_budget;
 pub mod asciicast;
+pub mod conformal_alert;
 pub mod eprocess_throttle;
 pub mod flake_detector;
 pub mod input_fairness;
@@ -68,6 +69,9 @@ pub use stdio_capture::{CapturedWriter, StdioCapture, StdioCaptureError};
 
 pub use allocation_budget::{
     AllocationBudget, BudgetAlert, BudgetConfig, BudgetEvidence, BudgetSummary,
+};
+pub use conformal_alert::{
+    AlertConfig, AlertDecision, AlertEvidence, AlertReason, AlertStats, ConformalAlert,
 };
 pub use eprocess_throttle::{
     EProcessThrottle, ThrottleConfig, ThrottleDecision, ThrottleLog, ThrottleStats,

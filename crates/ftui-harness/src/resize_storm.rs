@@ -467,7 +467,7 @@ impl ResizeStorm {
                 0 => (self.config.min_width, self.config.min_height, 0), // Minimum, instant
                 1 => (self.config.max_width, self.config.max_height, 0), // Maximum, instant
                 2 => (1, 1, 1),                                          // Extreme minimum
-                3 => (u16::MAX.min(500), u16::MAX.min(200), 1),          // Large
+                3 => (500, 200, 1),                                       // Large
                 4 => (80, 24, 500),                                      // Normal, long delay
                 5 => {
                     // Random, zero delay
@@ -717,10 +717,10 @@ fn detect_mux() -> (bool, Option<String>) {
     if std::env::var("ZELLIJ").is_ok() {
         return (true, Some("zellij".to_string()));
     }
-    if let Ok(prog) = std::env::var("TERM_PROGRAM") {
-        if prog.to_lowercase().contains("tmux") {
-            return (true, Some("tmux".to_string()));
-        }
+    if let Ok(prog) = std::env::var("TERM_PROGRAM")
+        && prog.to_lowercase().contains("tmux")
+    {
+        return (true, Some("tmux".to_string()));
     }
     (false, None)
 }
@@ -769,17 +769,17 @@ impl StormResult {
                 }
             }
 
-            if let Some(ref analysis) = self.flicker_analysis {
-                if !analysis.flicker_free {
-                    msg.push_str("\nFlicker Issues:\n");
-                    for issue in &analysis.issues {
-                        writeln!(
-                            msg,
-                            "  - [{}] {}: {}",
-                            issue.severity, issue.event_type, issue.details.message
-                        )
-                        .unwrap();
-                    }
+            if let Some(ref analysis) = self.flicker_analysis
+                && !analysis.flicker_free
+            {
+                msg.push_str("\nFlicker Issues:\n");
+                for issue in &analysis.issues {
+                    writeln!(
+                        msg,
+                        "  - [{}] {}: {}",
+                        issue.severity, issue.event_type, issue.details.message
+                    )
+                    .unwrap();
                 }
             }
 

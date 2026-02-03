@@ -178,9 +178,10 @@ theme_studio_cycle() {
     [[ "$size" -gt 300 ]] || return 1
 
     local count=0
-    local names=("Cyberpunk" "Darcula" "Lumen" "Nordic" "High Contrast")
-    for name in "${names[@]}"; do
-        if grep -a -q "$name" "$output_file"; then
+    local theme_names=("Cyberpunk" "Darcula" "Lumen" "Nordic" "High Contrast")
+    local theme_name
+    for theme_name in "${theme_names[@]}"; do
+        if grep -a -q "$theme_name" "$output_file"; then
             count=$((count + 1))
         fi
     done

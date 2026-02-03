@@ -387,6 +387,12 @@ pub struct TelemetryHooks {
     on_any_event: Option<TelemetryCallback>,
 }
 
+impl Default for TelemetryHooks {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TelemetryHooks {
     pub fn new() -> Self {
         Self {
