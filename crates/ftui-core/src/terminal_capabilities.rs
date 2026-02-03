@@ -834,7 +834,12 @@ impl TerminalCapabilities {
     /// for safety.
     #[must_use]
     pub fn detect() -> Self {
-        if let Ok(value) = env::var("FTUI_TEST_PROFILE")
+        let value = env::var("FTUI_TEST_PROFILE").ok();
+        Self::detect_with_test_profile_override(value.as_deref())
+    }
+
+    fn detect_with_test_profile_override(value: Option<&str>) -> Self {
+        if let Some(value) = value
             && let Ok(profile) = TerminalProfile::from_str(value.trim())
             && profile != TerminalProfile::Detected
         {
@@ -1061,6 +1066,7 @@ impl TerminalCapabilities {
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
+    use temp_env;
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1069,23 +1075,12 @@ mod tests {
 
     fn with_env_var(key: &str, value: &str, f: impl FnOnce()) {
         let _guard = env_lock().lock().expect("env lock poisoned");
-        let prev = std::env::var_os(key);
-        std::env::set_var(key, value);
-        f();
-        match prev {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
-        }
+        temp_env::with_var(key, Some(value), f);
     }
 
     fn clear_env_var(key: &str, f: impl FnOnce()) {
         let _guard = env_lock().lock().expect("env lock poisoned");
-        let prev = std::env::var_os(key);
-        std::env::remove_var(key);
-        f();
-        if let Some(v) = prev {
-            std::env::set_var(key, v);
-        }
+        temp_env::with_var(key, None::<&str>, f);
     }
 
     #[test]
