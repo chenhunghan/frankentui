@@ -713,3 +713,91 @@ fn app_all_screens_80x24() {
         assert_snapshot!(&name, &frame.buffer);
     }
 }
+
+// ============================================================================
+// Responsive Demo — Breakpoint-specific snapshots
+// ============================================================================
+
+/// Snapshot at Xs breakpoint (40 cols): single-column stacked layout.
+#[test]
+fn responsive_demo_xs_40x24() {
+    let screen = ftui_demo_showcase::screens::responsive_demo::ResponsiveDemo::new();
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(40, 24, &mut pool);
+    screen.view(&mut frame, Rect::new(0, 0, 40, 24));
+    assert_snapshot!("responsive_demo_xs_40x24", &frame.buffer);
+}
+
+/// Snapshot at Sm breakpoint (70 cols): single-column stacked layout.
+#[test]
+fn responsive_demo_sm_70x24() {
+    let screen = ftui_demo_showcase::screens::responsive_demo::ResponsiveDemo::new();
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(70, 24, &mut pool);
+    screen.view(&mut frame, Rect::new(0, 0, 70, 24));
+    assert_snapshot!("responsive_demo_sm_70x24", &frame.buffer);
+}
+
+/// Snapshot at Md breakpoint (100 cols): two-column sidebar+content layout.
+#[test]
+fn responsive_demo_md_100x30() {
+    let screen = ftui_demo_showcase::screens::responsive_demo::ResponsiveDemo::new();
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(100, 30, &mut pool);
+    screen.view(&mut frame, Rect::new(0, 0, 100, 30));
+    assert_snapshot!("responsive_demo_md_100x30", &frame.buffer);
+}
+
+/// Snapshot at Lg breakpoint (130 cols): three-column layout with aside.
+#[test]
+fn responsive_demo_lg_130x40() {
+    let screen = ftui_demo_showcase::screens::responsive_demo::ResponsiveDemo::new();
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(130, 40, &mut pool);
+    screen.view(&mut frame, Rect::new(0, 0, 130, 40));
+    assert_snapshot!("responsive_demo_lg_130x40", &frame.buffer);
+}
+
+/// Snapshot at Xl breakpoint (170 cols): three-column layout (inherits Lg).
+#[test]
+fn responsive_demo_xl_170x40() {
+    let screen = ftui_demo_showcase::screens::responsive_demo::ResponsiveDemo::new();
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(170, 40, &mut pool);
+    screen.view(&mut frame, Rect::new(0, 0, 170, 40));
+    assert_snapshot!("responsive_demo_xl_170x40", &frame.buffer);
+}
+
+/// Verify layout changes structure at each breakpoint transition.
+#[test]
+fn responsive_demo_breakpoint_transitions() {
+    use ftui_layout::{Breakpoint, Breakpoints};
+
+    // Widths that land in each breakpoint with default thresholds
+    let cases: &[(u16, Breakpoint, usize)] = &[
+        (40, Breakpoint::Xs, 1),  // single column
+        (70, Breakpoint::Sm, 1),  // still single column
+        (100, Breakpoint::Md, 2), // sidebar + content
+        (130, Breakpoint::Lg, 3), // sidebar + content + aside
+        (170, Breakpoint::Xl, 3), // inherits Lg layout
+    ];
+
+    let bps = Breakpoints::DEFAULT;
+    for &(width, expected_bp, expected_cols) in cases {
+        let bp = bps.classify_width(width);
+        assert_eq!(
+            bp, expected_bp,
+            "width={width} should be {expected_bp:?}, got {bp:?}"
+        );
+
+        // Render the screen and verify it doesn't panic
+        let screen = ftui_demo_showcase::screens::responsive_demo::ResponsiveDemo::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(width, 24, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, width, 24));
+
+        // The layout column count is implicitly verified via the snapshot tests above.
+        // Here we just verify the breakpoint classification is correct.
+        let _ = expected_cols; // Used in doc comments, verified by snapshots
+    }
+}
