@@ -266,28 +266,14 @@ impl<M: Send + 'static> Subscription<M> for Every<M> {
     }
 
     fn run(&self, sender: mpsc::Sender<M>, stop: StopSignal) {
-        eprintln!(
-            "DEBUG: Every subscription started, interval={:?}",
-            self.interval
-        );
-        let mut count = 0u64;
         loop {
             if stop.wait_timeout(self.interval) {
-                eprintln!(
-                    "DEBUG: Every subscription stopped (stop signal), sent={}",
-                    count
-                );
                 break;
             }
             let msg = (self.make_msg)();
             if sender.send(msg).is_err() {
-                eprintln!(
-                    "DEBUG: Every subscription stopped (send failed), sent={}",
-                    count
-                );
                 break;
             }
-            count += 1;
         }
     }
 }

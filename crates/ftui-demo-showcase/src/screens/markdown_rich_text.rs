@@ -10,9 +10,12 @@
 //! - Unicode text with CJK and emoji in a `Table`
 //! - `WrapMode` and `Alignment` cycling
 
+use std::cell::RefCell;
+
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ftui_core::geometry::Rect;
 use ftui_extras::markdown::{MarkdownRenderer, MarkdownTheme, is_likely_markdown};
+use ftui_extras::visual_fx::{Backdrop, FxQuality, PlasmaFx, PlasmaPalette, Scrim, ThemeInputs};
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
@@ -229,6 +232,34 @@ const ALIGNMENTS: &[Alignment] = &[Alignment::Left, Alignment::Center, Alignment
 /// Characters to advance per tick during streaming simulation.
 const STREAM_CHARS_PER_TICK: usize = 3;
 
+struct MarkdownPanel {
+    text: Text,
+    scroll: u16,
+}
+
+impl Widget for MarkdownPanel {
+    fn render(&self, area: Rect, frame: &mut Frame) {
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Markdown Renderer")
+            .title_alignment(Alignment::Center)
+            .style(Style::new().fg(theme::screen_accent::MARKDOWN));
+
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        Paragraph::new(self.text.clone())
+            .wrap(WrapMode::Word)
+            .scroll((self.scroll, 0))
+            .render(inner, frame);
+    }
+}
+
 pub struct MarkdownRichText {
     md_scroll: u16,
     rendered_md: Text,
@@ -239,6 +270,8 @@ pub struct MarkdownRichText {
     stream_paused: bool,
     stream_scroll: u16,
     md_theme: MarkdownTheme,
+    tick_count: u64,
+    markdown_backdrop: RefCell<Backdrop>,
 }
 
 impl Default for MarkdownRichText {
@@ -252,6 +285,11 @@ impl MarkdownRichText {
         let md_theme = Self::build_theme();
         let renderer = MarkdownRenderer::new(md_theme.clone()).rule_width(36);
         let rendered_md = renderer.render(SAMPLE_MARKDOWN);
+        let theme_inputs = Self::current_fx_theme();
+        let mut markdown_backdrop =
+            Backdrop::new(Box::new(PlasmaFx::new(PlasmaPalette::Ocean)), theme_inputs);
+        markdown_backdrop.set_effect_opacity(0.25);
+        markdown_backdrop.set_scrim(Scrim::uniform(0.7));
 
         Self {
             md_scroll: 0,
@@ -263,6 +301,8 @@ impl MarkdownRichText {
             stream_paused: false,
             stream_scroll: 0,
             md_theme,
+            tick_count: 0,
+            markdown_backdrop: RefCell::new(markdown_backdrop),
         }
     }
 
@@ -270,6 +310,8 @@ impl MarkdownRichText {
         self.md_theme = Self::build_theme();
         let renderer = MarkdownRenderer::new(self.md_theme.clone()).rule_width(36);
         self.rendered_md = renderer.render(SAMPLE_MARKDOWN);
+        let theme_inputs = Self::current_fx_theme();
+        self.markdown_backdrop.borrow_mut().set_theme(theme_inputs);
     }
 
     fn build_theme() -> MarkdownTheme {
@@ -306,6 +348,10 @@ impl MarkdownRichText {
             admonition_warning: Style::new().fg(theme::accent::WARNING).bold(),
             admonition_caution: Style::new().fg(theme::accent::ERROR).bold(),
         }
+    }
+
+    fn current_fx_theme() -> ThemeInputs {
+        ThemeInputs::from(theme::palette(theme::current_theme()))
     }
 
     /// Advance the streaming simulation by one tick.
@@ -440,24 +486,21 @@ impl MarkdownRichText {
     // ---- Render panels ----
 
     fn render_markdown_panel(&self, frame: &mut Frame, area: Rect) {
-        let block = Block::new()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title("Markdown Renderer")
-            .title_alignment(Alignment::Center)
-            .style(Style::new().fg(theme::screen_accent::MARKDOWN));
+        let panel = MarkdownPanel {
+            text: self.rendered_md.clone(),
+            scroll: self.md_scroll,
+        };
 
-        let inner = block.inner(area);
-        block.render(area, frame);
+        let area_cells = area.width as usize * area.height as usize;
+        let quality = FxQuality::from_degradation_with_area(frame.degradation, area_cells);
+        let time_seconds = self.tick_count as f64 * 0.1;
+        let theme_inputs = Self::current_fx_theme();
 
-        if inner.is_empty() {
-            return;
-        }
-
-        Paragraph::new(self.rendered_md.clone())
-            .wrap(WrapMode::Word)
-            .scroll((self.md_scroll, 0))
-            .render(inner, frame);
+        let mut backdrop = self.markdown_backdrop.borrow_mut();
+        backdrop.set_theme(theme_inputs);
+        backdrop.set_quality(quality);
+        backdrop.set_time(self.tick_count, time_seconds);
+        backdrop.render_with(area, frame, &panel);
     }
 
     fn render_style_sampler(&self, frame: &mut Frame, area: Rect) {
@@ -829,7 +872,8 @@ impl Screen for MarkdownRichText {
         "Markdown"
     }
 
-    fn tick(&mut self, _tick_count: u64) {
+    fn tick(&mut self, tick_count: u64) {
+        self.tick_count = tick_count;
         // Advance streaming simulation on each tick
         self.tick_stream();
     }

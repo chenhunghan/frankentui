@@ -35,6 +35,9 @@ use ftui_render::frame::{Frame, HitCell, HitData, HitId, HitRegion};
 use crate::{Widget, set_style_area};
 use ftui_style::Style;
 
+#[cfg(feature = "tracing")]
+use tracing::{info_span, trace};
+
 /// Inspector display mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InspectorMode {
@@ -315,6 +318,8 @@ impl InspectorState {
 
     /// Register a widget for inspection.
     pub fn register_widget(&mut self, info: WidgetInfo) {
+        #[cfg(feature = "tracing")]
+        trace!(name = info.name, area = ?info.area, "Registered widget for inspection");
         self.widgets.push(info);
     }
 
@@ -347,6 +352,9 @@ impl<'a> InspectorOverlay<'a> {
 
     /// Render hit region overlays from the frame's HitGrid.
     fn render_hit_regions(&self, area: Rect, frame: &mut Frame) {
+        #[cfg(feature = "tracing")]
+        let _span = info_span!("render_hit_regions").entered();
+
         let Some(ref hit_grid) = frame.hit_grid else {
             // No hit grid available - draw warning
             self.draw_warning(area, frame, "HitGrid not enabled");
@@ -388,6 +396,13 @@ impl<'a> InspectorOverlay<'a> {
 
     /// Render widget bounds from collected WidgetInfo.
     fn render_widget_bounds(&self, _area: Rect, frame: &mut Frame) {
+        #[cfg(feature = "tracing")]
+        let _span = info_span!(
+            "render_widget_bounds",
+            widget_count = self.state.widgets.len()
+        )
+        .entered();
+
         let style = &self.state.style;
 
         for widget in &self.state.widgets {
@@ -637,6 +652,9 @@ impl<'a> InspectorOverlay<'a> {
 
 impl Widget for InspectorOverlay<'_> {
     fn render(&self, area: Rect, frame: &mut Frame) {
+        #[cfg(feature = "tracing")]
+        let _span = info_span!("inspector_overlay", ?area).entered();
+
         if !self.state.is_active() {
             return;
         }
@@ -1624,5 +1642,21 @@ mod tests {
 
         // label_bg should be nearly opaque
         assert!(style.label_bg.a() > 128);
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn telemetry_spans_and_events() {
+        // This test mostly verifies that the code compiles with tracing macros.
+        // Verifying actual output would require a custom subscriber which is overkill here.
+        let mut state = InspectorState::new();
+        state.toggle(); // Should log "Inspector toggled"
+
+        let overlay = InspectorOverlay::new(&state);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::with_hit_grid(20, 10, &mut pool);
+
+        let area = Rect::new(0, 0, 20, 10);
+        overlay.render(area, &mut frame); // Should enter "inspector_overlay" span
     }
 }

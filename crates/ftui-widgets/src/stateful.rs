@@ -321,6 +321,7 @@ impl core::fmt::Display for MigrationError {
 ///     }
 /// }
 /// ```
+#[allow(clippy::wrong_self_convention)]
 pub trait StateMigration {
     /// The state type before migration.
     type OldState;
@@ -343,14 +344,17 @@ pub trait StateMigration {
 /// A type-erased migration step for use in migration chains.
 ///
 /// This allows storing migrations with different types in a single collection.
+#[allow(clippy::wrong_self_convention)]
 pub trait ErasedMigration<S>: Send + Sync {
     /// Source version.
     fn from_version(&self) -> u32;
     /// Target version.
     fn to_version(&self) -> u32;
     /// Perform migration on boxed state, returning boxed result.
-    fn migrate_erased(&self, old: Box<dyn core::any::Any + Send>)
-        -> Result<Box<dyn core::any::Any + Send>, String>;
+    fn migrate_erased(
+        &self,
+        old: Box<dyn core::any::Any + Send>,
+    ) -> Result<Box<dyn core::any::Any + Send>, String>;
 }
 
 /// A chain of migrations that can upgrade state through multiple versions.
@@ -445,20 +449,21 @@ impl<S: 'static> MigrationChain<S> {
         let mut current_version = from_version;
 
         while current_version < to_version {
-            let migration = self.migrations.get(&current_version).ok_or_else(|| {
-                MigrationError::NoPathFound {
-                    from: current_version,
-                    to: to_version,
-                }
-            })?;
+            let migration =
+                self.migrations
+                    .get(&current_version)
+                    .ok_or(MigrationError::NoPathFound {
+                        from: current_version,
+                        to: to_version,
+                    })?;
 
-            current_state = migration
-                .migrate_erased(current_state)
-                .map_err(|msg| MigrationError::MigrationFailed {
+            current_state = migration.migrate_erased(current_state).map_err(|msg| {
+                MigrationError::MigrationFailed {
                     from: current_version,
                     to: current_version + 1,
                     message: msg,
-                })?;
+                }
+            })?;
 
             current_version += 1;
         }
@@ -481,10 +486,7 @@ pub enum RestoreResult<S> {
     /// State was successfully migrated from an older version.
     Migrated { state: S, from_version: u32 },
     /// Migration failed; falling back to default state.
-    DefaultFallback {
-        error: MigrationError,
-        default: S,
-    },
+    DefaultFallback { error: MigrationError, default: S },
 }
 
 impl<S> RestoreResult<S> {

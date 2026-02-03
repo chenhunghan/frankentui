@@ -1950,12 +1950,12 @@ mod tests {
         // Should emit Replacement Character then 'A'.
         let events = parser.parse(&[0xE0, 0x41]);
         assert_eq!(events.len(), 2);
-        
+
         match &events[0] {
             Event::Key(k) => assert_eq!(k.code, KeyCode::Char(std::char::REPLACEMENT_CHARACTER)),
             _ => panic!("Expected replacement character"),
         }
-        
+
         match &events[1] {
             Event::Key(k) => assert_eq!(k.code, KeyCode::Char('A')),
             _ => panic!("Expected character 'A'"),

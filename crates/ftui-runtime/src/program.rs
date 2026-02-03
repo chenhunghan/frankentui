@@ -757,17 +757,7 @@ impl<M: Model, W: Write + Send> Program<M, W> {
         self.render_frame()?;
 
         // Main loop
-        static LOOP_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         while self.running {
-            let loop_iter = LOOP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if loop_iter.is_multiple_of(100) {
-                eprintln!(
-                    "DEBUG: loop iter={}, subs={}, dirty={}",
-                    loop_iter,
-                    self.subscriptions.active_count(),
-                    self.dirty
-                );
-            }
             // Poll for input with tick timeout
             let timeout = self.effective_timeout();
 
@@ -1013,16 +1003,6 @@ impl<M: Model, W: Write + Send> Program<M, W> {
     /// Process pending messages from subscriptions.
     fn process_subscription_messages(&mut self) -> io::Result<()> {
         let messages = self.subscriptions.drain_messages();
-        // Debug: track subscription message count
-        static MSG_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let count =
-            MSG_COUNT.fetch_add(messages.len() as u64, std::sync::atomic::Ordering::Relaxed);
-        if count.is_multiple_of(50) && !messages.is_empty() {
-            eprintln!(
-                "DEBUG: sub msgs drained, total={}",
-                count + messages.len() as u64
-            );
-        }
         for msg in messages {
             let cmd = {
                 let _span = debug_span!(
@@ -1150,12 +1130,6 @@ impl<M: Model, W: Write + Send> Program<M, W> {
 
     /// Render a frame with budget tracking.
     fn render_frame(&mut self) -> io::Result<()> {
-        static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let frame_num = FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if frame_num.is_multiple_of(50) {
-            eprintln!("DEBUG: render_frame {}", frame_num);
-        }
-
         // Reset budget for new frame, potentially upgrading quality
         self.budget.next_frame();
 
@@ -1167,7 +1141,6 @@ impl<M: Model, W: Write + Send> Program<M, W> {
 
         // Early skip if budget says to skip this frame entirely
         if self.budget.exhausted() {
-            eprintln!("DEBUG: frame {} SKIPPED (budget exhausted)", frame_num);
             debug!(
                 degradation = self.budget.degradation().as_str(),
                 "frame skipped: budget exhausted before render"

@@ -8,7 +8,7 @@ fn alignment_space_between_overflow() {
     let flex = Flex::horizontal()
         .alignment(Alignment::SpaceBetween)
         .constraints(constraints);
-    
+
     // This should panic due to division by zero if not fixed
     let _ = flex.split(Rect::new(0, 0, u16::MAX, 10));
 }
@@ -20,7 +20,7 @@ fn alignment_space_around_overflow() {
     let flex = Flex::horizontal()
         .alignment(Alignment::SpaceAround)
         .constraints(constraints);
-        
+
     // This should panic due to division by zero if not fixed
     let _ = flex.split(Rect::new(0, 0, u16::MAX, 10));
 }

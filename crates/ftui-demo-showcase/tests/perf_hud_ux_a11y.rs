@@ -98,10 +98,10 @@ fn frame_contains(app: &AppModel, width: u16, height: u16, needle: &str) -> bool
     let mut text = String::new();
     for y in 0..height {
         for x in 0..width {
-            if let Some(cell) = frame.buffer.get(x, y) {
-                if let Some(ch) = cell.content.as_char() {
-                    text.push(ch);
-                }
+            if let Some(cell) = frame.buffer.get(x, y)
+                && let Some(ch) = cell.content.as_char()
+            {
+                text.push(ch);
             }
         }
     }
@@ -245,7 +245,12 @@ fn legibility_graceful_degradation() {
 
     // Should not contain HUD content (gracefully degraded)
     let has_hud = frame_contains(&app, 24, 8, "Perf HUD");
-    log_jsonl("legibility", "degraded_small", !has_hud, "HUD hidden at 24x8");
+    log_jsonl(
+        "legibility",
+        "degraded_small",
+        !has_hud,
+        "HUD hidden at 24x8",
+    );
 
     // Note: At 24x8, the HUD overlay area would be 20x4, which is below threshold
     // So the HUD content may or may not render depending on exact calculation
@@ -299,10 +304,7 @@ fn a11y_tick_stats_numeric() {
     let has_ms = frame_contains(&app, 120, 40, "ms");
 
     log_jsonl("a11y", "timing_numeric", has_ms, "Tick times shown in ms");
-    assert!(
-        has_ms,
-        "Tick timing should show 'ms' units for clarity"
-    );
+    assert!(has_ms, "Tick timing should show 'ms' units for clarity");
 }
 
 // =============================================================================
@@ -346,12 +348,7 @@ fn invariant_non_blocking() {
     let _ = app.update(AppMsg::Tick);
     let after_tick = app.tick_count;
 
-    log_jsonl(
-        "invariant",
-        "ticks_process",
-        after_tick > before_tick,
-        "",
-    );
+    log_jsonl("invariant", "ticks_process", after_tick > before_tick, "");
     assert!(
         after_tick > before_tick,
         "Ticks should still process with HUD visible"
@@ -402,16 +399,18 @@ fn invariant_self_documenting() {
 fn property_visibility_always_defined() {
     let mut app = AppModel::new();
 
-    // Multiple toggles
-    for i in 0..100 {
+    // Multiple toggles - verify toggle consistency
+    // We can't predict the exact state without knowing initial value,
+    // but we can verify the type is a valid bool (which Rust guarantees).
+    let initial = app.perf_hud_visible;
+    for _ in 0..100 {
         let _ = app.update(AppMsg::ScreenEvent(ctrl_key('p')));
-        // Visibility should always be true or false
-        let expected = i % 2 == 0; // Even toggles = visible
-        assert!(
-            app.perf_hud_visible == expected || app.perf_hud_visible != expected,
-            "Visibility must be boolean"
-        );
     }
+    // 100 toggles should return to the same state (even number of toggles)
+    assert_eq!(
+        app.perf_hud_visible, initial,
+        "Even toggles should restore original state"
+    );
     log_jsonl("property", "visibility_defined", true, "100 toggles");
 }
 

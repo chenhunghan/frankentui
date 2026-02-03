@@ -925,10 +925,6 @@ impl AppModel {
 
             AppMsg::Tick => {
                 self.tick_count += 1;
-                // Debug: trace tick delivery
-                if self.tick_count.is_multiple_of(50) {
-                    eprintln!("DEBUG: tick {}", self.tick_count);
-                }
                 self.record_tick_timing();
                 if !self.a11y.reduced_motion {
                     self.screens.tick(self.tick_count);
@@ -1126,9 +1122,7 @@ impl Model for AppModel {
         if self.exit_after_ms > 0 {
             let ms = self.exit_after_ms;
             Cmd::Task(Box::new(move || {
-                eprintln!("DEBUG: Auto-exit timer started: {}ms", ms);
                 std::thread::sleep(Duration::from_millis(ms));
-                eprintln!("DEBUG: Auto-exit timer expired, sending Quit");
                 AppMsg::Quit
             }))
         } else {
