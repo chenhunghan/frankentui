@@ -229,8 +229,10 @@ const WRAP_MODES: &[WrapMode] = &[
 
 const ALIGNMENTS: &[Alignment] = &[Alignment::Left, Alignment::Center, Alignment::Right];
 
-/// Characters to advance per tick during streaming simulation.
+/// Base characters to advance per tick during streaming simulation.
 const STREAM_CHARS_PER_TICK: usize = 3;
+/// Global speed multiplier for the streaming demo.
+const STREAM_SPEED_MULTIPLIER: usize = 3;
 
 struct MarkdownPanel {
     text: Text,
@@ -383,7 +385,7 @@ impl MarkdownRichText {
     fn calculate_typing_speed(&self) -> usize {
         let remaining = &STREAMING_MARKDOWN[self.stream_position..];
         if remaining.is_empty() {
-            return STREAM_CHARS_PER_TICK;
+            return STREAM_CHARS_PER_TICK * STREAM_SPEED_MULTIPLIER;
         }
 
         // Check what's coming up
@@ -393,7 +395,7 @@ impl MarkdownRichText {
         if first_char.is_whitespace() {
             // Count consecutive whitespace for burst typing
             let ws_count = remaining.chars().take_while(|c| c.is_whitespace()).count();
-            return ws_count.clamp(1, 6);
+            return ws_count.clamp(1, 6) * STREAM_SPEED_MULTIPLIER;
         }
 
         // Check if we're at the start of a line
@@ -404,23 +406,23 @@ impl MarkdownRichText {
         if at_line_start {
             // Slow: headings (lines starting with #)
             if remaining.starts_with('#') {
-                return 1;
+                return STREAM_SPEED_MULTIPLIER;
             }
             // Slow: code blocks
             if remaining.starts_with("```") {
-                return 2;
+                return 2 * STREAM_SPEED_MULTIPLIER;
             }
             // Slow: list items and blockquotes
             if remaining.starts_with('-')
                 || remaining.starts_with('>')
                 || remaining.starts_with('|')
             {
-                return 2;
+                return 2 * STREAM_SPEED_MULTIPLIER;
             }
         }
 
         // Medium: regular text
-        STREAM_CHARS_PER_TICK
+        STREAM_CHARS_PER_TICK * STREAM_SPEED_MULTIPLIER
     }
 
     /// Get the current streaming fragment.
@@ -810,7 +812,7 @@ impl Screen for MarkdownRichText {
             .constraints([
                 Constraint::Percentage(35.0),
                 Constraint::Percentage(35.0),
-                Constraint::Percentage(30.0),
+                Constraint::Fill,
             ])
             .split(area);
 

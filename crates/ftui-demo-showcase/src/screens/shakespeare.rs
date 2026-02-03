@@ -4,7 +4,9 @@
 
 use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
+use ftui_extras::text_effects::{ColorGradient, Direction, RevealMode, StyledText, TextEffect};
 use ftui_layout::{Constraint, Flex};
+use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::{Style, StyleFlags};
@@ -17,6 +19,7 @@ use ftui_widgets::input::TextInput;
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ftui_widgets::tree::{Tree, TreeGuides, TreeNode};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::{HelpEntry, Screen};
 use crate::theme;
@@ -50,6 +53,10 @@ pub struct Shakespeare {
     current_match: usize,
     /// Viewport height (lines visible), updated each render.
     viewport_height: u16,
+    /// Animation tick counter.
+    tick_count: u64,
+    /// Animation time (seconds).
+    time: f64,
 }
 
 impl Default for Shakespeare {
@@ -81,6 +88,8 @@ impl Shakespeare {
             search_matches: Vec::new(),
             current_match: 0,
             viewport_height: 20,
+            tick_count: 0,
+            time: 0.0,
         };
         state.apply_theme();
         state
@@ -257,8 +266,20 @@ impl Screen for Shakespeare {
                         self.search_input.set_focused(false);
                         return Cmd::None;
                     }
-                    (KeyCode::Enter, _) => {
-                        self.perform_search();
+                    (KeyCode::Enter, _) | (KeyCode::Down, _) => {
+                        if self.search_matches.is_empty() {
+                            self.perform_search();
+                        } else {
+                            self.next_match();
+                        }
+                        return Cmd::None;
+                    }
+                    (KeyCode::Up, _) => {
+                        self.prev_match();
+                        return Cmd::None;
+                    }
+                    (KeyCode::Tab, _) => {
+                        self.next_match();
                         return Cmd::None;
                     }
                     _ => {
@@ -318,7 +339,7 @@ impl Screen for Shakespeare {
         let v_chunks = Flex::vertical()
             .constraints(if self.search_active {
                 vec![
-                    Constraint::Fixed(1),
+                    Constraint::Fixed(3),
                     Constraint::Min(4),
                     Constraint::Fixed(1),
                 ]
@@ -351,6 +372,14 @@ impl Screen for Shakespeare {
                 action: "Search",
             },
             HelpEntry {
+                key: "Enter/↓/Tab",
+                action: "Next match (while searching)",
+            },
+            HelpEntry {
+                key: "↑",
+                action: "Prev match (while searching)",
+            },
+            HelpEntry {
                 key: "n/N",
                 action: "Next/prev match",
             },
@@ -369,6 +398,11 @@ impl Screen for Shakespeare {
         ]
     }
 
+    fn tick(&mut self, tick_count: u64) {
+        self.tick_count = tick_count;
+        self.time = tick_count as f64 * 0.1;
+    }
+
     fn title(&self) -> &'static str {
         "Shakespeare Library"
     }
@@ -380,35 +414,117 @@ impl Screen for Shakespeare {
 
 impl Shakespeare {
     fn render_search_bar(&self, frame: &mut Frame, area: Rect) {
-        let h = Flex::horizontal()
+        if area.height < 2 {
+            self.search_input.render(area, frame);
+            return;
+        }
+
+        let rows = Flex::vertical()
             .constraints([
-                Constraint::Fixed(8),
-                Constraint::Min(10),
-                Constraint::Fixed(20),
+                Constraint::Fixed(1),
+                Constraint::Fixed(1),
+                Constraint::Fixed(1),
             ])
             .split(area);
 
-        Paragraph::new(" Search:")
-            .style(Style::new().fg(theme::accent::INFO).attrs(StyleFlags::BOLD))
-            .render(h[0], frame);
-        self.search_input.render(h[1], frame);
+        // Header row: animated title + controls
+        let header_cols = Flex::horizontal()
+            .constraints([Constraint::Min(10), Constraint::Fixed(32)])
+            .split(rows[0]);
+
+        let title = StyledText::new("LIVE SEARCH")
+            .effect(TextEffect::AnimatedGradient {
+                gradient: ColorGradient::cyberpunk(),
+                speed: 0.6,
+            })
+            .effect(TextEffect::PulsingGlow {
+                color: theme::accent::ACCENT_7.into(),
+                speed: 2.2,
+            })
+            .bold()
+            .time(self.time);
+        title.render(header_cols[0], frame);
+
+        let hint = truncate_to_width(
+            "↑/↓ jump · Enter/Tab next · Esc close",
+            header_cols[1].width,
+        );
+        let hint_fx = StyledText::new(hint)
+            .effect(TextEffect::ColorWave {
+                color1: theme::accent::PRIMARY.into(),
+                color2: theme::accent::ACCENT_8.into(),
+                speed: 1.0,
+                wavelength: 10.0,
+            })
+            .time(self.time);
+        hint_fx.render(header_cols[1], frame);
+
+        // Input row: label + input + match count
+        let input_cols = Flex::horizontal()
+            .constraints([
+                Constraint::Fixed(10),
+                Constraint::Min(10),
+                Constraint::Fixed(22),
+            ])
+            .split(rows[1]);
+
+        let label = StyledText::new("Query")
+            .effect(TextEffect::Pulse {
+                speed: 1.4,
+                min_alpha: 0.35,
+            })
+            .bold()
+            .time(self.time);
+        label.render(input_cols[0], frame);
+        self.search_input.render(input_cols[1], frame);
 
         let match_info = if self.search_matches.is_empty() {
             if self.search_input.value().len() >= 2 {
-                " No matches".to_owned()
+                "No matches".to_owned()
             } else {
-                String::new()
+                "Type to search".to_owned()
             }
         } else {
             format!(
-                " {}/{} matches",
+                "{}/{} matches",
                 self.current_match + 1,
                 self.search_matches.len()
             )
         };
-        Paragraph::new(match_info)
-            .style(Style::new().fg(theme::fg::MUTED))
-            .render(h[2], frame);
+        let match_info = truncate_to_width(&match_info, input_cols[2].width);
+        let match_fx = StyledText::new(match_info)
+            .effect(TextEffect::AnimatedGradient {
+                gradient: ColorGradient::sunset(),
+                speed: 0.5,
+            })
+            .effect(TextEffect::Glow {
+                color: theme::accent::WARNING.into(),
+                intensity: 0.45,
+            })
+            .time(self.time);
+        match_fx.render(input_cols[2], frame);
+
+        // Status row: mode + current line info
+        let status_cols = Flex::horizontal()
+            .constraints([Constraint::Min(10), Constraint::Fixed(24)])
+            .split(rows[2]);
+        let status = if self.search_input.value().len() >= 2 {
+            "Instant highlight active"
+        } else {
+            "Search updates as you type"
+        };
+        Paragraph::new(status)
+            .style(theme::muted())
+            .render(status_cols[0], frame);
+
+        let jump_hint = StyledText::new("n/N outside search")
+            .effect(TextEffect::Reveal {
+                mode: RevealMode::CenterOut,
+                progress: ((self.time * 0.6).sin() * 0.5 + 0.5).clamp(0.0, 1.0),
+                seed: 21,
+            })
+            .time(self.time);
+        jump_hint.render(status_cols[1], frame);
     }
 
     fn render_text_panel(&self, frame: &mut Frame, area: Rect) {
@@ -452,39 +568,161 @@ impl Shakespeare {
                 1,
             );
 
+            let matches = if has_query {
+                search_ascii_case_insensitive(line, query)
+            } else {
+                Vec::new()
+            };
+
             // Determine style: highlight if it's a search match
             let is_current_match = has_query
                 && !self.search_matches.is_empty()
                 && self.search_matches.get(self.current_match) == Some(&line_idx);
-            let is_any_match = has_query && self.search_matches.contains(&line_idx);
+            let is_any_match = !matches.is_empty();
 
-            let style = if is_current_match {
-                Style::new()
-                    .fg(theme::bg::DEEP)
-                    .bg(theme::accent::WARNING)
-                    .attrs(StyleFlags::BOLD)
-            } else if is_any_match {
-                Style::new()
-                    .fg(theme::fg::PRIMARY)
-                    .bg(theme::alpha::HIGHLIGHT)
-            } else {
-                Style::new().fg(theme::fg::SECONDARY)
-            };
-
-            // Line number prefix
-            let line_num = format!("{:>6} ", line_idx + 1);
-            let num_width = 7u16.min(text_area.width);
+            // Line number prefix with animated marker
+            let num_width = 8u16.min(text_area.width);
             let content_width = text_area.width.saturating_sub(num_width);
-
-            let num_area = Rect::new(line_area.x, line_area.y, num_width, 1);
+            let marker_area = Rect::new(line_area.x, line_area.y, 1.min(num_width), 1);
+            let num_area = Rect::new(line_area.x + 1, line_area.y, num_width.saturating_sub(1), 1);
             let content_area = Rect::new(line_area.x + num_width, line_area.y, content_width, 1);
 
+            if marker_area.width > 0 {
+                if is_current_match {
+                    let marker = StyledText::new("▶")
+                        .effect(TextEffect::PulsingGlow {
+                            color: theme::accent::WARNING.into(),
+                            speed: 2.0,
+                        })
+                        .time(self.time);
+                    marker.render(marker_area, frame);
+                } else if is_any_match {
+                    Paragraph::new("•")
+                        .style(Style::new().fg(theme::accent::INFO))
+                        .render(marker_area, frame);
+                } else {
+                    Paragraph::new(" ")
+                        .style(Style::new().fg(theme::fg::MUTED))
+                        .render(marker_area, frame);
+                }
+            }
+
+            let line_num = format!("{:>6} ", line_idx + 1);
+            let num_style = if is_current_match {
+                Style::new()
+                    .fg(theme::accent::WARNING)
+                    .attrs(StyleFlags::BOLD)
+            } else if is_any_match {
+                Style::new().fg(theme::accent::INFO)
+            } else {
+                Style::new().fg(theme::fg::MUTED)
+            };
             Paragraph::new(line_num)
-                .style(Style::new().fg(theme::fg::MUTED))
+                .style(num_style)
                 .render(num_area, frame);
-            Paragraph::new(line)
-                .style(style)
-                .render(content_area, frame);
+
+            if content_area.width == 0 {
+                continue;
+            }
+
+            if !is_any_match || query.is_empty() {
+                Paragraph::new(line)
+                    .style(Style::new().fg(theme::fg::SECONDARY))
+                    .render(content_area, frame);
+                continue;
+            }
+
+            let mut cursor_x = content_area.x;
+            let line_y = content_area.y;
+            let max_x = content_area.right();
+            let mut last = 0usize;
+
+            for result in &matches {
+                let start = result.range.start;
+                let end = result.range.end.min(line.len());
+                if cursor_x >= max_x {
+                    break;
+                }
+                if start < last || start >= line.len() {
+                    continue;
+                }
+                if !line.is_char_boundary(start) || !line.is_char_boundary(end) {
+                    continue;
+                }
+
+                let before = &line[last..start];
+                if !before.is_empty() && cursor_x < max_x {
+                    let remaining = max_x.saturating_sub(cursor_x);
+                    let clipped = truncate_to_width(before, remaining);
+                    let width = UnicodeWidthStr::width(clipped.as_str()) as u16;
+                    if width > 0 {
+                        let area = Rect::new(cursor_x, line_y, width.min(remaining), 1);
+                        Paragraph::new(clipped)
+                            .style(Style::new().fg(theme::fg::SECONDARY))
+                            .render(area, frame);
+                        cursor_x = cursor_x.saturating_add(width);
+                    }
+                }
+
+                if cursor_x >= max_x {
+                    break;
+                }
+
+                let matched = &line[start..end];
+                let remaining = max_x.saturating_sub(cursor_x);
+                let clipped = truncate_to_width(matched, remaining);
+                let width = UnicodeWidthStr::width(clipped.as_str()) as u16;
+                if width == 0 {
+                    break;
+                }
+
+                if is_current_match {
+                    let glow = StyledText::new(clipped)
+                        .base_color(theme::accent::WARNING.into())
+                        .bg_color(theme::alpha::HIGHLIGHT.into())
+                        .bold()
+                        .effect(TextEffect::AnimatedGradient {
+                            gradient: ColorGradient::sunset(),
+                            speed: 0.7,
+                        })
+                        .effect(TextEffect::PulsingGlow {
+                            color: PackedRgba::rgb(255, 200, 120),
+                            speed: 2.2,
+                        })
+                        .effect(TextEffect::ChromaticAberration {
+                            offset: 1,
+                            direction: Direction::Right,
+                            animated: true,
+                            speed: 0.5,
+                        })
+                        .time(self.time)
+                        .seed(self.tick_count);
+                    glow.render(Rect::new(cursor_x, line_y, width.min(remaining), 1), frame);
+                } else {
+                    Paragraph::new(clipped)
+                        .style(
+                            Style::new()
+                                .fg(theme::fg::PRIMARY)
+                                .bg(theme::alpha::HIGHLIGHT)
+                                .attrs(StyleFlags::UNDERLINE),
+                        )
+                        .render(Rect::new(cursor_x, line_y, width.min(remaining), 1), frame);
+                }
+                cursor_x = cursor_x.saturating_add(width);
+                last = end;
+            }
+
+            if cursor_x < max_x && last < line.len() {
+                let tail = &line[last..];
+                let remaining = max_x.saturating_sub(cursor_x);
+                let clipped = truncate_to_width(tail, remaining);
+                let width = UnicodeWidthStr::width(clipped.as_str()) as u16;
+                if width > 0 {
+                    Paragraph::new(clipped)
+                        .style(Style::new().fg(theme::fg::SECONDARY))
+                        .render(Rect::new(cursor_x, line_y, width.min(remaining), 1), frame);
+                }
+            }
         }
 
         // Scrollbar
@@ -531,6 +769,24 @@ impl Shakespeare {
             .style(Style::new().fg(theme::fg::MUTED).bg(theme::alpha::SURFACE))
             .render(area, frame);
     }
+}
+
+fn truncate_to_width(text: &str, max_width: u16) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut width = 0usize;
+    let max = max_width as usize;
+    for ch in text.chars() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + w > max {
+            break;
+        }
+        out.push(ch);
+        width += w;
+    }
+    out
 }
 
 #[cfg(test)]
