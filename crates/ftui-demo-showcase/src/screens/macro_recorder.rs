@@ -744,3 +744,97 @@ fn format_duration(duration: std::time::Duration) -> String {
     let millis = duration.subsec_millis();
     format!("{}.{:03}s", secs, millis)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ftui_runtime::input_macro::{MacroMetadata, TimedEvent};
+
+    fn key_event(c: char) -> Event {
+        Event::Key(KeyEvent {
+            code: KeyCode::Char(c),
+            modifiers: Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        })
+    }
+
+    fn macro_with_delays(name: &str, items: &[(char, u64)]) -> InputMacro {
+        let mut events = Vec::with_capacity(items.len());
+        let mut total = std::time::Duration::ZERO;
+        for (ch, delay_ms) in items {
+            let delay = std::time::Duration::from_millis(*delay_ms);
+            total += delay;
+            events.push(TimedEvent::new(key_event(*ch), delay));
+        }
+        InputMacro::new(
+            events,
+            MacroMetadata {
+                name: name.to_string(),
+                terminal_size: (80, 24),
+                total_duration: total,
+            },
+        )
+    }
+
+    #[test]
+    fn playback_drains_events_in_order_for_zero_delay_macro() {
+        let mut screen = MacroRecorderScreen::new();
+        screen.macro_data = Some(InputMacro::from_events(
+            "zero",
+            vec![key_event('a'), key_event('b'), key_event('c')],
+        ));
+
+        screen.start_playback(0);
+        screen.tick(0);
+
+        let events = screen.drain_playback_events();
+        assert_eq!(events, vec![key_event('a'), key_event('b'), key_event('c')]);
+        assert_eq!(screen.state, UiState::Stopped);
+        assert!(screen.playback.is_none());
+    }
+
+    #[test]
+    fn playback_speed_affects_due_time_for_delayed_events() {
+        // Two events: immediate 'a', then 'b' due at +1000ms.
+        let mut screen = MacroRecorderScreen::new();
+        screen.speed = 2.0;
+        screen.macro_data = Some(macro_with_delays("delayed", &[('a', 0), ('b', 1000)]));
+
+        screen.start_playback(0);
+
+        // Tick 0 advances by at least one tick (100ms) scaled by speed (2x => 200ms),
+        // so only the first event should be emitted.
+        screen.tick(0);
+        assert_eq!(screen.drain_playback_events(), vec![key_event('a')]);
+
+        // Next event is due at 1000ms, which at 2x speed arrives on tick 4:
+        // ticks 0..=4 => 5 steps * 100ms * 2 = 1000ms
+        for t in 1..4 {
+            screen.tick(t);
+            assert!(screen.drain_playback_events().is_empty());
+        }
+
+        screen.tick(4);
+        assert_eq!(screen.drain_playback_events(), vec![key_event('b')]);
+        assert_eq!(screen.state, UiState::Stopped);
+    }
+
+    #[test]
+    fn control_keys_can_be_filtered_from_recording() {
+        let mut screen = MacroRecorderScreen::new();
+        screen.start_recording();
+
+        screen.record_event(&key_event('a'), true);
+        screen.record_event(&key_event('p'), true); // control key -> ignored
+        screen.record_event(&key_event('l'), true); // control key -> ignored
+
+        screen.stop_recording();
+
+        let recorded = screen
+            .macro_data
+            .as_ref()
+            .expect("macro_data should be present after stop_recording")
+            .bare_events();
+        assert_eq!(recorded, vec![key_event('a')]);
+    }
+}
