@@ -597,11 +597,27 @@ impl Widget for TextInput {
                     continue;
                 }
 
+                // Fully scrolled out (left)
                 if visual_x + w <= effective_scroll {
                     visual_x += w;
                     continue;
                 }
-                if visual_x.saturating_sub(effective_scroll) >= viewport_width {
+
+                // Partially scrolled out (left) - skip drawing
+                if visual_x < effective_scroll {
+                    visual_x += w;
+                    continue;
+                }
+
+                let rel_x = visual_x - effective_scroll;
+
+                // Fully clipped (right)
+                if rel_x >= viewport_width {
+                    break;
+                }
+
+                // Partially clipped (right) - skip drawing
+                if rel_x + w > viewport_width {
                     break;
                 }
 
@@ -615,12 +631,10 @@ impl Widget for TextInput {
                     continue;
                 };
                 crate::apply_style(&mut cell, placeholder_style);
-                let rel_x = visual_x.saturating_sub(effective_scroll);
-                if rel_x < viewport_width {
-                    frame
-                        .buffer
-                        .set(area.x.saturating_add(rel_x as u16), y, cell);
-                }
+                
+                frame
+                    .buffer
+                    .set(area.x.saturating_add(rel_x as u16), y, cell);
                 visual_x += w;
             }
         } else {
@@ -630,11 +644,27 @@ impl Widget for TextInput {
                     continue;
                 }
 
+                // Fully scrolled out (left)
                 if visual_x + w <= effective_scroll {
                     visual_x += w;
                     continue;
                 }
-                if visual_x.saturating_sub(effective_scroll) >= viewport_width {
+
+                // Partially scrolled out (left) - skip drawing
+                if visual_x < effective_scroll {
+                    visual_x += w;
+                    continue;
+                }
+
+                let rel_x = visual_x - effective_scroll;
+
+                // Fully clipped (right)
+                if rel_x >= viewport_width {
+                    break;
+                }
+
+                // Partially clipped (right) - skip drawing
+                if rel_x + w > viewport_width {
                     break;
                 }
 
@@ -656,12 +686,9 @@ impl Widget for TextInput {
                 };
                 crate::apply_style(&mut cell, cell_style);
 
-                let rel_x = visual_x.saturating_sub(effective_scroll);
-                if rel_x < viewport_width {
-                    frame
-                        .buffer
-                        .set(area.x.saturating_add(rel_x as u16), y, cell);
-                }
+                frame
+                    .buffer
+                    .set(area.x.saturating_add(rel_x as u16), y, cell);
                 visual_x += w;
             }
         }
