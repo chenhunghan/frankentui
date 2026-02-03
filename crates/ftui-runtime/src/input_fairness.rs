@@ -112,8 +112,13 @@ pub struct InputFairnessGuard {
 }
 
 impl InputFairnessGuard {
+    /// Create a new fairness guard with default configuration.
+    pub fn new() -> Self {
+        Self::with_config(FairnessConfig::default())
+    }
+
     /// Create a new fairness guard with the given configuration.
-    pub fn new(config: FairnessConfig) -> Self {
+    pub fn with_config(config: FairnessConfig) -> Self {
         Self {
             config,
             stats: FairnessStats::default(),
@@ -150,7 +155,7 @@ impl InputFairnessGuard {
 
 impl Default for InputFairnessGuard {
     fn default() -> Self {
-        Self::new(FairnessConfig::default())
+        Self::new()
     }
 }
 
