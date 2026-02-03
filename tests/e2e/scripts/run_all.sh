@@ -146,6 +146,9 @@ else
     if [[ -x "$SCRIPT_DIR/test_ui_inspector.sh" ]]; then
         run_suite "ui_inspector" "$SCRIPT_DIR/test_ui_inspector.sh"
     fi
+    if [[ -x "$SCRIPT_DIR/test_locale_context.sh" ]]; then
+        run_suite "locale_context" "$SCRIPT_DIR/test_locale_context.sh"
+    fi
     if [[ -x "$SCRIPT_DIR/test_terminal_quirks.sh" ]]; then
         run_suite "terminal_quirks" "$SCRIPT_DIR/test_terminal_quirks.sh"
     fi

@@ -1,4 +1,4 @@
-  A: Inputs │ ▸ B: Display │   C: Status │   D: Data Viz │   E: Navigation │   F: Layout │   G: Utility                 
+  A: Inputs │ ▸ B: Display │   C: Status │   D: Data Viz │   E: Navigation │   F: Layout │   G: Utility │   H: Advanced 
 +ASCII-------------+┌──────Square──────┐╭───────────Rounded╮╭Text Style Flags──────────────────────────────────────────╮
 |Border: ASCII     |│Border: Square    ││Border: Rounded   ││Bold            Dim             Italic                    │
 |Align: Left       |│Align: Center     ││Align: Right      ││Underline       DblUnder        CurlyUL                   │
@@ -37,4 +37,4 @@
 │                                       ││                                      ││                                     │
 │                                       ││                                      ││─────────────────────────────────────│
 ╰───────────────────────────────────────╯╰──────────────────────────────────────╯╰─────────────────────────────────────╯
-.*.....                                                                                                                 
+.*......                                                                                                                

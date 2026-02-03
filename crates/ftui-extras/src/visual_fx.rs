@@ -1085,6 +1085,71 @@ impl Backdrop {
         self.scrim = scrim;
     }
 
+    // -----------------------------------------------------------------------
+    // Builder-style chained methods (bd-l8x9.2.3)
+    // -----------------------------------------------------------------------
+
+    /// Set the effect opacity and return self for chaining.
+    ///
+    /// # Example
+    /// ```ignore
+    /// Backdrop::new(fx, theme)
+    ///     .with_effect_opacity(0.25)
+    ///     .with_scrim(Scrim::vignette(0.5))
+    ///     .over(child)
+    /// ```
+    #[inline]
+    pub fn with_effect_opacity(mut self, opacity: f32) -> Self {
+        self.effect_opacity = opacity.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set the scrim and return self for chaining.
+    #[inline]
+    pub fn with_scrim(mut self, scrim: Scrim) -> Self {
+        self.scrim = scrim;
+        self
+    }
+
+    /// Set the theme and return self for chaining.
+    #[inline]
+    pub fn with_theme(mut self, theme: ThemeInputs) -> Self {
+        self.theme = theme;
+        self.base_fill = self.theme.bg_surface;
+        self
+    }
+
+    /// Set a quality override and return self for chaining.
+    ///
+    /// When set, this overrides the automatic derivation from `frame.buffer.degradation`.
+    #[inline]
+    pub fn with_quality_override(mut self, quality: Option<FxQuality>) -> Self {
+        self.quality_override = quality;
+        self
+    }
+
+    /// Preset: subtle backdrop with low opacity and no scrim.
+    ///
+    /// Good for backgrounds where legibility of foreground content is paramount.
+    /// Uses 15% effect opacity.
+    #[inline]
+    pub fn subtle(mut self) -> Self {
+        self.effect_opacity = 0.15;
+        self.scrim = Scrim::Off;
+        self
+    }
+
+    /// Preset: vibrant backdrop with moderate opacity and soft vignette.
+    ///
+    /// Good for hero sections or splash screens where visual impact matters.
+    /// Uses 50% effect opacity with a subtle vignette.
+    #[inline]
+    pub fn vibrant(mut self) -> Self {
+        self.effect_opacity = 0.50;
+        self.scrim = Scrim::vignette(0.3);
+        self
+    }
+
     fn base_fill_opaque(&self) -> PackedRgba {
         PackedRgba::rgb(self.base_fill.r(), self.base_fill.g(), self.base_fill.b())
     }
@@ -2994,5 +3059,100 @@ mod tests {
             FxQuality::from_degradation(DegradationLevel::SkipFrame),
             FxQuality::Off
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Builder-style chaining tests (bd-l8x9.2.3)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn backdrop_builder_with_effect_opacity() {
+        let theme = ThemeInputs::default_dark();
+        let backdrop = Backdrop::new(Box::new(SolidBg), theme).with_effect_opacity(0.75);
+        assert!((backdrop.effect_opacity - 0.75).abs() < 0.001);
+    }
+
+    #[test]
+    fn backdrop_builder_with_scrim() {
+        let theme = ThemeInputs::default_dark();
+        let backdrop = Backdrop::new(Box::new(SolidBg), theme).with_scrim(Scrim::vignette(0.5));
+        // Verify scrim is set (not Off)
+        match backdrop.scrim {
+            Scrim::Off => panic!("Scrim should be vignette, not Off"),
+            _ => {} // Any non-Off scrim is correct
+        }
+    }
+
+    #[test]
+    fn backdrop_builder_chaining() {
+        let theme = ThemeInputs::default_dark();
+        let backdrop = Backdrop::new(Box::new(SolidBg), theme)
+            .with_effect_opacity(0.25)
+            .with_scrim(Scrim::uniform(0.3))
+            .with_quality_override(Some(FxQuality::Reduced));
+
+        assert!((backdrop.effect_opacity - 0.25).abs() < 0.001);
+        assert!(backdrop.quality_override == Some(FxQuality::Reduced));
+    }
+
+    #[test]
+    fn backdrop_preset_subtle() {
+        let theme = ThemeInputs::default_dark();
+        let backdrop = Backdrop::new(Box::new(SolidBg), theme).subtle();
+
+        assert!((backdrop.effect_opacity - 0.15).abs() < 0.001);
+        assert!(matches!(backdrop.scrim, Scrim::Off));
+    }
+
+    #[test]
+    fn backdrop_preset_vibrant() {
+        let theme = ThemeInputs::default_dark();
+        let backdrop = Backdrop::new(Box::new(SolidBg), theme).vibrant();
+
+        assert!((backdrop.effect_opacity - 0.50).abs() < 0.001);
+        // Vibrant uses vignette scrim
+        match backdrop.scrim {
+            Scrim::Off | Scrim::Uniform { .. } | Scrim::VerticalFade { .. } => {
+                panic!("Vibrant preset should use vignette scrim")
+            }
+            Scrim::Vignette { .. } => {} // Correct
+        }
+    }
+
+    #[test]
+    fn backdrop_builder_over_renders_correctly() {
+        let theme = ThemeInputs::default_dark();
+        let backdrop = Backdrop::new(Box::new(SolidBg), theme)
+            .with_effect_opacity(0.3)
+            .subtle();
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 4, &mut pool);
+        let area = Rect::new(0, 0, 4, 4);
+
+        // Create a simple child widget
+        struct DummyChild;
+        impl Widget for DummyChild {
+            fn render(&self, _area: Rect, _frame: &mut Frame) {}
+        }
+
+        // Use the builder-style over() method
+        let composed = backdrop.over(&DummyChild);
+        composed.render(area, &mut frame);
+
+        // Verify backdrop rendered (cell has non-transparent bg)
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_ne!(cell.bg, PackedRgba::TRANSPARENT);
+    }
+
+    #[test]
+    fn backdrop_with_theme_updates_base_fill() {
+        let dark = ThemeInputs::default_dark();
+        let light = ThemeInputs::default_light();
+
+        let backdrop = Backdrop::new(Box::new(SolidBg), dark).with_theme(light);
+
+        // base_fill should be updated to light theme's bg_surface
+        assert_eq!(backdrop.base_fill, light.bg_surface);
     }
 }

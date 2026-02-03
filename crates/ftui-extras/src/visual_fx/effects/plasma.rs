@@ -811,20 +811,24 @@ mod tests {
     }
 
     #[test]
-    fn ember_uses_warm_tones() {
-        // Ember should blend warm colors
-        let theme = ThemeInputs::default_dark();
+    fn ember_uses_warm_tones_with_fallback_theme() {
+        // Ember should blend warm colors when using fallback (transparent slots)
+        // The default_dark theme has non-transparent slots, so we create a theme
+        // with transparent slots to test the warm fallback behavior.
+        let mut theme = ThemeInputs::default_dark();
+        theme.accent_slots[2] = PackedRgba::TRANSPARENT;
+        theme.accent_slots[3] = PackedRgba::TRANSPARENT;
+
         let mid_color = PlasmaPalette::Ember.color_at(0.5, &theme);
 
-        // Mid-value should have red or orange bias (warm)
-        // With default theme, ember uses fallback oranges
+        // Mid-value should have red or orange bias (warm) when using fallbacks
         let r = mid_color.r() as i32;
         let b = mid_color.b() as i32;
 
-        // Red should be stronger than blue
+        // Red should be stronger than blue when fallbacks are active
         assert!(
             r > b,
-            "Ember mid-color should have warm tones, got r={} b={}",
+            "Ember mid-color with fallbacks should have warm tones, got r={} b={}",
             r,
             b
         );
@@ -1011,7 +1015,7 @@ mod tests {
                 width: 8,
                 height: 8,
                 frame: 42,
-                time_seconds: 3.14,
+                time_seconds: 3.25, // Use non-PI value for test
                 quality,
                 theme: &theme,
             };

@@ -50,6 +50,7 @@ use ftui_render::cell::Cell;
 use ftui_render::frame::{Frame, HitId, HitRegion};
 #[cfg(feature = "telemetry")]
 use ftui_runtime::TelemetryConfig;
+use ftui_runtime::locale::{Locale, LocaleContext, detect_system_locale, set_locale};
 use ftui_runtime::{Cmd, Every, Model, Program, ProgramConfig, ScreenMode, Subscription};
 use ftui_style::Style;
 use ftui_text::WrapMode;
@@ -108,6 +109,12 @@ struct AgentHarness {
     /// Depth for nested inspector widgets in stress mode.
     #[allow(dead_code)]
     inspector_depth: u8,
+    /// Optional locale override for the locale context view.
+    locale_override: Option<Locale>,
+    /// Countdown ticks before switching the base locale.
+    locale_switch_ticks: Option<u32>,
+    /// Target locale to switch to after the countdown.
+    locale_switch_target: Option<Locale>,
 }
 
 /// Messages for the agent harness.
@@ -164,6 +171,7 @@ enum HarnessView {
     WidgetList,
     WidgetInput,
     WidgetInspector,
+    LocaleContext,
 }
 
 impl AgentHarness {
@@ -242,6 +250,45 @@ impl AgentHarness {
             .unwrap_or(3)
             .max(1);
 
+        let locale_override =
+            std::env::var("FTUI_HARNESS_LOCALE_OVERRIDE")
+                .ok()
+                .and_then(|value| {
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                });
+
+        let locale_switch_target = std::env::var("FTUI_HARNESS_LOCALE_SWITCH_TO")
+            .ok()
+            .and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            });
+
+        let locale_switch_ticks = std::env::var("FTUI_HARNESS_LOCALE_SWITCH_TICKS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .or_else(|| {
+                std::env::var("FTUI_HARNESS_LOCALE_SWITCH_MS")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .and_then(|ms| {
+                        if ms == 0 {
+                            None
+                        } else {
+                            Some(ms.div_ceil(100) as u32)
+                        }
+                    })
+            });
+
         Self {
             log_viewer,
             log_state: RefCell::new(LogViewerState::default()),
@@ -264,6 +311,9 @@ impl AgentHarness {
             inspector_grid_cols,
             inspector_grid_rows,
             inspector_depth,
+            locale_override,
+            locale_switch_ticks,
+            locale_switch_target,
         }
     }
 
@@ -570,6 +620,23 @@ impl Model for AgentHarness {
             Msg::SpinnerTick => {
                 self.spinner_state.tick();
 
+                let mut fire_locale_switch = false;
+                if let Some(ticks) = self.locale_switch_ticks.as_mut() {
+                    if *ticks > 0 {
+                        *ticks = ticks.saturating_sub(1);
+                    }
+                    if *ticks == 0 {
+                        fire_locale_switch = true;
+                    }
+                }
+                if fire_locale_switch {
+                    if let Some(target) = self.locale_switch_target.clone() {
+                        set_locale(target.clone());
+                        self.log_viewer.push(format!("Locale switch -> {}", target));
+                    }
+                    self.locale_switch_ticks = None;
+                }
+
                 // Check for pending Esc timeout (Esc Esc detection)
                 let state = self.app_state();
                 let now = Instant::now();
@@ -674,6 +741,7 @@ impl Model for AgentHarness {
             HarnessView::WidgetList => self.view_widget_list(frame),
             HarnessView::WidgetInput => self.view_widget_input(frame),
             HarnessView::WidgetInspector => self.view_widget_inspector(frame),
+            HarnessView::LocaleContext => self.view_locale_context(frame),
         }
     }
 
@@ -1033,6 +1101,51 @@ impl AgentHarness {
         InspectorOverlay::new(&inspector).render(area, frame);
     }
 
+    fn view_locale_context(&self, frame: &mut Frame) {
+        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        let block = Block::new()
+            .title(" Locale Context ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .style(Style::new().bg(theme::alpha::SURFACE))
+            .border_style(Style::new().fg(theme::fg::MUTED));
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        let ctx = LocaleContext::global();
+        let base_locale = ctx.base_locale();
+        let version = ctx.version();
+        let system_locale = detect_system_locale();
+        let override_label = self.locale_override.as_deref().unwrap_or("none");
+        let switch_target = self.locale_switch_target.as_deref().unwrap_or("none");
+        let switch_ticks = self
+            .locale_switch_ticks
+            .map(|ticks| ticks.to_string())
+            .unwrap_or_else(|| "none".to_string());
+
+        let _override_guard = self
+            .locale_override
+            .as_ref()
+            .map(|override_locale| ctx.push_override(override_locale.clone()));
+        let current_locale = ctx.current_locale();
+
+        let info_text = format!(
+            "Base locale: {base}\nCurrent locale: {current}\nOverride: {override_label}\nSystem locale: {system}\nLocale version: {version}\nSwitch target: {switch_target}\nSwitch countdown: {switch_ticks}",
+            base = base_locale,
+            current = current_locale,
+            override_label = override_label,
+            system = system_locale,
+            version = version,
+            switch_target = switch_target,
+            switch_ticks = switch_ticks,
+        );
+
+        let info = Paragraph::new(info_text)
+            .wrap(WrapMode::Word)
+            .alignment(Alignment::Left);
+        info.render(inner, frame);
+    }
+
     fn populate_inspector_stress(
         &self,
         area: Rect,
@@ -1303,6 +1416,7 @@ fn main() -> std::io::Result<()> {
         "widget-list" | "widget_list" | "list" => HarnessView::WidgetList,
         "widget-input" | "widget_input" | "input" => HarnessView::WidgetInput,
         "widget-inspector" | "widget_inspector" | "inspector" => HarnessView::WidgetInspector,
+        "locale-context" | "locale_context" | "locale" => HarnessView::LocaleContext,
         _ => HarnessView::Default,
     };
 
@@ -1318,13 +1432,25 @@ fn main() -> std::io::Result<()> {
         .ok()
         .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
 
-    let config = ProgramConfig {
+    let locale_base = std::env::var("FTUI_HARNESS_LOCALE").ok().and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    let mut config = ProgramConfig {
         screen_mode,
         mouse: enable_mouse,
         focus_reporting: enable_focus,
         kitty_keyboard: enable_kitty_keyboard,
         ..Default::default()
     };
+    if let Some(locale) = locale_base {
+        config = config.with_locale(locale);
+    }
 
     // Run the agent harness in inline mode
     let log_keys = std::env::var("FTUI_HARNESS_LOG_KEYS")

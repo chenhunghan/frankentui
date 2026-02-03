@@ -16,10 +16,16 @@ use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::columns::{Column, Columns};
 use ftui_widgets::command_palette::{ActionItem, CommandPalette};
+use ftui_widgets::constraint_overlay::ConstraintOverlay;
+use ftui_widgets::emoji::Emoji;
 use ftui_widgets::file_picker::{FilePicker, FilePickerState};
+use ftui_widgets::group::Group;
+use ftui_widgets::help::{Help as HelpWidget, HelpMode};
+use ftui_widgets::history_panel::{HistoryPanel, HistoryPanelMode};
 use ftui_widgets::input::TextInput;
 use ftui_widgets::json_view::JsonView;
 use ftui_widgets::layout::Layout;
+use ftui_widgets::layout_debugger::{LayoutConstraints, LayoutDebugger, LayoutRecord};
 use ftui_widgets::list::{List, ListItem};
 use ftui_widgets::log_viewer::{LogViewer, LogViewerState, LogWrapMode};
 use ftui_widgets::modal::{Dialog, DialogState};
@@ -29,7 +35,7 @@ use ftui_widgets::notification_queue::{
 use ftui_widgets::paginator::{Paginator, PaginatorMode};
 use ftui_widgets::panel::Panel;
 use ftui_widgets::paragraph::Paragraph;
-use ftui_widgets::progress::ProgressBar;
+use ftui_widgets::progress::{MiniBar, MiniBarColors, ProgressBar};
 use ftui_widgets::rule::Rule;
 use ftui_widgets::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ftui_widgets::sparkline::Sparkline;
@@ -1010,20 +1016,39 @@ impl WidgetGallery {
                 Constraint::Fixed(1),
             ])
             .split(inner);
-        let metrics = [
-            ("CPU", 0.72, theme::accent::ERROR),
-            ("Mem", 0.48, theme::accent::WARNING),
-            ("IO", 0.35, theme::accent::INFO),
-        ];
+        let metrics = [("CPU", 0.72), ("Mem", 0.48), ("IO", 0.35)];
+        let colors = MiniBarColors::new(
+            theme::accent::SUCCESS,
+            theme::accent::WARNING,
+            theme::accent::INFO,
+            theme::accent::ERROR,
+        );
 
-        for (row, (label, ratio, color)) in rows.iter().zip(metrics.iter()) {
-            let label = format!("{label} {:>3}%", (ratio * 100.0) as u32);
-            ProgressBar::new()
-                .ratio(*ratio)
-                .label(&label)
+        for (row, (label, ratio)) in rows.iter().zip(metrics.iter()) {
+            if row.is_empty() {
+                continue;
+            }
+
+            let label_width = 5_u16.min(row.width);
+            let label_area = Rect::new(row.x, row.y, label_width, 1);
+            let bar_area = Rect::new(
+                row.x.saturating_add(label_width),
+                row.y,
+                row.width.saturating_sub(label_width),
+                1,
+            );
+
+            Paragraph::new(format!("{label}"))
                 .style(Style::new().fg(theme::fg::MUTED))
-                .gauge_style(Style::new().fg(*color).bg(theme::alpha::SURFACE))
-                .render(*row, frame);
+                .render(label_area, frame);
+
+            if !bar_area.is_empty() {
+                let bar = MiniBar::new(*ratio, bar_area.width)
+                    .show_percent(true)
+                    .colors(colors)
+                    .style(Style::new().fg(theme::fg::PRIMARY));
+                bar.render(bar_area, frame);
+            }
         }
     }
 
@@ -1259,7 +1284,7 @@ impl WidgetGallery {
         let block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title("Grid Layout")
+            .title("Grid + Constraints")
             .style(theme::content_border());
         let inner = block.inner(area);
         block.render(area, frame);
@@ -1300,7 +1325,60 @@ impl WidgetGallery {
                 1,
                 2,
             );
-        layout.render(inner, frame);
+        if inner.width < 6 || inner.height < 4 {
+            layout.render(inner, frame);
+            return;
+        }
+
+        let mut debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+
+        let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
+        let footer_y = inner.y.saturating_add(inner.height.saturating_sub(1));
+        let footer_area = Rect::new(inner.x, footer_y, inner.width, 1);
+        let mid_y = inner.y.saturating_add(1);
+        let mid_height = inner.height.saturating_sub(2);
+        let left_width = inner.width / 2;
+        let right_width = inner.width.saturating_sub(left_width);
+        let left_area = Rect::new(inner.x, mid_y, left_width, mid_height);
+        let right_area = Rect::new(inner.x.saturating_add(left_width), mid_y, right_width, mid_height);
+
+        let record = LayoutRecord::new(
+            "Grid",
+            inner,
+            inner,
+            LayoutConstraints::new(0, 0, 0, 0),
+        )
+        .with_child(LayoutRecord::new(
+            "Header",
+            header_area,
+            header_area,
+            LayoutConstraints::new(8, 0, 1, 1),
+        ))
+        .with_child(LayoutRecord::new(
+            "Left",
+            left_area,
+            left_area,
+            LayoutConstraints::new(left_width.saturating_add(2), 0, 0, 0),
+        ))
+        .with_child(LayoutRecord::new(
+            "Right",
+            right_area,
+            right_area,
+            LayoutConstraints::new(0, right_width.saturating_sub(2), 0, 0),
+        ))
+        .with_child(LayoutRecord::new(
+            "Footer",
+            footer_area,
+            footer_area,
+            LayoutConstraints::new(12, 0, 1, 1),
+        ));
+        debugger.record(record);
+
+        Group::new()
+            .push(layout)
+            .push(ConstraintOverlay::new(&debugger))
+            .render(inner, frame);
     }
 
     fn render_panel_demo(&self, frame: &mut Frame, area: Rect) {
@@ -1498,7 +1576,11 @@ impl WidgetGallery {
             .constraints([Constraint::Percentage(58.0), Constraint::Percentage(42.0)])
             .split(rows[1]);
         self.render_log_viewer_demo(frame, mid_cols[0]);
-        self.render_virtualized_demo(frame, mid_cols[1]);
+        let mid_right_rows = Flex::vertical()
+            .constraints([Constraint::Percentage(55.0), Constraint::Percentage(45.0)])
+            .split(mid_cols[1]);
+        self.render_virtualized_demo(frame, mid_right_rows[0]);
+        self.render_history_panel_demo(frame, mid_right_rows[1]);
 
         let bottom_cols = Flex::horizontal()
             .constraints([
@@ -1634,6 +1716,32 @@ impl WidgetGallery {
         StatefulWidget::render(&list, inner, frame, &mut *state);
     }
 
+    fn render_history_panel_demo(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("History Panel")
+            .style(theme::content_border());
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        let panel = HistoryPanel::new()
+            .with_title("History")
+            .with_mode(HistoryPanelMode::Compact)
+            .with_undo_items(&[
+                "Insert heading",
+                "Toggle bold",
+                "Paste snippet",
+                "Apply theme",
+            ])
+            .with_redo_items(&["Restore section", "Undo delete"]);
+        panel.render(inner, frame);
+    }
+
     fn render_modal_demo(&self, frame: &mut Frame, area: Rect) {
         let block = Block::new()
             .borders(Borders::ALL)
@@ -1704,7 +1812,11 @@ impl WidgetGallery {
         }
 
         let rows = Flex::vertical()
-            .constraints([Constraint::Fixed(1), Constraint::Min(1)])
+            .constraints([
+                Constraint::Fixed(1),
+                Constraint::Fixed(1),
+                Constraint::Min(1),
+            ])
             .split(inner);
 
         let error = ValidationErrorDisplay::new("Invalid email address")
@@ -1720,6 +1832,22 @@ impl WidgetGallery {
             timer_state.tick(Duration::from_secs(31));
             let timer = Timer::new().format(TimerFormat::Digital).label("ETA ");
             StatefulWidget::render(&timer, rows[1], frame, &mut timer_state);
+        }
+
+        if rows.len() > 2 {
+            let help_cols = Flex::horizontal()
+                .constraints([Constraint::Fixed(3), Constraint::Min(1)])
+                .split(rows[2]);
+            Emoji::new("🧭")
+                .with_fallback("[?]")
+                .with_style(Style::new().fg(theme::accent::PRIMARY))
+                .render(help_cols[0], frame);
+            let help = HelpWidget::new()
+                .with_mode(HelpMode::Short)
+                .entry("j/k", "Navigate")
+                .entry("enter", "Select")
+                .entry("?", "Help");
+            help.render(help_cols[1], frame);
         }
     }
 }

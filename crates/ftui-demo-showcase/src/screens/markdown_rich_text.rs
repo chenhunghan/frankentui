@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ftui_core::geometry::Rect;
 use ftui_extras::markdown::{MarkdownRenderer, MarkdownTheme, is_likely_markdown};
-use ftui_extras::visual_fx::{Backdrop, FxQuality, PlasmaFx, PlasmaPalette, Scrim, ThemeInputs};
+use ftui_extras::visual_fx::{Backdrop, PlasmaFx, PlasmaPalette, Scrim, ThemeInputs};
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
@@ -491,14 +491,13 @@ impl MarkdownRichText {
             scroll: self.md_scroll,
         };
 
-        let area_cells = area.width as usize * area.height as usize;
-        let quality = FxQuality::from_degradation_with_area(frame.degradation, area_cells);
+        // Quality is now derived automatically from frame.buffer.degradation
+        // with area-based clamping inside Backdrop::render().
         let time_seconds = self.tick_count as f64 * 0.1;
         let theme_inputs = Self::current_fx_theme();
 
         let mut backdrop = self.markdown_backdrop.borrow_mut();
         backdrop.set_theme(theme_inputs);
-        backdrop.set_quality(quality);
         backdrop.set_time(self.tick_count, time_seconds);
         backdrop.render_with(area, frame, &panel);
     }

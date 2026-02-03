@@ -1291,30 +1291,25 @@ mod tests {
         parser.parse(b"\x1b[200~");
 
         // Overflow the buffer by pushing more than MAX_PASTE_LEN bytes.
-        // DoS protection truncates to 64 bytes once the limit is exceeded,
-        // but then allows more bytes to accumulate until limit is hit again.
+        // DoS protection stops collecting content once buffer is full,
+        // but continues tracking the end sequence to properly exit paste mode.
         let overflow = 100;
         let content = vec![b'a'; MAX_PASTE_LEN + overflow];
         parser.parse(&content);
 
-        // After truncation to 64 and adding remaining bytes:
-        // - Buffer was truncated to 64 when it hit MAX_PASTE_LEN + 1
-        // - Remaining (overflow - 1) bytes were added = 64 + 99 = 163 bytes
         // Send terminator - parser MUST detect it and exit paste mode.
+        // Even though the buffer overflowed, the terminator detection still works.
         let events = parser.parse(b"\x1b[201~");
 
         assert_eq!(events.len(), 1, "Should emit paste event");
         match &events[0] {
             Event::Paste(p) => {
-                // After truncation + remaining bytes + terminator detection:
-                // Content = 64 + (overflow - 1) = 163 bytes, minus 6 for end seq removed = still 163
-                // Wait - the terminator bytes are added to buffer (169 total), then removed (163 content)
-                let expected_content_len = 64 + (overflow - 1);
+                // Content is capped at MAX_PASTE_LEN due to DoS protection.
+                // Overflow bytes are discarded but terminator is still detected.
                 assert_eq!(
                     p.text.len(),
-                    expected_content_len,
-                    "Truncated paste should have {} bytes after DoS protection",
-                    expected_content_len
+                    MAX_PASTE_LEN,
+                    "Paste should be capped at MAX_PASTE_LEN bytes"
                 );
                 // The content should be all 'a' since we filled with 'a'
                 assert!(p.text.chars().all(|c| c == 'a'));

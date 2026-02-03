@@ -945,13 +945,18 @@ mod tests {
 
     #[test]
     fn heatmap_gradient_is_monotonic() {
-        let mut prev_warmth = i32::MIN;
+        let mut prev_warmth: Option<i32> = None;
         for i in 0..=10 {
             let value = i as f64 / 10.0;
             let color = heatmap_gradient(value);
             let warmth = color.r() as i32 - color.b() as i32;
-            assert!(warmth >= prev_warmth - 10, "Gradient should be monotonic");
-            prev_warmth = warmth;
+            if let Some(prev) = prev_warmth {
+                assert!(
+                    warmth >= prev.saturating_sub(10),
+                    "Gradient should be monotonic"
+                );
+            }
+            prev_warmth = Some(warmth);
         }
     }
 
