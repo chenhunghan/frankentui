@@ -1003,6 +1003,12 @@ impl<M: Model, W: Write + Send> Program<M, W> {
     /// Process pending messages from subscriptions.
     fn process_subscription_messages(&mut self) -> io::Result<()> {
         let messages = self.subscriptions.drain_messages();
+        // Debug: track subscription message count
+        static MSG_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let count = MSG_COUNT.fetch_add(messages.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        if count.is_multiple_of(50) && !messages.is_empty() {
+            eprintln!("DEBUG: sub msgs drained, total={}", count + messages.len() as u64);
+        }
         for msg in messages {
             let cmd = {
                 let _span = debug_span!(
