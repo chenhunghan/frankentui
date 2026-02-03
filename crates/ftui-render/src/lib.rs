@@ -9,6 +9,7 @@ pub mod buffer;
 pub mod cell;
 pub mod counting_writer;
 pub mod diff;
+pub mod diff_strategy;
 pub mod drawing;
 pub mod frame;
 pub mod grapheme_pool;
