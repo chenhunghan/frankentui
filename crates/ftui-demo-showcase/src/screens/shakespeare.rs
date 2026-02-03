@@ -24,6 +24,8 @@ use ftui_widgets::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::{HelpEntry, Screen};
+use crate::app::ScreenId;
+use crate::chrome;
 use crate::theme;
 
 /// Embedded complete works of Shakespeare.
@@ -352,8 +354,6 @@ enum ShakespeareMode {
 }
 
 impl ShakespeareMode {
-    const ALL: [Self; 3] = [Self::Library, Self::Spotlight, Self::Concordance];
-
     fn next(self) -> Self {
         match self {
             Self::Library => Self::Spotlight,

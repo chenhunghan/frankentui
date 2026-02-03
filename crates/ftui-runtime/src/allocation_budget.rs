@@ -308,18 +308,16 @@ impl AllocationBudget {
             e_value: self.e_value,
             alert,
         };
-        let entry_json = entry.to_jsonl();
-        self.ledger.push_back(entry);
-        if self.ledger.len() > self.ledger_max {
-            self.ledger.pop_front();
-        }
-
         if let Some(ref sink) = self.evidence_sink {
             if !self.config_logged {
                 let _ = sink.write_jsonl(&self.config.to_jsonl());
                 self.config_logged = true;
             }
-            let _ = sink.write_jsonl(&entry_json);
+            let _ = sink.write_jsonl(&entry.to_jsonl());
+        }
+        self.ledger.push_back(entry);
+        if self.ledger.len() > self.ledger_max {
+            self.ledger.pop_front();
         }
 
         if alert {

@@ -17,7 +17,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ftui_core::geometry::Rect;
 use ftui_extras::canvas::{Canvas, Mode, Painter};
 use ftui_extras::charts::{
@@ -30,7 +30,7 @@ use ftui_extras::text_effects::{
     StyledMultiLine, StyledText, TextEffect,
 };
 use ftui_layout::{Constraint, Flex};
-use ftui_render::cell::{Cell, PackedRgba};
+use ftui_render::cell::{Cell as RenderCell, PackedRgba};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
@@ -2190,7 +2190,7 @@ impl Dashboard {
                 }
 
                 let color = heatmap_gradient(value);
-                let mut cell = Cell::from_char(' ');
+                let mut cell = RenderCell::from_char(' ');
                 cell.bg = color;
                 if let Some(slot) = frame.buffer.get_mut(area.x + dx, area.y + dy) {
                     *slot = cell;
@@ -3343,6 +3343,13 @@ impl Screen for Dashboard {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Mouse(mouse) = event {
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                self.focus_from_point(mouse.x, mouse.y);
+            }
+            return Cmd::None;
+        }
+
         if let Event::Key(KeyEvent {
             code,
             kind: KeyEventKind::Press,
@@ -3358,20 +3365,29 @@ impl Screen for Dashboard {
                 }
                 // Cycle code samples
                 KeyCode::Char('c') => {
-                    self.code_index = (self.code_index + 1) % CODE_SAMPLES.len();
+                    if matches!(self.focus, DashboardFocus::Code | DashboardFocus::None) {
+                        self.code_index = (self.code_index + 1) % CODE_SAMPLES.len();
+                    }
                 }
                 // Cycle text effects (also rotates sample)
                 KeyCode::Char('e') => {
-                    self.effect_index = (self.effect_index + 1) % EFFECT_DEMOS.len();
+                    if matches!(self.focus, DashboardFocus::TextFx | DashboardFocus::None) {
+                        self.effect_index = (self.effect_index + 1) % EFFECT_DEMOS.len();
+                    }
                 }
                 // Cycle markdown samples + restart stream
                 KeyCode::Char('m') => {
-                    self.md_sample_index = (self.md_sample_index + 1) % DASH_MARKDOWN_SAMPLES.len();
-                    self.reset_markdown_stream();
+                    if matches!(self.focus, DashboardFocus::Markdown | DashboardFocus::None) {
+                        self.md_sample_index =
+                            (self.md_sample_index + 1) % DASH_MARKDOWN_SAMPLES.len();
+                        self.reset_markdown_stream();
+                    }
                 }
                 // Cycle chart modes
                 KeyCode::Char('g') => {
-                    self.chart_mode = self.chart_mode.next();
+                    if matches!(self.focus, DashboardFocus::Charts | DashboardFocus::None) {
+                        self.chart_mode = self.chart_mode.next();
+                    }
                 }
                 _ => {}
             }
@@ -3442,6 +3458,10 @@ impl Screen for Dashboard {
             HelpEntry {
                 key: "t",
                 action: "Cycle theme",
+            },
+            HelpEntry {
+                key: "Mouse",
+                action: "Click pane to focus",
             },
         ]
     }
