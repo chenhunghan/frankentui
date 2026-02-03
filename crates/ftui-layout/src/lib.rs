@@ -31,6 +31,7 @@
 
 pub mod cache;
 pub mod debug;
+pub mod direction;
 pub mod grid;
 #[cfg(test)]
 mod repro_max_constraint;
@@ -41,6 +42,7 @@ pub mod responsive_layout;
 pub mod visibility;
 
 pub use cache::{CoherenceCache, CoherenceId, LayoutCache, LayoutCacheKey, LayoutCacheStats};
+pub use direction::{FlowDirection, LogicalAlignment, LogicalSides, mirror_rects_horizontal};
 pub use ftui_core::geometry::{Rect, Sides, Size};
 pub use grid::{Grid, GridArea, GridLayout};
 pub use responsive::Responsive;
@@ -394,6 +396,7 @@ pub struct Flex {
     margin: Sides,
     gap: u16,
     alignment: Alignment,
+    flow_direction: direction::FlowDirection,
 }
 
 impl Flex {
@@ -443,6 +446,16 @@ impl Flex {
         self
     }
 
+    /// Set the horizontal flow direction (LTR or RTL).
+    ///
+    /// When set to [`FlowDirection::Rtl`](direction::FlowDirection::Rtl),
+    /// horizontal layouts are mirrored: the first child appears at the right
+    /// edge instead of the left. Vertical layouts are not affected.
+    pub fn flow_direction(mut self, flow: direction::FlowDirection) -> Self {
+        self.flow_direction = flow;
+        self
+    }
+
     /// Number of constraints (and thus output rects from [`split`](Self::split)).
     #[must_use]
     pub fn constraint_count(&self) -> usize {
@@ -476,7 +489,14 @@ impl Flex {
         let sizes = solve_constraints(&self.constraints, available_size);
 
         // Convert sizes to rects
-        self.sizes_to_rects(inner, &sizes)
+        let mut rects = self.sizes_to_rects(inner, &sizes);
+
+        // Mirror horizontally for RTL horizontal layouts.
+        if self.flow_direction.is_rtl() && self.direction == Direction::Horizontal {
+            direction::mirror_rects_horizontal(&mut rects, inner);
+        }
+
+        rects
     }
 
     fn sizes_to_rects(&self, area: Rect, sizes: &[u16]) -> Vec<Rect> {
@@ -622,7 +642,14 @@ impl Flex {
         let sizes = solve_constraints_with_hints(&self.constraints, available_size, &measurer);
 
         // Convert sizes to rects
-        self.sizes_to_rects(inner, &sizes)
+        let mut rects = self.sizes_to_rects(inner, &sizes);
+
+        // Mirror horizontally for RTL horizontal layouts.
+        if self.flow_direction.is_rtl() && self.direction == Direction::Horizontal {
+            direction::mirror_rects_horizontal(&mut rects, inner);
+        }
+
+        rects
     }
 }
 
