@@ -107,6 +107,11 @@ impl Widget for Paragraph<'_> {
         } else {
             Style::default()
         };
+        // Background is already applied for the whole area via `set_style_area()`. When drawing
+        // text we avoid re-applying the same background, otherwise semi-transparent BG colors
+        // get composited multiple times.
+        let mut text_style = style;
+        text_style.bg = None;
 
         let mut y = text_area.y;
         let mut current_visual_line = 0;
@@ -135,7 +140,7 @@ impl Widget for Paragraph<'_> {
                         }
                         let w = wrapped_line.width();
                         let x = align_x(text_area, w, self.alignment);
-                        draw_text_span(frame, x, y, wrapped_line, style, text_area.right());
+                        draw_text_span(frame, x, y, wrapped_line, text_style, text_area.right());
                         y += 1;
                         current_visual_line += 1;
                     }
@@ -206,11 +211,11 @@ impl Widget for Paragraph<'_> {
                 // At NoStyling+, ignore span-level styles entirely
                 let span_style = if deg.apply_styling() {
                     match span.style {
-                        Some(s) => s.merge(&style),
-                        None => style,
+                        Some(s) => s.merge(&text_style),
+                        None => text_style,
                     }
                 } else {
-                    style // Style::default() at NoStyling
+                    text_style // Style::default() at NoStyling
                 };
 
                 if local_scroll > 0 {

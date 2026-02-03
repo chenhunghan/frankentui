@@ -319,10 +319,31 @@ pub(crate) fn set_style_area(buf: &mut Buffer, area: Rect, style: Style) {
     if style.is_empty() {
         return;
     }
+    // Apply styles in-place so we don't disturb wide-character continuation cells.
+    //
+    // Important: `Style` backgrounds can carry alpha for internal compositing, but terminals
+    // are opaque. When applying a semi-transparent background we must composite it over the
+    // existing cell background (src-over) so the buffer ends up with the final opaque color.
+    let fg = style.fg;
+    let bg = style.bg;
+    let attrs = style.attrs;
     for y in area.y..area.bottom() {
         for x in area.x..area.right() {
             if let Some(cell) = buf.get_mut(x, y) {
-                apply_style(cell, style);
+                if let Some(fg) = fg {
+                    cell.fg = fg;
+                }
+                if let Some(bg) = bg {
+                    match bg.a() {
+                        0 => {} // Fully transparent: no-op
+                        255 => cell.bg = bg,
+                        _ => cell.bg = bg.over(cell.bg),
+                    }
+                }
+                if let Some(attrs) = attrs {
+                    let cell_flags: ftui_render::cell::StyleFlags = attrs.into();
+                    cell.attrs = cell.attrs.with_flags(cell_flags);
+                }
             }
         }
     }
@@ -524,6 +545,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn set_style_area_composites_alpha_bg_over_existing_bg() {
+        let mut buf = Buffer::new(1, 1);
+        let base = PackedRgba::rgb(200, 0, 0);
+        buf.set(0, 0, Cell::default().with_bg(base));
+
+        let overlay = PackedRgba::rgba(0, 0, 200, 128);
+        set_style_area(&mut buf, Rect::new(0, 0, 1, 1), Style::new().bg(overlay));
+
+        let expected = overlay.over(base);
+        assert_eq!(buf.get(0, 0).unwrap().bg, expected);
     }
 
     #[test]
