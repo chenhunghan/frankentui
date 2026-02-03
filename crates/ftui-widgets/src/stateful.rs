@@ -264,6 +264,311 @@ impl<S: Default> Default for VersionedState<S> {
     }
 }
 
+// ============================================================================
+// State Migration System (bd-30g1.5)
+// ============================================================================
+
+/// Error that can occur during state migration.
+#[derive(Debug, Clone)]
+pub enum MigrationError {
+    /// No migration path exists from source to target version.
+    NoPathFound { from: u32, to: u32 },
+    /// A migration function returned an error.
+    MigrationFailed { from: u32, to: u32, message: String },
+    /// Version numbers are invalid (e.g., target < source).
+    InvalidVersionRange { from: u32, to: u32 },
+}
+
+impl core::fmt::Display for MigrationError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NoPathFound { from, to } => {
+                write!(f, "no migration path from version {} to {}", from, to)
+            }
+            Self::MigrationFailed { from, to, message } => {
+                write!(f, "migration from {} to {} failed: {}", from, to, message)
+            }
+            Self::InvalidVersionRange { from, to } => {
+                write!(f, "invalid version range: {} to {}", from, to)
+            }
+        }
+    }
+}
+
+/// A single-step migration from version N to version N+1.
+///
+/// Migrations are always forward-only and increment by exactly one version.
+/// This ensures a clear, auditable upgrade path.
+///
+/// # Example
+///
+/// ```ignore
+/// // Migration from v1 ScrollState to v2 ScrollState (adds new field)
+/// struct ScrollStateV1ToV2;
+///
+/// impl StateMigration for ScrollStateV1ToV2 {
+///     type OldState = ScrollStateV1;
+///     type NewState = ScrollStateV2;
+///
+///     fn from_version(&self) -> u32 { 1 }
+///     fn to_version(&self) -> u32 { 2 }
+///
+///     fn migrate(&self, old: ScrollStateV1) -> Result<ScrollStateV2, String> {
+///         Ok(ScrollStateV2 {
+///             scroll_offset: old.scroll_offset,
+///             scroll_velocity: 0.0, // New field, default value
+///         })
+///     }
+/// }
+/// ```
+pub trait StateMigration {
+    /// The state type before migration.
+    type OldState;
+    /// The state type after migration.
+    type NewState;
+
+    /// Source version this migration transforms from.
+    fn from_version(&self) -> u32;
+
+    /// Target version this migration produces.
+    /// Must equal `from_version() + 1`.
+    fn to_version(&self) -> u32;
+
+    /// Perform the migration.
+    ///
+    /// Returns `Err` with a message if the migration cannot be performed.
+    fn migrate(&self, old: Self::OldState) -> Result<Self::NewState, String>;
+}
+
+/// A type-erased migration step for use in migration chains.
+///
+/// This allows storing migrations with different types in a single collection.
+pub trait ErasedMigration<S>: Send + Sync {
+    /// Source version.
+    fn from_version(&self) -> u32;
+    /// Target version.
+    fn to_version(&self) -> u32;
+    /// Perform migration on boxed state, returning boxed result.
+    fn migrate_erased(&self, old: Box<dyn core::any::Any + Send>)
+        -> Result<Box<dyn core::any::Any + Send>, String>;
+}
+
+/// A chain of migrations that can upgrade state through multiple versions.
+///
+/// # Design
+///
+/// The migration chain executes migrations in sequence, starting from the
+/// stored version and ending at the current version. Each step increments
+/// the version by exactly one.
+///
+/// # Example
+///
+/// ```ignore
+/// let mut chain = MigrationChain::<FinalState>::new();
+/// chain.register(Box::new(V1ToV2Migration));
+/// chain.register(Box::new(V2ToV3Migration));
+///
+/// // Migrate from v1 to v3 (current)
+/// let result = chain.migrate_to_current(v1_state, 1, 3);
+/// ```
+pub struct MigrationChain<S> {
+    /// Migrations indexed by their `from_version`.
+    migrations: std::collections::HashMap<u32, Box<dyn ErasedMigration<S>>>,
+}
+
+impl<S: 'static> MigrationChain<S> {
+    /// Create an empty migration chain.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            migrations: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Register a migration step.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a migration for the same `from_version` is already registered.
+    pub fn register(&mut self, migration: Box<dyn ErasedMigration<S>>) {
+        let from = migration.from_version();
+        let to = migration.to_version();
+        assert_eq!(
+            to,
+            from + 1,
+            "migration must increment version by exactly 1 (got {} -> {})",
+            from,
+            to
+        );
+        if self.migrations.contains_key(&from) {
+            panic!("migration for version {} already registered", from);
+        }
+        self.migrations.insert(from, migration);
+    }
+
+    /// Check if a migration path exists from `from_version` to `to_version`.
+    #[must_use]
+    pub fn has_path(&self, from_version: u32, to_version: u32) -> bool {
+        if from_version >= to_version {
+            return from_version == to_version;
+        }
+        let mut current = from_version;
+        while current < to_version {
+            if !self.migrations.contains_key(&current) {
+                return false;
+            }
+            current += 1;
+        }
+        true
+    }
+
+    /// Attempt to migrate state from `from_version` to `to_version`.
+    ///
+    /// Returns `Ok(migrated_state)` on success, or `Err` if migration fails.
+    pub fn migrate(
+        &self,
+        state: Box<dyn core::any::Any + Send>,
+        from_version: u32,
+        to_version: u32,
+    ) -> Result<Box<dyn core::any::Any + Send>, MigrationError> {
+        if from_version > to_version {
+            return Err(MigrationError::InvalidVersionRange {
+                from: from_version,
+                to: to_version,
+            });
+        }
+        if from_version == to_version {
+            return Ok(state);
+        }
+
+        let mut current_state = state;
+        let mut current_version = from_version;
+
+        while current_version < to_version {
+            let migration = self.migrations.get(&current_version).ok_or_else(|| {
+                MigrationError::NoPathFound {
+                    from: current_version,
+                    to: to_version,
+                }
+            })?;
+
+            current_state = migration
+                .migrate_erased(current_state)
+                .map_err(|msg| MigrationError::MigrationFailed {
+                    from: current_version,
+                    to: current_version + 1,
+                    message: msg,
+                })?;
+
+            current_version += 1;
+        }
+
+        Ok(current_state)
+    }
+}
+
+impl<S: 'static> Default for MigrationChain<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Result of attempting state restoration with migration.
+#[derive(Debug)]
+pub enum RestoreResult<S> {
+    /// State was restored directly (versions matched).
+    Direct(S),
+    /// State was successfully migrated from an older version.
+    Migrated { state: S, from_version: u32 },
+    /// Migration failed; falling back to default state.
+    DefaultFallback {
+        error: MigrationError,
+        default: S,
+    },
+}
+
+impl<S> RestoreResult<S> {
+    /// Extract the state value, regardless of how it was obtained.
+    pub fn into_state(self) -> S {
+        match self {
+            Self::Direct(s) | Self::Migrated { state: s, .. } => s,
+            Self::DefaultFallback { default, .. } => default,
+        }
+    }
+
+    /// Returns `true` if the state was migrated.
+    #[must_use]
+    pub fn was_migrated(&self) -> bool {
+        matches!(self, Self::Migrated { .. })
+    }
+
+    /// Returns `true` if we fell back to default.
+    #[must_use]
+    pub fn is_fallback(&self) -> bool {
+        matches!(self, Self::DefaultFallback { .. })
+    }
+}
+
+impl<S> VersionedState<S> {
+    /// Attempt to unpack with migration support.
+    ///
+    /// If the stored version doesn't match the current version, attempts to
+    /// migrate through the provided chain. Falls back to default on failure.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `W`: The widget type that implements `Stateful<State = S>`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let chain = MigrationChain::new();
+    /// // ... register migrations ...
+    ///
+    /// let versioned = load_state_from_disk();
+    /// let result = versioned.unpack_with_migration::<MyWidget>(&chain);
+    /// let state = result.into_state();
+    /// ```
+    pub fn unpack_with_migration<W>(self, chain: &MigrationChain<S>) -> RestoreResult<S>
+    where
+        W: Stateful<State = S>,
+        S: Default + 'static + Send,
+    {
+        let current_version = W::state_version();
+
+        if self.version == current_version {
+            return RestoreResult::Direct(self.data);
+        }
+
+        // Try migration
+        let boxed: Box<dyn core::any::Any + Send> = Box::new(self.data);
+        match chain.migrate(boxed, self.version, current_version) {
+            Ok(migrated) => {
+                if let Ok(state) = migrated.downcast::<S>() {
+                    RestoreResult::Migrated {
+                        state: *state,
+                        from_version: self.version,
+                    }
+                } else {
+                    // Type mismatch after migration (shouldn't happen with correct chain)
+                    RestoreResult::DefaultFallback {
+                        error: MigrationError::MigrationFailed {
+                            from: self.version,
+                            to: current_version,
+                            message: "type mismatch after migration".to_string(),
+                        },
+                        default: S::default(),
+                    }
+                }
+            }
+            Err(e) => RestoreResult::DefaultFallback {
+                error: e,
+                default: S::default(),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

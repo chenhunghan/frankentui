@@ -249,12 +249,12 @@ impl InputParser {
     }
 
     /// Process byte at start of CSI sequence.
-    fn process_csi(&mut self, byte: u8, events: &mut Vec<Event>) {
+    fn process_csi(&mut self, byte: u8) -> Option<Event> {
         // Robustness: ESC restarts sequence
         if byte == 0x1B {
             self.state = ParserState::Escape;
             self.buffer.clear();
-            return;
+            return None;
         }
 
         self.buffer.push(byte);
@@ -263,64 +263,63 @@ impl InputParser {
             // Parameter bytes (0x30-0x3F) and Intermediate bytes (0x20-0x2F)
             0x20..=0x3F => {
                 self.state = ParserState::CsiParam;
+                None
             }
             // Final byte (0x40-0x7E) - parse and return
             0x40..=0x7E => {
                 self.state = ParserState::Ground;
-                if let Some(e) = self.parse_csi_sequence() {
-                    events.push(e);
-                }
+                self.parse_csi_sequence()
             }
             // Invalid (0x00-0x1F, 0x7F-0xFF)
             _ => {
                 self.state = ParserState::Ground;
                 self.buffer.clear();
+                None
             }
         }
     }
 
     /// Process byte while collecting CSI parameters.
-    fn process_csi_param(&mut self, byte: u8, events: &mut Vec<Event>) {
+    fn process_csi_param(&mut self, byte: u8) -> Option<Event> {
         // Robustness: ESC restarts sequence
         if byte == 0x1B {
             self.state = ParserState::Escape;
             self.buffer.clear();
-            return;
+            return None;
         }
 
         // DoS protection
         if self.buffer.len() >= MAX_CSI_LEN {
             self.state = ParserState::CsiIgnore;
             self.buffer.clear();
-            return;
+            return None;
         }
 
         self.buffer.push(byte);
 
         match byte {
             // Continue collecting parameters/intermediates
-            0x20..=0x3F => {}
+            0x20..=0x3F => None,
             // Final byte - parse and return
             0x40..=0x7E => {
                 self.state = ParserState::Ground;
-                if let Some(e) = self.parse_csi_sequence() {
-                    events.push(e);
-                }
+                self.parse_csi_sequence()
             }
             // Invalid
             _ => {
                 self.state = ParserState::Ground;
                 self.buffer.clear();
+                None
             }
         }
     }
 
     /// Ignore bytes until end of CSI sequence.
-    fn process_csi_ignore(&mut self, byte: u8, _events: &mut Vec<Event>) {
+    fn process_csi_ignore(&mut self, byte: u8) -> Option<Event> {
         // Robustness: ESC restarts sequence
         if byte == 0x1B {
             self.state = ParserState::Escape;
-            return;
+            return None;
         }
 
         match byte {
@@ -331,6 +330,7 @@ impl InputParser {
             // Intermediate bytes - keep ignoring
             _ => {}
         }
+        None
     }
 
     /// Parse a complete CSI sequence from the buffer.
@@ -608,11 +608,11 @@ impl InputParser {
     }
 
     /// Process SS3 (ESC O) sequences.
-    fn process_ss3(&mut self, byte: u8, events: &mut Vec<Event>) {
+    fn process_ss3(&mut self, byte: u8) -> Option<Event> {
         // Robustness: ESC restarts sequence
         if byte == 0x1B {
             self.state = ParserState::Escape;
-            return;
+            return None;
         }
 
         self.state = ParserState::Ground;
@@ -628,10 +628,10 @@ impl InputParser {
             b'D' => KeyCode::Left,
             b'H' => KeyCode::Home,
             b'F' => KeyCode::End,
-            _ => return,
+            _ => return None,
         };
 
-        events.push(Event::Key(KeyEvent::new(code)));
+        Some(Event::Key(KeyEvent::new(code)))
     }
 
     /// Process OSC start.
@@ -1943,6 +1943,26 @@ mod tests {
         // Parser still works
         let events = parser.parse(b"x");
         assert!(matches!(events.first(), Some(Event::Key(k)) if k.code == KeyCode::Char('x')));
+    }
+    #[test]
+    fn utf8_invalid_sequence_emits_replacement() {
+        let mut parser = InputParser::new();
+
+        // 0xE0 is a start of 3-byte sequence.
+        // 0x41 ('A') is not a valid continuation byte.
+        // Should emit Replacement Character then 'A'.
+        let events = parser.parse(&[0xE0, 0x41]);
+        assert_eq!(events.len(), 2);
+        
+        match &events[0] {
+            Event::Key(k) => assert_eq!(k.code, KeyCode::Char(std::char::REPLACEMENT_CHARACTER)),
+            _ => panic!("Expected replacement character"),
+        }
+        
+        match &events[1] {
+            Event::Key(k) => assert_eq!(k.code, KeyCode::Char('A')),
+            _ => panic!("Expected character 'A'"),
+        }
     }
 }
 
