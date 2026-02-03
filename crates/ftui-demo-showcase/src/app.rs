@@ -896,10 +896,10 @@ impl AppModel {
 
         emit_a11y_jsonl(
             match kind {
-                A11yEventKind::PanelToggled => "panel_toggle",
-                A11yEventKind::HighContrastToggled => "high_contrast_toggle",
-                A11yEventKind::ReducedMotionToggled => "reduced_motion_toggle",
-                A11yEventKind::LargeTextToggled => "large_text_toggle",
+                A11yEventKind::Panel => "panel_toggle",
+                A11yEventKind::HighContrast => "high_contrast_toggle",
+                A11yEventKind::ReducedMotion => "reduced_motion_toggle",
+                A11yEventKind::LargeText => "large_text_toggle",
             },
             &[
                 ("tick", &event.tick.to_string()),

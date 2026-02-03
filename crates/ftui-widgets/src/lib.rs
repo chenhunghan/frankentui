@@ -239,7 +239,10 @@ pub use modal::{
 
 // UI Inspector for debugging
 pub use inspector::{
-    HitInfo, InspectorMode, InspectorOverlay, InspectorState, InspectorStyle, WidgetInfo,
+    DiagnosticEntry, DiagnosticEventKind, DiagnosticLog, HitInfo, InspectorMode, InspectorOverlay,
+    InspectorState, InspectorStyle, TelemetryCallback, TelemetryHooks, WidgetInfo,
+    diagnostics_enabled, init_diagnostics, is_deterministic_mode, reset_event_counter,
+    set_diagnostics_enabled,
 };
 
 // Focus management

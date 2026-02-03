@@ -273,7 +273,7 @@ impl DiagnosticEntry {
     fn compute_checksum(&self) -> u64 {
         let mut hash: u64 = 0xcbf29ce484222325;
         let payload = format!(
-            "{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}",
+            "{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}",
             self.kind,
             self.mode,
             self.previous_mode,
@@ -287,7 +287,8 @@ impl DiagnosticEntry {
             self.widget_hit_id.map(|id| id.id()).unwrap_or(0),
             self.widget_count.unwrap_or(0),
             self.flag.as_deref().unwrap_or(""),
-            self.enabled.unwrap_or(false)
+            self.enabled.unwrap_or(false),
+            self.context.as_deref().unwrap_or("")
         );
         for &b in payload.as_bytes() {
             hash ^= b as u64;
@@ -2260,6 +2261,54 @@ mod tests {
 
         let area = Rect::new(0, 0, 20, 10);
         overlay.render(area, &mut frame); // Should enter "inspector_overlay" span
+    }
+
+    #[test]
+    fn diagnostic_entry_checksum_deterministic() {
+        let entry1 = DiagnosticEntry::new(DiagnosticEventKind::ModeChanged)
+            .with_previous_mode(InspectorMode::Off)
+            .with_mode(InspectorMode::Full)
+            .with_flag("hits", true)
+            .with_context("test")
+            .with_checksum();
+        let entry2 = DiagnosticEntry::new(DiagnosticEventKind::ModeChanged)
+            .with_previous_mode(InspectorMode::Off)
+            .with_mode(InspectorMode::Full)
+            .with_flag("hits", true)
+            .with_context("test")
+            .with_checksum();
+        assert_eq!(entry1.checksum, entry2.checksum);
+        assert_ne!(entry1.checksum, 0);
+    }
+
+    #[test]
+    fn diagnostic_log_records_mode_changes() {
+        let mut state = InspectorState::new().with_diagnostics();
+        state.set_mode(1);
+        state.set_mode(2);
+        let log = state.diagnostic_log().expect("diagnostic log should exist");
+        assert!(!log.entries().is_empty());
+        assert!(
+            !log.entries_of_kind(DiagnosticEventKind::ModeChanged)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn telemetry_hooks_on_mode_change_fires() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+        use std::sync::Arc;
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = Arc::clone(&counter);
+        let hooks = TelemetryHooks::new().on_mode_change(move |_| {
+            counter_clone.fetch_add(1, AtomicOrdering::Relaxed);
+        });
+
+        let mut state = InspectorState::new().with_telemetry_hooks(hooks);
+        state.set_mode(1);
+        state.set_mode(2);
+        assert!(counter.load(AtomicOrdering::Relaxed) >= 1);
     }
 
     // =========================================================================
