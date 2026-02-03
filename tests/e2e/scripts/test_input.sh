@@ -13,7 +13,7 @@ source "$LIB_DIR/pty.sh"
 
 if [[ ! -x "${E2E_HARNESS_BIN:-}" ]]; then
     LOG_FILE="$E2E_LOG_DIR/input_missing.log"
-    for t in input_typing_stable input_enter_stable input_ctrl_c_quit input_quit_command input_multi_keystrokes; do
+    for t in input_typing_stable input_enter_stable input_ctrl_t_cycles_theme input_ctrl_c_quit input_quit_command input_multi_keystrokes; do
         log_test_skip "$t" "ftui-harness binary missing"
         record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
     done
@@ -88,6 +88,22 @@ input_enter_stable() {
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
     [[ "$size" -gt 500 ]] || return 1
+}
+
+input_ctrl_t_cycles_theme() {
+    LOG_FILE="$E2E_LOG_DIR/input_ctrl_t_cycles_theme.log"
+    local output_file="$E2E_LOG_DIR/input_ctrl_t_cycles_theme.pty"
+
+    log_test_start "input_ctrl_t_cycles_theme"
+
+    # Send Ctrl+T (0x14) which should cycle theme and log the new theme name.
+    PTY_SEND=$'\x14' \
+    PTY_SEND_DELAY_MS=500 \
+    FTUI_HARNESS_EXIT_AFTER_MS=2000 \
+    PTY_TIMEOUT=5 \
+        pty_run "$output_file" "$E2E_HARNESS_BIN"
+
+    grep -a -q "Theme: Darcula" "$output_file" || return 1
 }
 
 input_ctrl_c_quit() {
@@ -218,6 +234,7 @@ PY
 FAILURES=0
 run_case "input_typing_stable" input_typing_stable       || FAILURES=$((FAILURES + 1))
 run_case "input_enter_stable" input_enter_stable         || FAILURES=$((FAILURES + 1))
+run_case "input_ctrl_t_cycles_theme" input_ctrl_t_cycles_theme || FAILURES=$((FAILURES + 1))
 run_case "input_ctrl_c_quit" input_ctrl_c_quit           || FAILURES=$((FAILURES + 1))
 run_case "input_quit_command" input_quit_command          || FAILURES=$((FAILURES + 1))
 run_case "input_multi_keystrokes" input_multi_keystrokes || FAILURES=$((FAILURES + 1))

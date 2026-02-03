@@ -21,6 +21,7 @@ ONLY_CASE="${E2E_ONLY_CASE:-}"
 
 ALL_CASES=(
     resize_scroll_region_inline
+    resize_scroll_region_inline_auto
 )
 
 if [[ ! -x "${E2E_HARNESS_BIN:-}" ]]; then
@@ -93,6 +94,45 @@ resize_scroll_region_inline() {
     grep -a -F -q $'\x1b8' "$output_file" || return 1
 }
 
+resize_scroll_region_inline_auto() {
+    LOG_FILE="$E2E_LOG_DIR/resize_scroll_region_inline_auto.log"
+    local output_file="$E2E_LOG_DIR/resize_scroll_region_inline_auto.pty"
+    local jsonl_file="$E2E_LOG_DIR/resize_scroll_region_inline_auto.jsonl"
+    local start_ms
+    start_ms="$(date +%s%3N)"
+
+    log_test_start "resize_scroll_region_inline_auto"
+
+    echo "{\"ts_ms\":${start_ms},\"event\":\"start\",\"seed\":0,\"initial_cols\":80,\"initial_rows\":24,\"resize_cols\":100,\"resize_rows\":30}" >> "$jsonl_file"
+
+    TERM="xterm-256color" \
+    PTY_COLS=80 \
+    PTY_ROWS=24 \
+    PTY_RESIZE_DELAY_MS=300 \
+    PTY_RESIZE_COLS=100 \
+    PTY_RESIZE_ROWS=30 \
+    FTUI_HARNESS_SCREEN_MODE=inline \
+    FTUI_HARNESS_AUTO_UI_HEIGHT=1 \
+    FTUI_HARNESS_UI_HEIGHT=6 \
+    FTUI_HARNESS_EXIT_AFTER_MS=2000 \
+    PTY_TIMEOUT=5 \
+        pty_run "$output_file" "$E2E_HARNESS_BIN"
+
+    local size
+    size=$(wc -c < "$output_file" | tr -d ' ')
+    local checksum
+    checksum=$(sha256sum "$output_file" | awk '{print $1}')
+    local end_ms
+    end_ms="$(date +%s%3N)"
+    local duration_ms=$((end_ms - start_ms))
+
+    echo "{\"ts_ms\":${end_ms},\"event\":\"summary\",\"bytes\":${size},\"checksum\":\"${checksum}\",\"duration_ms\":${duration_ms}}" >> "$jsonl_file"
+
+    # Ensure UI rendered.
+    grep -a -q "claude-3.5" "$output_file" || return 1
+}
+
 FAILURES=0
 run_case "resize_scroll_region_inline" resize_scroll_region_inline || FAILURES=$((FAILURES + 1))
+run_case "resize_scroll_region_inline_auto" resize_scroll_region_inline_auto || FAILURES=$((FAILURES + 1))
 exit "$FAILURES"
