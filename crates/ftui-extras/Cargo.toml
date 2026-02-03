@@ -11,6 +11,7 @@ ftui-core = { path = "../ftui-core", optional = true }
 ftui-render = { path = "../ftui-render", optional = true }
 ftui-style = { path = "../ftui-style", optional = true }
 ftui-text = { path = "../ftui-text", optional = true }
+ftui-pty = { path = "../ftui-pty", optional = true }
 base64 = { version = "0.22.1", optional = true }
 image = { version = "0.25.9", default-features = false, features = ["png", "gif", "jpeg"], optional = true }
 pulldown-cmark = { version = "0.12", default-features = false, optional = true }
@@ -53,6 +54,7 @@ visual-fx-plasma = ["visual-fx"]
 # GPU acceleration is strictly opt-in. No GPU deps are pulled unless this feature is enabled.
 fx-gpu = ["visual-fx-metaballs"]
 terminal = ["dep:vte", "dep:ftui-core", "dep:ftui-style"]
+terminal-widget = ["terminal", "dep:ftui-render", "dep:ftui-widgets", "dep:ftui-pty"]
 
 [dev-dependencies]
 tracing = "0.1"
