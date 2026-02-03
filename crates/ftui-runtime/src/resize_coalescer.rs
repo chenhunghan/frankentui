@@ -288,6 +288,46 @@ pub struct ResizeCoalescer {
 
     /// Decision logs (if logging enabled).
     logs: Vec<DecisionLog>,
+
+    // --- Telemetry integration (bd-1rz0.7) ---
+
+    /// Telemetry hooks for external observability.
+    telemetry_hooks: Option<TelemetryHooks>,
+
+    /// Count of regime transitions during this session.
+    regime_transitions: u64,
+
+    /// Events coalesced in current window.
+    events_in_window: u64,
+
+    /// History of cycle times (ms) for percentile calculation.
+    cycle_times: Vec<f64>,
+}
+
+/// Cycle time percentiles for reflow diagnostics (bd-1rz0.7).
+#[derive(Debug, Clone, Copy)]
+pub struct CycleTimePercentiles {
+    /// 50th percentile (median) cycle time in ms.
+    pub p50_ms: f64,
+    /// 95th percentile cycle time in ms.
+    pub p95_ms: f64,
+    /// 99th percentile cycle time in ms.
+    pub p99_ms: f64,
+    /// Number of samples.
+    pub count: usize,
+    /// Mean cycle time in ms.
+    pub mean_ms: f64,
+}
+
+impl CycleTimePercentiles {
+    /// Serialize to JSONL format.
+    #[must_use]
+    pub fn to_jsonl(&self) -> String {
+        format!(
+            r#"{{"event":"cycle_time_percentiles","p50_ms":{:.3},"p95_ms":{:.3},"p99_ms":{:.3},"mean_ms":{:.3},"count":{}}}"#,
+            self.p50_ms, self.p95_ms, self.p99_ms, self.mean_ms, self.count
+        )
+    }
 }
 
 impl ResizeCoalescer {
@@ -306,7 +346,49 @@ impl ResizeCoalescer {
             event_count: 0,
             log_start: None,
             logs: Vec::new(),
+            telemetry_hooks: None,
+            regime_transitions: 0,
+            events_in_window: 0,
+            cycle_times: Vec::new(),
         }
+    }
+
+    /// Attach telemetry hooks for external observability.
+    #[must_use]
+    pub fn with_telemetry_hooks(mut self, hooks: TelemetryHooks) -> Self {
+        self.telemetry_hooks = Some(hooks);
+        self
+    }
+
+    /// Get current regime transition count.
+    #[must_use]
+    pub fn regime_transition_count(&self) -> u64 {
+        self.regime_transitions
+    }
+
+    /// Get cycle time percentiles (p50, p95, p99) in milliseconds.
+    /// Returns None if no cycle times recorded.
+    #[must_use]
+    pub fn cycle_time_percentiles(&self) -> Option<CycleTimePercentiles> {
+        if self.cycle_times.is_empty() {
+            return None;
+        }
+
+        let mut sorted = self.cycle_times.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let len = sorted.len();
+        let p50_idx = len / 2;
+        let p95_idx = (len * 95) / 100;
+        let p99_idx = (len * 99) / 100;
+
+        Some(CycleTimePercentiles {
+            p50_ms: sorted[p50_idx],
+            p95_ms: sorted[p95_idx.min(len - 1)],
+            p99_ms: sorted[p99_idx.min(len - 1)],
+            count: len,
+            mean_ms: sorted.iter().sum::<f64>() / len as f64,
+        })
     }
 
     /// Handle a resize event.
@@ -615,6 +697,7 @@ impl ResizeCoalescer {
 
     fn update_regime(&mut self, now: Instant) {
         let rate = self.calculate_event_rate(now);
+        let old_regime = self.regime;
 
         match self.regime {
             Regime::Steady => {
@@ -633,6 +716,14 @@ impl ResizeCoalescer {
                     // Still in burst, reset cooldown
                     self.cooldown_remaining = self.config.cooldown_frames;
                 }
+            }
+        }
+
+        // Track regime transitions and fire telemetry hooks (bd-1rz0.7)
+        if old_regime != self.regime {
+            self.regime_transitions += 1;
+            if let Some(ref hooks) = self.telemetry_hooks {
+                hooks.fire_regime_change(old_regime, self.regime);
             }
         }
     }
