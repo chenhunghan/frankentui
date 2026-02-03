@@ -240,11 +240,19 @@ impl MeasureCache {
     ///     || paragraph.measure(Size::new(80, 24)),
     /// );
     /// ```
-    pub fn get_or_compute<F>(&mut self, widget_id: WidgetId, available: Size, compute: F) -> SizeConstraints
+    pub fn get_or_compute<F>(
+        &mut self,
+        widget_id: WidgetId,
+        available: Size,
+        compute: F,
+    ) -> SizeConstraints
     where
         F: FnOnce() -> SizeConstraints,
     {
-        let key = CacheKey { widget_id, available };
+        let key = CacheKey {
+            widget_id,
+            available,
+        };
 
         // Check for existing valid entry
         if let Some(entry) = self.entries.get_mut(&key)
