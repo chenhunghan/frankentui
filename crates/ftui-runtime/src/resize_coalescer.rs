@@ -207,6 +207,8 @@ pub struct DecisionLog {
     pub applied_size: Option<(u16, u16)>,
     /// Time since last render (ms).
     pub time_since_render_ms: f64,
+    /// Time spent coalescing until apply (ms).
+    pub coalesce_ms: Option<f64>,
     /// Was forced by deadline.
     pub forced: bool,
 }
@@ -223,9 +225,13 @@ impl DecisionLog {
             Some((w, h)) => (w.to_string(), h.to_string()),
             None => ("null".to_string(), "null".to_string()),
         };
+        let coalesce_ms = match self.coalesce_ms {
+            Some(ms) => format!("{:.3}", ms),
+            None => "null".to_string(),
+        };
 
         format!(
-            r#"{{"event":"decision","idx":{},"elapsed_ms":{:.3},"dt_ms":{:.3},"event_rate":{:.3},"regime":"{}","action":"{}","pending_w":{},"pending_h":{},"applied_w":{},"applied_h":{},"time_since_render_ms":{:.3},"forced":{}}}"#,
+            r#"{{"event":"decision","idx":{},"elapsed_ms":{:.3},"dt_ms":{:.3},"event_rate":{:.3},"regime":"{}","action":"{}","pending_w":{},"pending_h":{},"applied_w":{},"applied_h":{},"time_since_render_ms":{:.3},"coalesce_ms":{},"forced":{}}}"#,
             self.event_idx,
             self.elapsed_ms,
             self.dt_ms,
@@ -237,6 +243,7 @@ impl DecisionLog {
             applied_w,
             applied_h,
             self.time_since_render_ms,
+            coalesce_ms,
             self.forced
         )
     }
@@ -329,7 +336,7 @@ impl ResizeCoalescer {
 
         // If no pending, and this matches current size, no action needed
         if self.pending_size.is_none() && (width, height) == self.last_applied {
-            self.log_decision(now, "skip_same_size", false, Some(dt_ms));
+            self.log_decision(now, "skip_same_size", false, Some(dt_ms), None);
             return CoalesceAction::None;
         }
 
@@ -356,7 +363,7 @@ impl ResizeCoalescer {
             return self.apply_pending_at(now, false);
         }
 
-        self.log_decision(now, "coalesce", false, Some(dt_ms));
+        self.log_decision(now, "coalesce", false, Some(dt_ms), None);
         CoalesceAction::ShowPlaceholder
     }
 
@@ -521,6 +528,10 @@ impl ResizeCoalescer {
                 &mut hash,
                 &entry.time_since_render_ms.to_bits().to_le_bytes(),
             );
+            fnv_hash_bytes(&mut hash, &[entry.coalesce_ms.is_some() as u8]);
+            if let Some(ms) = entry.coalesce_ms {
+                fnv_hash_bytes(&mut hash, &ms.to_bits().to_le_bytes());
+            }
             fnv_hash_bytes(&mut hash, &[entry.forced as u8]);
         }
         hash
@@ -580,6 +591,7 @@ impl ResizeCoalescer {
             .window_start
             .map(|s| now.duration_since(s))
             .unwrap_or(Duration::ZERO);
+        let coalesce_ms = coalesce_time.as_secs_f64() * 1000.0;
 
         self.window_start = None;
         self.last_applied = (width, height);
@@ -590,6 +602,7 @@ impl ResizeCoalescer {
             if forced { "apply_forced" } else { "apply" },
             forced,
             None,
+            Some(coalesce_ms),
         );
 
         CoalesceAction::ApplyResize {
@@ -645,6 +658,7 @@ impl ResizeCoalescer {
         action: &'static str,
         forced: bool,
         dt_ms_override: Option<f64>,
+        coalesce_ms: Option<f64>,
     ) {
         if !self.config.enable_logging {
             return;
@@ -685,6 +699,7 @@ impl ResizeCoalescer {
             pending_size: self.pending_size,
             applied_size,
             time_since_render_ms,
+            coalesce_ms,
             forced,
         });
     }
@@ -954,6 +969,22 @@ mod tests {
         assert!(jsonl.contains("\"regime\":\"steady\""));
         assert!(jsonl.contains("\"pending_w\":100"));
         assert!(jsonl.contains("\"pending_h\":40"));
+    }
+
+    #[test]
+    fn apply_logs_coalesce_ms() {
+        let mut config = test_config();
+        config.enable_logging = true;
+        let mut c = ResizeCoalescer::new(config, (80, 24));
+
+        let base = Instant::now();
+        c.handle_resize_at(100, 40, base);
+        let action = c.tick_at(base + Duration::from_millis(50));
+        assert!(matches!(action, CoalesceAction::ApplyResize { .. }));
+
+        let last = c.logs().last().expect("Expected a decision log entry");
+        assert!(last.coalesce_ms.is_some());
+        assert!(last.coalesce_ms.unwrap() >= 0.0);
     }
 
     #[test]
