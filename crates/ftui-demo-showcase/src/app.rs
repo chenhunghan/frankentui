@@ -256,6 +256,7 @@ impl ScreenStates {
     }
 
     fn apply_theme(&mut self) {
+        self.dashboard.apply_theme();
         self.file_browser.apply_theme();
         self.code_explorer.apply_theme();
         self.forms_input.apply_theme();

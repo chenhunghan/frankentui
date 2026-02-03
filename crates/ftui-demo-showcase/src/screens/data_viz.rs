@@ -303,8 +303,8 @@ impl DataViz {
             let y = cy + ry * (b_freq * t).sin();
 
             // Color gradient along the curve
-            let hue = (i as f64 / steps as f64 * 360.0) as u32;
-            let color = hue_to_rgb(hue);
+            let color_t = i as f64 / steps as f64;
+            let color = theme::accent_gradient(color_t + phase * 0.02);
             painter.point_colored(x as i32, y as i32, color);
         }
 
@@ -315,32 +315,6 @@ impl DataViz {
             .style(Style::new().fg(theme::fg::PRIMARY))
             .render(inner, frame);
     }
-}
-
-/// Convert HSV hue (0-360) to RGB.
-fn hue_to_rgb(hue: u32) -> PackedRgba {
-    let h = (hue % 360) as f64;
-    let s = 0.8_f64;
-    let v = 1.0_f64;
-
-    let c = v * s;
-    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-    let m = v - c;
-
-    let (r, g, b) = match (h as u32) / 60 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-
-    PackedRgba::rgb(
-        ((r + m) * 255.0) as u8,
-        ((g + m) * 255.0) as u8,
-        ((b + m) * 255.0) as u8,
-    )
 }
 
 fn chart_palette() -> [PackedRgba; 3] {
@@ -537,10 +511,10 @@ mod tests {
     }
 
     #[test]
-    fn hue_conversion() {
-        let red = hue_to_rgb(0);
-        assert_ne!(red, PackedRgba::TRANSPARENT);
-        let green = hue_to_rgb(120);
-        assert_ne!(green, PackedRgba::TRANSPARENT);
+    fn accent_gradient_is_nontransparent() {
+        let c1 = theme::accent_gradient(0.0);
+        let c2 = theme::accent_gradient(0.5);
+        assert_ne!(c1, PackedRgba::TRANSPARENT);
+        assert_ne!(c2, PackedRgba::TRANSPARENT);
     }
 }

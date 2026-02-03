@@ -5,7 +5,6 @@
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
-use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::{Style, StyleFlags};
@@ -363,7 +362,7 @@ impl WidgetGallery {
         let block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title("TrueColor Gradient")
+            .title("Theme Accent Gradient")
             .style(theme::content_border());
         let inner = block.inner(area);
         block.render(area, frame);
@@ -375,14 +374,7 @@ impl WidgetGallery {
         let w = inner.width as usize;
         for i in 0..w {
             let t = i as f64 / w.max(1) as f64;
-            // Red -> Green -> Blue gradient
-            let (r, g, b) = if t < 0.5 {
-                let s = t * 2.0;
-                ((255.0 * (1.0 - s)) as u8, (255.0 * s) as u8, 0u8)
-            } else {
-                let s = (t - 0.5) * 2.0;
-                (0u8, (255.0 * (1.0 - s)) as u8, (255.0 * s) as u8)
-            };
+            let color = theme::accent_gradient(t);
             // Write each cell with its color using the frame buffer directly
             let x = inner.x + i as u16;
             if x < inner.x + inner.width {
@@ -393,7 +385,7 @@ impl WidgetGallery {
                     height: 1,
                 };
                 Paragraph::new("█")
-                    .style(Style::new().fg(PackedRgba::rgb(r, g, b)))
+                    .style(Style::new().fg(color))
                     .render(cell_area, frame);
             }
         }

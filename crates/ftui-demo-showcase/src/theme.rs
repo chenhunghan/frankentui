@@ -7,9 +7,9 @@ use ftui_style::{Style, StyleFlags};
 
 pub use core_theme::{
     AlphaColor, ColorToken, IntentStyles, IssueTypeStyles, PriorityStyles, SemanticStyles,
-    SemanticSwatch, StatusStyles, ThemeId, accent, alpha, bg, blend_colors, blend_over, contrast,
-    current_theme, current_theme_name, cycle_theme, fg, intent, issue_type, priority,
-    semantic_styles, status, syntax, syntax_theme, theme_count, with_alpha, with_opacity,
+    SemanticSwatch, StatusStyles, ThemeId, accent, accent_gradient, alpha, bg, blend_colors,
+    blend_over, contrast, current_theme, current_theme_name, cycle_theme, fg, intent, issue_type,
+    priority, semantic_styles, status, syntax, syntax_theme, theme_count, with_alpha, with_opacity,
 };
 pub use core_theme::{palette, set_theme};
 

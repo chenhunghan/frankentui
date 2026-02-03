@@ -24,7 +24,6 @@ use ftui_extras::markdown::{MarkdownRenderer, MarkdownTheme};
 use ftui_extras::syntax::SyntaxHighlighter;
 use ftui_extras::text_effects::{ColorGradient, StyledText, TextEffect};
 use ftui_layout::{Constraint, Flex};
-use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
@@ -73,6 +72,9 @@ impl Dashboard {
             simulated_data.tick(t);
         }
 
+        let mut highlighter = SyntaxHighlighter::new();
+        highlighter.set_theme(theme::syntax_theme());
+
         Self {
             tick_count: 30,
             time: 0.0,
@@ -80,9 +82,13 @@ impl Dashboard {
             frame_times: VecDeque::with_capacity(60),
             last_frame: None,
             fps: 0.0,
-            highlighter: SyntaxHighlighter::new(),
+            highlighter,
             md_renderer: MarkdownRenderer::new(MarkdownTheme::default()),
         }
+    }
+
+    pub fn apply_theme(&mut self) {
+        self.highlighter.set_theme(theme::syntax_theme());
     }
 
     /// Update FPS calculation.
@@ -116,8 +122,13 @@ impl Dashboard {
         }
 
         let title = "FRANKENTUI DASHBOARD";
+        let gradient = ColorGradient::new(vec![
+            (0.0, theme::accent::ACCENT_2.into()),
+            (0.5, theme::accent::ACCENT_1.into()),
+            (1.0, theme::accent::ACCENT_3.into()),
+        ]);
         let effect = TextEffect::AnimatedGradient {
-            gradient: ColorGradient::cyberpunk(),
+            gradient,
             speed: 0.3,
         };
 
@@ -151,6 +162,7 @@ impl Dashboard {
 
         // Simple plasma using two sine waves
         let t = self.time * 0.5;
+        let hue_shift = (t * 0.07).rem_euclid(1.0);
         for py in 0..ph as i32 {
             for px in 0..pw as i32 {
                 let x = px as f64 / pw as f64;
@@ -162,9 +174,8 @@ impl Dashboard {
                 let v3 = ((x + y) * 8.0 + t).sin();
                 let v = (v1 + v2 + v3) / 3.0;
 
-                // Map to HSV color
-                let hue = (v + 1.0) / 2.0 * 360.0 + t * 50.0;
-                let color = hsv_to_rgb(hue, 0.9, 0.9);
+                // Map plasma value to a theme-coherent accent gradient.
+                let color = theme::accent_gradient((v + 1.0) * 0.5 + hue_shift);
 
                 painter.point_colored(px, py, color);
             }
@@ -586,29 +597,6 @@ fn render_text(frame: &mut Frame, area: Rect, text: &Text) {
             x_offset += text_len;
         }
     }
-}
-
-/// Convert HSV to RGB PackedRgba.
-fn hsv_to_rgb(h: f64, s: f64, v: f64) -> PackedRgba {
-    let h = h.rem_euclid(360.0);
-    let c = v * s;
-    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-    let m = v - c;
-
-    let (r, g, b) = match (h / 60.0) as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-
-    PackedRgba::rgb(
-        ((r + m) * 255.0) as u8,
-        ((g + m) * 255.0) as u8,
-        ((b + m) * 255.0) as u8,
-    )
 }
 
 impl Screen for Dashboard {
