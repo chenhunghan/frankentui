@@ -27,6 +27,42 @@ use ftui_style::StyleFlags;
 use ftui_text::wrap::display_width;
 use std::hash::{Hash, Hasher};
 
+/// Category for organizing help entries into logical groups.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub enum HelpCategory {
+    /// General/uncategorized keybinding.
+    #[default]
+    General,
+    /// Navigation keys (arrows, page up/down, home/end, etc.).
+    Navigation,
+    /// Editing actions (cut, copy, paste, undo, redo, etc.).
+    Editing,
+    /// File operations (save, open, close, new, etc.).
+    File,
+    /// View/display controls (zoom, scroll, toggle panels, etc.).
+    View,
+    /// Application-level shortcuts (quit, settings, help, etc.).
+    Global,
+    /// Custom category with a user-defined label.
+    Custom(String),
+}
+
+impl HelpCategory {
+    /// Return a display label for this category.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        match self {
+            Self::General => "General",
+            Self::Navigation => "Navigation",
+            Self::Editing => "Editing",
+            Self::File => "File",
+            Self::View => "View",
+            Self::Global => "Global",
+            Self::Custom(s) => s,
+        }
+    }
+}
+
 /// A single keybinding entry in the help view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HelpEntry {
@@ -36,6 +72,8 @@ pub struct HelpEntry {
     pub desc: String,
     /// Whether this entry is enabled (disabled entries are hidden).
     pub enabled: bool,
+    /// Category for grouping related entries.
+    pub category: HelpCategory,
 }
 
 impl HelpEntry {
@@ -46,6 +84,7 @@ impl HelpEntry {
             key: key.into(),
             desc: desc.into(),
             enabled: true,
+            category: HelpCategory::default(),
         }
     }
 
@@ -53,6 +92,13 @@ impl HelpEntry {
     #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
+        self
+    }
+
+    /// Set the category for this entry.
+    #[must_use]
+    pub fn with_category(mut self, category: HelpCategory) -> Self {
+        self.category = category;
         self
     }
 }
@@ -452,6 +498,7 @@ impl Help {
         entry.key.hash(&mut hasher);
         entry.desc.hash(&mut hasher);
         entry.enabled.hash(&mut hasher);
+        entry.category.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -1000,6 +1047,392 @@ fn blit_cache(cache: Option<&HelpCache>, area: Rect, frame: &mut Frame) {
     }
 }
 
+/// Format for displaying key labels in hints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum KeyFormat {
+    /// Plain key display: `q quit`
+    #[default]
+    Plain,
+    /// Bracketed key display: `[q] quit`
+    Bracketed,
+}
+
+/// A keybinding hints widget with category grouping and context-aware filtering.
+///
+/// Supports two entry scopes:
+/// - **Global**: shortcuts always visible regardless of context.
+/// - **Contextual**: shortcuts shown only when [`show_context`](Self::with_show_context)
+///   is enabled (typically when a particular widget has focus).
+///
+/// In [`HelpMode::Full`] mode with categories enabled, entries are grouped
+/// under category headers. In [`HelpMode::Short`] mode, entries are rendered
+/// inline.
+///
+/// # Example
+///
+/// ```
+/// use ftui_widgets::help::{KeybindingHints, HelpCategory, KeyFormat};
+///
+/// let hints = KeybindingHints::new()
+///     .with_key_format(KeyFormat::Bracketed)
+///     .global_entry("q", "quit")
+///     .global_entry_categorized("Tab", "next", HelpCategory::Navigation)
+///     .contextual_entry_categorized("^s", "save", HelpCategory::File);
+///
+/// assert_eq!(hints.global_entries().len(), 2);
+/// assert_eq!(hints.contextual_entries().len(), 1);
+/// ```
+#[derive(Debug, Clone)]
+pub struct KeybindingHints {
+    global_entries: Vec<HelpEntry>,
+    contextual_entries: Vec<HelpEntry>,
+    key_format: KeyFormat,
+    mode: HelpMode,
+    key_style: Style,
+    desc_style: Style,
+    separator_style: Style,
+    category_style: Style,
+    separator: String,
+    ellipsis: String,
+    show_categories: bool,
+    show_context: bool,
+}
+
+impl Default for KeybindingHints {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KeybindingHints {
+    /// Create a new hints widget with no entries.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            global_entries: Vec::new(),
+            contextual_entries: Vec::new(),
+            key_format: KeyFormat::default(),
+            mode: HelpMode::Short,
+            key_style: Style::new().bold(),
+            desc_style: Style::default(),
+            separator_style: Style::default(),
+            category_style: Style::new().bold().underline(),
+            separator: " • ".to_string(),
+            ellipsis: "…".to_string(),
+            show_categories: true,
+            show_context: false,
+        }
+    }
+
+    /// Add a global entry (always visible).
+    #[must_use]
+    pub fn global_entry(mut self, key: impl Into<String>, desc: impl Into<String>) -> Self {
+        self.global_entries
+            .push(HelpEntry::new(key, desc).with_category(HelpCategory::Global));
+        self
+    }
+
+    /// Add a global entry with a specific category.
+    #[must_use]
+    pub fn global_entry_categorized(
+        mut self,
+        key: impl Into<String>,
+        desc: impl Into<String>,
+        category: HelpCategory,
+    ) -> Self {
+        self.global_entries
+            .push(HelpEntry::new(key, desc).with_category(category));
+        self
+    }
+
+    /// Add a contextual entry (shown when context is active).
+    #[must_use]
+    pub fn contextual_entry(mut self, key: impl Into<String>, desc: impl Into<String>) -> Self {
+        self.contextual_entries.push(HelpEntry::new(key, desc));
+        self
+    }
+
+    /// Add a contextual entry with a specific category.
+    #[must_use]
+    pub fn contextual_entry_categorized(
+        mut self,
+        key: impl Into<String>,
+        desc: impl Into<String>,
+        category: HelpCategory,
+    ) -> Self {
+        self.contextual_entries
+            .push(HelpEntry::new(key, desc).with_category(category));
+        self
+    }
+
+    /// Add a pre-built global entry.
+    #[must_use]
+    pub fn with_global_entry(mut self, entry: HelpEntry) -> Self {
+        self.global_entries.push(entry);
+        self
+    }
+
+    /// Add a pre-built contextual entry.
+    #[must_use]
+    pub fn with_contextual_entry(mut self, entry: HelpEntry) -> Self {
+        self.contextual_entries.push(entry);
+        self
+    }
+
+    /// Set the key display format.
+    #[must_use]
+    pub fn with_key_format(mut self, format: KeyFormat) -> Self {
+        self.key_format = format;
+        self
+    }
+
+    /// Set the display mode.
+    #[must_use]
+    pub fn with_mode(mut self, mode: HelpMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Set whether contextual entries are shown.
+    #[must_use]
+    pub fn with_show_context(mut self, show: bool) -> Self {
+        self.show_context = show;
+        self
+    }
+
+    /// Set whether category headers are shown in full mode.
+    #[must_use]
+    pub fn with_show_categories(mut self, show: bool) -> Self {
+        self.show_categories = show;
+        self
+    }
+
+    /// Set the style for key text.
+    #[must_use]
+    pub fn with_key_style(mut self, style: Style) -> Self {
+        self.key_style = style;
+        self
+    }
+
+    /// Set the style for description text.
+    #[must_use]
+    pub fn with_desc_style(mut self, style: Style) -> Self {
+        self.desc_style = style;
+        self
+    }
+
+    /// Set the style for separators.
+    #[must_use]
+    pub fn with_separator_style(mut self, style: Style) -> Self {
+        self.separator_style = style;
+        self
+    }
+
+    /// Set the style for category headers.
+    #[must_use]
+    pub fn with_category_style(mut self, style: Style) -> Self {
+        self.category_style = style;
+        self
+    }
+
+    /// Set the separator string for short mode.
+    #[must_use]
+    pub fn with_separator(mut self, sep: impl Into<String>) -> Self {
+        self.separator = sep.into();
+        self
+    }
+
+    /// Get the global entries.
+    #[must_use]
+    pub fn global_entries(&self) -> &[HelpEntry] {
+        &self.global_entries
+    }
+
+    /// Get the contextual entries.
+    #[must_use]
+    pub fn contextual_entries(&self) -> &[HelpEntry] {
+        &self.contextual_entries
+    }
+
+    /// Get the current mode.
+    #[must_use]
+    pub fn mode(&self) -> HelpMode {
+        self.mode
+    }
+
+    /// Get the key format.
+    #[must_use]
+    pub fn key_format(&self) -> KeyFormat {
+        self.key_format
+    }
+
+    /// Toggle between short and full mode.
+    pub fn toggle_mode(&mut self) {
+        self.mode = match self.mode {
+            HelpMode::Short => HelpMode::Full,
+            HelpMode::Full => HelpMode::Short,
+        };
+    }
+
+    /// Set whether contextual entries are shown (mutable).
+    pub fn set_show_context(&mut self, show: bool) {
+        self.show_context = show;
+    }
+
+    /// Format a key string according to the current key format.
+    fn format_key(&self, key: &str) -> String {
+        match self.key_format {
+            KeyFormat::Plain => key.to_string(),
+            KeyFormat::Bracketed => format!("[{key}]"),
+        }
+    }
+
+    /// Collect visible entries, applying scope filter and key formatting.
+    #[must_use]
+    pub fn visible_entries(&self) -> Vec<HelpEntry> {
+        let mut entries = Vec::new();
+        for e in &self.global_entries {
+            if e.enabled {
+                entries.push(HelpEntry {
+                    key: self.format_key(&e.key),
+                    desc: e.desc.clone(),
+                    enabled: true,
+                    category: e.category.clone(),
+                });
+            }
+        }
+        if self.show_context {
+            for e in &self.contextual_entries {
+                if e.enabled {
+                    entries.push(HelpEntry {
+                        key: self.format_key(&e.key),
+                        desc: e.desc.clone(),
+                        enabled: true,
+                        category: e.category.clone(),
+                    });
+                }
+            }
+        }
+        entries
+    }
+
+    /// Group entries by category, preserving insertion order within each group.
+    fn grouped_entries(entries: &[HelpEntry]) -> Vec<(&HelpCategory, Vec<&HelpEntry>)> {
+        let mut groups: Vec<(&HelpCategory, Vec<&HelpEntry>)> = Vec::new();
+        for entry in entries {
+            if let Some(group) = groups.iter_mut().find(|(cat, _)| **cat == entry.category) {
+                group.1.push(entry);
+            } else {
+                groups.push((&entry.category, vec![entry]));
+            }
+        }
+        groups
+    }
+
+    /// Render full mode with category headers.
+    fn render_full_grouped(&self, entries: &[HelpEntry], area: Rect, frame: &mut Frame) {
+        let groups = Self::grouped_entries(entries);
+        let deg = frame.buffer.degradation;
+        let max_x = area.right();
+        let mut y = area.y;
+
+        // Find max key width across all entries for alignment.
+        let max_key_w = entries
+            .iter()
+            .map(|e| display_width(&e.key))
+            .max()
+            .unwrap_or(0);
+
+        for (i, (cat, group_entries)) in groups.iter().enumerate() {
+            if y >= area.bottom() {
+                break;
+            }
+
+            // Category header
+            let cat_style = if deg.apply_styling() {
+                self.category_style
+            } else {
+                Style::default()
+            };
+            draw_text_span(frame, area.x, y, cat.label(), cat_style, max_x);
+            y += 1;
+
+            // Entries in this category
+            for entry in group_entries {
+                if y >= area.bottom() {
+                    break;
+                }
+
+                let key_style = if deg.apply_styling() {
+                    self.key_style
+                } else {
+                    Style::default()
+                };
+                let desc_style = if deg.apply_styling() {
+                    self.desc_style
+                } else {
+                    Style::default()
+                };
+
+                let mut x = area.x;
+                x = draw_text_span(frame, x, y, &entry.key, key_style, max_x);
+                let pad = max_key_w.saturating_sub(display_width(&entry.key));
+                for _ in 0..pad {
+                    x = draw_text_span(frame, x, y, " ", Style::default(), max_x);
+                }
+                x = draw_text_span(frame, x, y, "  ", Style::default(), max_x);
+                draw_text_span(frame, x, y, &entry.desc, desc_style, max_x);
+                y += 1;
+            }
+
+            // Blank line between groups (except after last)
+            if i + 1 < groups.len() {
+                y += 1;
+            }
+        }
+    }
+}
+
+impl Widget for KeybindingHints {
+    fn render(&self, area: Rect, frame: &mut Frame) {
+        let entries = self.visible_entries();
+        if entries.is_empty() || area.is_empty() {
+            return;
+        }
+
+        match self.mode {
+            HelpMode::Short => {
+                // In short mode, render all entries inline using Help widget.
+                let help = Help::new()
+                    .with_mode(HelpMode::Short)
+                    .with_key_style(self.key_style)
+                    .with_desc_style(self.desc_style)
+                    .with_separator_style(self.separator_style)
+                    .with_separator(self.separator.clone())
+                    .with_ellipsis(self.ellipsis.clone())
+                    .with_entries(entries);
+                Widget::render(&help, area, frame);
+            }
+            HelpMode::Full => {
+                if self.show_categories {
+                    self.render_full_grouped(&entries, area, frame);
+                } else {
+                    let help = Help::new()
+                        .with_mode(HelpMode::Full)
+                        .with_key_style(self.key_style)
+                        .with_desc_style(self.desc_style)
+                        .with_entries(entries);
+                    Widget::render(&help, area, frame);
+                }
+            }
+        }
+    }
+
+    fn is_essential(&self) -> bool {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1332,5 +1765,379 @@ mod tests {
 
         // Budget: keep p95 under 2ms in CI (500 updates/sec).
         assert!(p95 <= 2000, "p95 too slow: {p95}us");
+    }
+
+    // ── HelpCategory tests ─────────────────────────────────────────
+
+    #[test]
+    fn help_category_default_is_general() {
+        assert_eq!(HelpCategory::default(), HelpCategory::General);
+    }
+
+    #[test]
+    fn help_category_labels() {
+        assert_eq!(HelpCategory::General.label(), "General");
+        assert_eq!(HelpCategory::Navigation.label(), "Navigation");
+        assert_eq!(HelpCategory::Editing.label(), "Editing");
+        assert_eq!(HelpCategory::File.label(), "File");
+        assert_eq!(HelpCategory::View.label(), "View");
+        assert_eq!(HelpCategory::Global.label(), "Global");
+        assert_eq!(
+            HelpCategory::Custom("My Section".into()).label(),
+            "My Section"
+        );
+    }
+
+    #[test]
+    fn help_entry_with_category() {
+        let entry = HelpEntry::new("q", "quit").with_category(HelpCategory::Navigation);
+        assert_eq!(entry.category, HelpCategory::Navigation);
+    }
+
+    #[test]
+    fn help_entry_default_category_is_general() {
+        let entry = HelpEntry::new("q", "quit");
+        assert_eq!(entry.category, HelpCategory::General);
+    }
+
+    #[test]
+    fn category_changes_entry_hash() {
+        let a = HelpEntry::new("q", "quit");
+        let b = HelpEntry::new("q", "quit").with_category(HelpCategory::Navigation);
+        assert_ne!(Help::entry_hash(&a), Help::entry_hash(&b));
+    }
+
+    // ── KeyFormat tests ────────────────────────────────────────────
+
+    #[test]
+    fn key_format_default_is_plain() {
+        assert_eq!(KeyFormat::default(), KeyFormat::Plain);
+    }
+
+    // ── KeybindingHints tests ──────────────────────────────────────
+
+    #[test]
+    fn keybinding_hints_new_is_empty() {
+        let hints = KeybindingHints::new();
+        assert!(hints.global_entries().is_empty());
+        assert!(hints.contextual_entries().is_empty());
+        assert_eq!(hints.mode(), HelpMode::Short);
+        assert_eq!(hints.key_format(), KeyFormat::Plain);
+    }
+
+    #[test]
+    fn keybinding_hints_default() {
+        let hints = KeybindingHints::default();
+        assert!(hints.global_entries().is_empty());
+    }
+
+    #[test]
+    fn keybinding_hints_global_entry() {
+        let hints = KeybindingHints::new()
+            .global_entry("q", "quit")
+            .global_entry("^s", "save");
+        assert_eq!(hints.global_entries().len(), 2);
+        assert_eq!(hints.global_entries()[0].key, "q");
+        assert_eq!(hints.global_entries()[0].category, HelpCategory::Global);
+    }
+
+    #[test]
+    fn keybinding_hints_categorized_entries() {
+        let hints = KeybindingHints::new()
+            .global_entry_categorized("Tab", "next", HelpCategory::Navigation)
+            .global_entry_categorized("q", "quit", HelpCategory::Global);
+        assert_eq!(hints.global_entries()[0].category, HelpCategory::Navigation);
+        assert_eq!(hints.global_entries()[1].category, HelpCategory::Global);
+    }
+
+    #[test]
+    fn keybinding_hints_contextual_entry() {
+        let hints = KeybindingHints::new()
+            .contextual_entry("^s", "save")
+            .contextual_entry_categorized("^f", "find", HelpCategory::Editing);
+        assert_eq!(hints.contextual_entries().len(), 2);
+        assert_eq!(
+            hints.contextual_entries()[0].category,
+            HelpCategory::General
+        );
+        assert_eq!(
+            hints.contextual_entries()[1].category,
+            HelpCategory::Editing
+        );
+    }
+
+    #[test]
+    fn keybinding_hints_with_prebuilt_entries() {
+        let global = HelpEntry::new("q", "quit").with_category(HelpCategory::Global);
+        let ctx = HelpEntry::new("^s", "save").with_category(HelpCategory::File);
+        let hints = KeybindingHints::new()
+            .with_global_entry(global)
+            .with_contextual_entry(ctx);
+        assert_eq!(hints.global_entries().len(), 1);
+        assert_eq!(hints.contextual_entries().len(), 1);
+    }
+
+    #[test]
+    fn keybinding_hints_toggle_mode() {
+        let mut hints = KeybindingHints::new();
+        assert_eq!(hints.mode(), HelpMode::Short);
+        hints.toggle_mode();
+        assert_eq!(hints.mode(), HelpMode::Full);
+        hints.toggle_mode();
+        assert_eq!(hints.mode(), HelpMode::Short);
+    }
+
+    #[test]
+    fn keybinding_hints_set_show_context() {
+        let mut hints = KeybindingHints::new()
+            .global_entry("q", "quit")
+            .contextual_entry("^s", "save");
+
+        // Context off: only global visible
+        let visible = hints.visible_entries();
+        assert_eq!(visible.len(), 1);
+
+        // Context on: both visible
+        hints.set_show_context(true);
+        let visible = hints.visible_entries();
+        assert_eq!(visible.len(), 2);
+    }
+
+    #[test]
+    fn keybinding_hints_bracketed_format() {
+        let hints = KeybindingHints::new()
+            .with_key_format(KeyFormat::Bracketed)
+            .global_entry("q", "quit");
+        let visible = hints.visible_entries();
+        assert_eq!(visible[0].key, "[q]");
+    }
+
+    #[test]
+    fn keybinding_hints_plain_format() {
+        let hints = KeybindingHints::new()
+            .with_key_format(KeyFormat::Plain)
+            .global_entry("q", "quit");
+        let visible = hints.visible_entries();
+        assert_eq!(visible[0].key, "q");
+    }
+
+    #[test]
+    fn keybinding_hints_disabled_entries_hidden() {
+        let hints = KeybindingHints::new()
+            .with_global_entry(HelpEntry::new("a", "shown"))
+            .with_global_entry(HelpEntry::new("b", "hidden").with_enabled(false));
+        let visible = hints.visible_entries();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].key, "a");
+    }
+
+    #[test]
+    fn keybinding_hints_grouped_entries() {
+        let entries = vec![
+            HelpEntry::new("Tab", "next").with_category(HelpCategory::Navigation),
+            HelpEntry::new("q", "quit").with_category(HelpCategory::Global),
+            HelpEntry::new("S-Tab", "prev").with_category(HelpCategory::Navigation),
+        ];
+        let groups = KeybindingHints::grouped_entries(&entries);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(*groups[0].0, HelpCategory::Navigation);
+        assert_eq!(groups[0].1.len(), 2);
+        assert_eq!(*groups[1].0, HelpCategory::Global);
+        assert_eq!(groups[1].1.len(), 1);
+    }
+
+    #[test]
+    fn keybinding_hints_render_short() {
+        let hints = KeybindingHints::new()
+            .global_entry("q", "quit")
+            .global_entry("^s", "save");
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 1, &mut pool);
+        let area = Rect::new(0, 0, 40, 1);
+        Widget::render(&hints, area, &mut frame);
+
+        // First char should be 'q' (plain format)
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(cell.content.as_char(), Some('q'));
+    }
+
+    #[test]
+    fn keybinding_hints_render_short_bracketed() {
+        let hints = KeybindingHints::new()
+            .with_key_format(KeyFormat::Bracketed)
+            .global_entry("q", "quit");
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 1, &mut pool);
+        let area = Rect::new(0, 0, 40, 1);
+        Widget::render(&hints, area, &mut frame);
+
+        // First char should be '[' (bracketed format)
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(cell.content.as_char(), Some('['));
+    }
+
+    #[test]
+    fn keybinding_hints_render_full_grouped() {
+        let hints = KeybindingHints::new()
+            .with_mode(HelpMode::Full)
+            .with_show_categories(true)
+            .global_entry_categorized("Tab", "next", HelpCategory::Navigation)
+            .global_entry_categorized("q", "quit", HelpCategory::Global);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 10, &mut pool);
+        let area = Rect::new(0, 0, 40, 10);
+        Widget::render(&hints, area, &mut frame);
+
+        // Row 0 should contain category header "Navigation"
+        let mut row0 = String::new();
+        for x in 0..40u16 {
+            if let Some(cell) = frame.buffer.get(x, 0)
+                && let Some(ch) = cell.content.as_char()
+            {
+                row0.push(ch);
+            }
+        }
+        assert!(
+            row0.contains("Navigation"),
+            "First row should be Navigation header: {row0}"
+        );
+    }
+
+    #[test]
+    fn keybinding_hints_render_full_no_categories() {
+        let hints = KeybindingHints::new()
+            .with_mode(HelpMode::Full)
+            .with_show_categories(false)
+            .global_entry("q", "quit")
+            .global_entry("^s", "save");
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 5, &mut pool);
+        let area = Rect::new(0, 0, 40, 5);
+        // Should not panic
+        Widget::render(&hints, area, &mut frame);
+    }
+
+    #[test]
+    fn keybinding_hints_render_empty() {
+        let hints = KeybindingHints::new();
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
+        let area = Rect::new(0, 0, 20, 1);
+        // Should not panic
+        Widget::render(&hints, area, &mut frame);
+    }
+
+    #[test]
+    fn keybinding_hints_render_zero_area() {
+        let hints = KeybindingHints::new().global_entry("q", "quit");
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
+        let area = Rect::new(0, 0, 0, 0);
+        // Should not panic
+        Widget::render(&hints, area, &mut frame);
+    }
+
+    #[test]
+    fn keybinding_hints_is_not_essential() {
+        let hints = KeybindingHints::new();
+        assert!(!hints.is_essential());
+    }
+
+    // ── Property tests for KeybindingHints ──────────────────────────
+
+    proptest! {
+        #[test]
+        fn prop_visible_entries_count(
+            n_global in 0..5usize,
+            n_ctx in 0..5usize,
+            show_ctx in proptest::bool::ANY,
+        ) {
+            let mut hints = KeybindingHints::new().with_show_context(show_ctx);
+            for i in 0..n_global {
+                hints = hints.global_entry(format!("g{i}"), format!("global {i}"));
+            }
+            for i in 0..n_ctx {
+                hints = hints.contextual_entry(format!("c{i}"), format!("ctx {i}"));
+            }
+            let visible = hints.visible_entries();
+            let expected = if show_ctx { n_global + n_ctx } else { n_global };
+            prop_assert_eq!(visible.len(), expected);
+        }
+
+        #[test]
+        fn prop_bracketed_keys_wrapped(
+            keys in prop::collection::vec(string_regex("[a-z]{1,4}").unwrap(), 1..5),
+        ) {
+            let mut hints = KeybindingHints::new().with_key_format(KeyFormat::Bracketed);
+            for key in &keys {
+                hints = hints.global_entry(key.clone(), "action");
+            }
+            let visible = hints.visible_entries();
+            for entry in &visible {
+                prop_assert!(entry.key.starts_with('['), "Key should start with [: {}", entry.key);
+                prop_assert!(entry.key.ends_with(']'), "Key should end with ]: {}", entry.key);
+            }
+        }
+
+        #[test]
+        fn prop_grouped_preserves_count(
+            entries in prop::collection::vec(
+                (string_regex("[a-z]{1,4}").unwrap(), 0..3u8),
+                1..8
+            ),
+        ) {
+            let help_entries: Vec<HelpEntry> = entries.into_iter().map(|(key, cat_idx)| {
+                let cat = match cat_idx {
+                    0 => HelpCategory::Navigation,
+                    1 => HelpCategory::Editing,
+                    _ => HelpCategory::Global,
+                };
+                HelpEntry::new(key, "action").with_category(cat)
+            }).collect();
+
+            let total = help_entries.len();
+            let groups = KeybindingHints::grouped_entries(&help_entries);
+            let grouped_total: usize = groups.iter().map(|(_, v)| v.len()).sum();
+            prop_assert_eq!(total, grouped_total, "Grouping should preserve total entry count");
+        }
+
+        #[test]
+        fn prop_render_no_panic(
+            n_global in 0..5usize,
+            n_ctx in 0..5usize,
+            width in 1..80u16,
+            height in 1..20u16,
+            show_ctx in proptest::bool::ANY,
+            use_full in proptest::bool::ANY,
+            use_brackets in proptest::bool::ANY,
+            show_cats in proptest::bool::ANY,
+        ) {
+            let mode = if use_full { HelpMode::Full } else { HelpMode::Short };
+            let fmt = if use_brackets { KeyFormat::Bracketed } else { KeyFormat::Plain };
+            let mut hints = KeybindingHints::new()
+                .with_mode(mode)
+                .with_key_format(fmt)
+                .with_show_context(show_ctx)
+                .with_show_categories(show_cats);
+
+            for i in 0..n_global {
+                hints = hints.global_entry(format!("g{i}"), format!("global action {i}"));
+            }
+            for i in 0..n_ctx {
+                hints = hints.contextual_entry(format!("c{i}"), format!("ctx action {i}"));
+            }
+
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(width, height, &mut pool);
+            let area = Rect::new(0, 0, width, height);
+            Widget::render(&hints, area, &mut frame);
+            // No panic = pass
+        }
     }
 }

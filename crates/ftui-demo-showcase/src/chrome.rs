@@ -9,7 +9,7 @@ use ftui_text::{Line, Span, Text};
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
-use ftui_widgets::help::{Help, HelpMode};
+use ftui_widgets::help::{HelpCategory, HelpMode, KeyFormat, KeybindingHints};
 use ftui_widgets::paragraph::Paragraph;
 
 use crate::app::ScreenId;
@@ -448,81 +448,61 @@ pub fn render_help_overlay(
     // Description styling: normal body text
     let desc_style = theme::body();
 
-    // Section header styling
-    let section_style = Style::new().bold().underline().fg(theme::fg::SECONDARY);
+    // Section header / category styling
+    let category_style = Style::new().bold().underline().fg(theme::fg::SECONDARY);
 
-    // Calculate layout: split inner area for sections
-    let content_y = inner.y;
-    let content_width = inner.width;
-    let mut current_y = content_y;
-
-    // Render "Global Navigation" section header
-    let global_header = "Global Navigation";
-    Paragraph::new(global_header)
-        .style(section_style)
-        .render(Rect::new(inner.x, current_y, content_width, 1), frame);
-    current_y += 2; // Header + blank line
-
-    // Global keybindings using Help widget
-    let global_help = Help::new()
+    // Build KeybindingHints with categorized global entries and screen bindings.
+    let mut hints = KeybindingHints::new()
         .with_mode(HelpMode::Full)
+        .with_show_context(!screen_bindings.is_empty())
+        .with_show_categories(true)
+        .with_key_format(KeyFormat::Bracketed)
         .with_key_style(key_style)
         .with_desc_style(desc_style)
-        .entry("1-9, 0", "Switch to screen by number")
-        .entry("Tab / L", "Next screen")
-        .entry("S-Tab / H", "Previous screen")
-        .entry("?", "Toggle this help overlay")
-        .entry("Ctrl+K", "Open command palette")
-        .entry("Ctrl+T", "Cycle color theme")
-        .entry("Ctrl+Z", "Undo")
-        .entry("Ctrl+Y / Ctrl+Shift+Z", "Redo")
-        .entry("A", "Toggle A11y panel")
-        .entry("H/M/L", "A11y: high contrast, reduced motion, large text")
-        .entry("F12", "Toggle debug overlay")
-        .entry("q / Ctrl+C", "Quit application");
+        .with_category_style(category_style)
+        // Navigation
+        .global_entry_categorized(
+            "1-9, 0",
+            "Switch to screen by number",
+            HelpCategory::Navigation,
+        )
+        .global_entry_categorized("Tab / L", "Next screen", HelpCategory::Navigation)
+        .global_entry_categorized("S-Tab / H", "Previous screen", HelpCategory::Navigation)
+        // View
+        .global_entry_categorized("?", "Toggle this help overlay", HelpCategory::View)
+        .global_entry_categorized("A", "Toggle A11y panel", HelpCategory::View)
+        .global_entry_categorized("F12", "Toggle debug overlay", HelpCategory::View)
+        // Editing
+        .global_entry_categorized("Ctrl+Z", "Undo", HelpCategory::Editing)
+        .global_entry_categorized("Ctrl+Y / Ctrl+Shift+Z", "Redo", HelpCategory::Editing)
+        // Global
+        .global_entry_categorized("Ctrl+K", "Open command palette", HelpCategory::Global)
+        .global_entry_categorized("Ctrl+T", "Cycle color theme", HelpCategory::Global)
+        .global_entry_categorized(
+            "H/M/L",
+            "A11y: high contrast, reduced motion, large text",
+            HelpCategory::Global,
+        )
+        .global_entry_categorized("q / Ctrl+C", "Quit application", HelpCategory::Global);
 
-    let global_entries = 10u16;
-    let global_area = Rect::new(
-        inner.x + 1,
-        current_y,
-        content_width.saturating_sub(2),
-        global_entries.min(inner.height.saturating_sub(current_y - content_y)),
-    );
-    Widget::render(&global_help, global_area, frame);
-    current_y += global_entries + 1;
-
-    // Render screen-specific bindings if available
-    if !screen_bindings.is_empty() && current_y + 3 < inner.bottom() {
-        // Section header for current screen
-        let screen_header = format!("{} Controls", current.title());
-        Paragraph::new(screen_header)
-            .style(section_style)
-            .render(Rect::new(inner.x, current_y, content_width, 1), frame);
-        current_y += 2;
-
-        // Build Help widget for screen-specific bindings
-        let mut screen_help = Help::new()
-            .with_mode(HelpMode::Full)
-            .with_key_style(key_style)
-            .with_desc_style(desc_style);
-
-        for entry in screen_bindings {
-            screen_help = screen_help.entry(entry.key, entry.action);
-        }
-
-        let remaining_height = inner.bottom().saturating_sub(current_y);
-        let screen_area = Rect::new(
-            inner.x + 1,
-            current_y,
-            content_width.saturating_sub(2),
-            remaining_height.min(screen_bindings.len() as u16),
-        );
-        Widget::render(&screen_help, screen_area, frame);
+    // Add screen-specific bindings as contextual entries under a custom category.
+    let screen_category = HelpCategory::Custom(format!("{} Controls", current.title()));
+    for entry in screen_bindings {
+        hints =
+            hints.contextual_entry_categorized(entry.key, entry.action, screen_category.clone());
     }
+
+    let content_area = Rect::new(
+        inner.x + 1,
+        inner.y,
+        inner.width.saturating_sub(2),
+        inner.height.saturating_sub(1), // leave room for footer
+    );
+    Widget::render(&hints, content_area, frame);
 
     // Footer hint at bottom
     let footer_y = overlay_area.bottom().saturating_sub(1);
-    if footer_y > current_y {
+    if footer_y > inner.y {
         let footer = "Press ? or Esc to close";
         let footer_style = Style::new().fg(theme::fg::MUTED);
         let footer_x = inner.x + (inner.width.saturating_sub(footer.len() as u16)) / 2;

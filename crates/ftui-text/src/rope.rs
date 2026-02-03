@@ -213,15 +213,22 @@ impl Rope {
     }
 
     fn grapheme_to_char_idx(&self, grapheme_idx: usize) -> usize {
-        let snapshot = self.to_string();
-        let mut char_idx = 0usize;
-        let mut g_idx = 0usize;
-        for grapheme in snapshot.graphemes(true) {
-            if g_idx == grapheme_idx {
-                return char_idx;
+        let mut g_count = 0;
+        let mut char_count = 0;
+
+        for line in self.lines() {
+            let line_g_count = line.graphemes(true).count();
+            if g_count + line_g_count > grapheme_idx {
+                let offset = grapheme_idx - g_count;
+                for (current_g, g) in line.graphemes(true).enumerate() {
+                    if current_g == offset {
+                        return char_count;
+                    }
+                    char_count += g.chars().count();
+                }
             }
-            char_idx = char_idx.saturating_add(grapheme.chars().count());
-            g_idx = g_idx.saturating_add(1);
+            g_count += line_g_count;
+            char_count += line.chars().count();
         }
         self.len_chars()
     }

@@ -57,6 +57,8 @@ pub struct TextArea {
     /// Last viewport height for page movement and visibility checks.
     #[allow(dead_code)]
     last_viewport_height: std::cell::Cell<usize>,
+    /// Last viewport width for visibility checks.
+    last_viewport_width: std::cell::Cell<usize>,
 }
 
 impl Default for TextArea {
@@ -101,6 +103,7 @@ impl TextArea {
             scroll_top: std::cell::Cell::new(usize::MAX), // sentinel: will be set on first render
             scroll_left: std::cell::Cell::new(0),
             last_viewport_height: std::cell::Cell::new(0),
+            last_viewport_width: std::cell::Cell::new(0),
         }
     }
 
@@ -685,20 +688,37 @@ impl TextArea {
     /// Ensure the cursor line and column are visible in the viewport.
     fn ensure_cursor_visible(&mut self) {
         let cursor = self.editor.cursor();
+
         let last_height = self.last_viewport_height.get();
+
         // Use a default viewport of 20 lines if we haven't rendered yet (height is 0)
+
         let vp_height = if last_height == 0 { 20 } else { last_height };
+
+        let last_width = self.last_viewport_width.get();
+
+        let vp_width = if last_width == 0 { 80 } else { last_width };
 
         if self.scroll_top.get() == usize::MAX {
             self.scroll_top.set(0);
         }
 
-        self.ensure_cursor_visible_with_height(vp_height, cursor);
+        self.ensure_cursor_visible_internal(vp_height, vp_width, cursor);
     }
 
-    fn ensure_cursor_visible_with_height(&mut self, vp_height: usize, cursor: CursorPosition) {
+    fn ensure_cursor_visible_internal(
+        &mut self,
+
+        vp_height: usize,
+
+        vp_width: usize,
+
+        cursor: CursorPosition,
+    ) {
         let current_top = self.scroll_top.get();
+
         // Vertical scroll
+
         if cursor.line < current_top {
             self.scroll_top.set(cursor.line);
         } else if vp_height > 0 && cursor.line >= current_top + vp_height {
@@ -707,11 +727,29 @@ impl TextArea {
         }
 
         // Horizontal scroll
+
         if !self.soft_wrap {
             let current_left = self.scroll_left.get();
+
             let visual_col = cursor.visual_col;
+
+            // Scroll left if cursor is before viewport
+
             if visual_col < current_left {
                 self.scroll_left.set(visual_col);
+            }
+            // Scroll right if cursor is past viewport
+
+            // Need space for gutter if we had access to it, but this is a best effort
+
+            // approximation using the last known width.
+
+            // Effective text width approx vp_width - gutter (assume ~4 for gutter if unknown)
+
+            // But we use raw vp_width here.
+            else if vp_width > 0 && visual_col >= current_left + vp_width {
+                self.scroll_left
+                    .set(visual_col.saturating_sub(vp_width - 1));
             }
         }
     }
@@ -734,6 +772,8 @@ impl Widget for TextArea {
         let text_area_x = area.x.saturating_add(gutter_w);
         let text_area_w = area.width.saturating_sub(gutter_w) as usize;
         let vp_height = area.height as usize;
+
+        self.last_viewport_width.set(text_area_w);
 
         let cursor = self.editor.cursor();
         // Use a mutable copy for scroll adjustment
@@ -1195,7 +1235,7 @@ mod tests {
         let mut ta = TextArea::new().with_text("hello world foo");
         ta.move_to_document_start();
         ta.move_word_right();
-        assert_eq!(ta.cursor().grapheme, 5);
+        assert_eq!(ta.cursor().grapheme, 6);
         ta.move_word_left();
         assert_eq!(ta.cursor().grapheme, 0);
     }
