@@ -1305,8 +1305,9 @@ mod tests {
     fn select_word_operations() {
         let mut ed = Editor::with_text("hello world");
         ed.set_cursor(CursorPosition::new(0, 0, 0));
+        // move_word_right now skips the word and trailing whitespace
         ed.select_word_right();
-        assert_eq!(ed.selected_text(), Some("hello".to_string()));
+        assert_eq!(ed.selected_text(), Some("hello ".to_string()));
         ed.clear_selection();
         ed.move_to_line_end();
         ed.select_word_left();
