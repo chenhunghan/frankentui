@@ -38,9 +38,11 @@ SCREENS:
    11  Macro Recorder     Record/replay input macros and scenarios
    12  Markdown           Rich text and markdown rendering
    13  Visual Effects     Animated braille and canvas effects
+   14  Responsive         Breakpoint-driven responsive layout demo
 
 KEYBINDINGS:
-    Tab / 1-9, 0   Switch between screens (first 10)
+    1-9, 0          Switch to screens 1-10 by number
+    Tab / Shift-Tab Cycle through all screens
     ?               Toggle help overlay
     F12             Toggle debug overlay
     q / Ctrl+C      Quit
@@ -187,6 +189,34 @@ mod tests {
         assert!(HELP_TEXT.contains("Dashboard"));
         assert!(HELP_TEXT.contains("Shakespeare"));
         assert!(HELP_TEXT.contains("Widget Gallery"));
+        assert!(HELP_TEXT.contains("Responsive"));
+    }
+
+    #[test]
+    fn help_screen_count_matches_all() {
+        // Count numbered screen entries in the SCREENS section
+        let screen_count = HELP_TEXT
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                // Lines like "    1  Dashboard ..." start with a number
+                trimmed
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|tok| tok.parse::<u16>().is_ok())
+                    && trimmed.len() > 5
+            })
+            .count();
+        assert_eq!(
+            screen_count,
+            crate::app::ScreenId::ALL.len(),
+            "HELP_TEXT screen list count must match ScreenId::ALL"
+        );
+    }
+
+    #[test]
+    fn help_text_contains_visual_effects_as_screen_13() {
+        assert!(HELP_TEXT.contains("13  Visual Effects"));
     }
 
     #[test]
