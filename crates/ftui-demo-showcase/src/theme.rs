@@ -989,8 +989,8 @@ mod tests {
         let accent = screen_accent::FILE_BROWSER;
         let style = panel_border_style(true, accent);
         // Focused panel should use the accent color
-        assert!(style.fg().is_some());
-        assert_eq!(style.fg(), Some(accent.into()));
+        assert!(style.fg.is_some());
+        assert_eq!(style.fg, Some(accent.into()));
     }
 
     #[test]
@@ -999,24 +999,26 @@ mod tests {
         let style = panel_border_style(false, accent);
         // Unfocused panel should use muted/content border styling
         let expected = content_border();
-        assert_eq!(style.fg(), expected.fg());
+        assert_eq!(style.fg, expected.fg);
     }
 
     #[test]
     fn selected_focused_item_has_highlight() {
         let style = list_item_style(true, true);
         // Selected + focused should have highlight background and bold
-        assert!(style.bg().is_some());
-        assert!(style.attrs().contains(StyleFlags::BOLD));
+        assert!(style.bg.is_some());
+        let attrs = style.attrs.unwrap_or(StyleFlags::NONE);
+        assert!(attrs.contains(StyleFlags::BOLD));
     }
 
     #[test]
     fn selected_unfocused_item_has_subtle_bg() {
         let style = list_item_style(true, false);
         // Selected + unfocused should have surface background (subtle)
-        assert!(style.bg().is_some());
+        assert!(style.bg.is_some());
         // Should not be bold when unfocused
-        assert!(!style.attrs().contains(StyleFlags::BOLD));
+        let attrs = style.attrs.unwrap_or(StyleFlags::NONE);
+        assert!(!attrs.contains(StyleFlags::BOLD));
     }
 
     #[test]
@@ -1024,8 +1026,8 @@ mod tests {
         let style_focused = list_item_style(false, true);
         let style_unfocused = list_item_style(false, false);
         // Unselected items should not have background highlighting
-        assert!(style_focused.bg().is_none());
-        assert!(style_unfocused.bg().is_none());
+        assert!(style_focused.bg.is_none());
+        assert!(style_unfocused.bg.is_none());
     }
 
     #[test]
@@ -1048,10 +1050,9 @@ mod tests {
 
     #[test]
     fn selection_indicators_have_same_width() {
-        use unicode_width::UnicodeWidthStr;
         // Both indicators must have the same width for proper alignment
-        let selected_width = UnicodeWidthStr::width(selection::INDICATOR);
-        let empty_width = UnicodeWidthStr::width(selection::EMPTY);
+        let selected_width = selection::INDICATOR.chars().count();
+        let empty_width = selection::EMPTY.chars().count();
         assert_eq!(selected_width, empty_width);
     }
 }
