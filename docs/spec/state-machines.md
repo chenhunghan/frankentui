@@ -222,6 +222,172 @@ If performance changes are introduced as part of reflow work:
 - **Opportunity matrix**: only implement changes with Score ≥ 2.0 (Impact×Confidence/Effort).
 - **Isomorphism proof**: prove ordering/tie-breaking/seed stability and record golden checksums.
 
+### 3.12 Render-Trace + Checksum Format (v1)
+This format powers deterministic replay + checksum verification for render regressions.
+
+#### Files
+- `trace.jsonl`: one JSON object per line, strict key order (for deterministic diffs).
+- `frames/`: optional binary payloads referenced by JSONL lines for replay.
+
+#### Record Types
+1. **Header** (`event="trace_header"`): run-wide metadata.
+2. **Frame** (`event="frame"`): per-frame metadata + checksum + optional diff payload.
+3. **Summary** (`event="trace_summary"`): final counters and checksum chain.
+
+#### Required Header Fields
+- `schema_version` (e.g., `"render-trace-v1"`)
+- `run_id` (stable UUID/slug)
+- `seed` (or `null`)
+- `env` (os, arch, test_module)
+- `capabilities` (terminal features)
+- `policies` (diff/bocpd/conformal toggles + key params)
+- `start_ts_ms` (optional; excluded from checksums)
+
+#### Required Frame Fields
+- `frame_idx`
+- `cols`, `rows`
+- `mode` (`inline` | `inline_auto` | `alt`)
+- `ui_height`, `ui_anchor`
+- `diff_strategy` (`full` | `dirty` | `redraw`)
+- `diff_cells`, `diff_runs`, `present_bytes`
+- `render_us`, `present_us` (optional but recommended)
+- `checksum` (u64 hex, 16 chars)
+- `checksum_chain` (u64 hex, 16 chars)
+- `payload_kind` (`diff_runs_v1` | `full_buffer_v1` | `none`)
+- `payload_path` (relative path under `frames/`, or `null`)
+
+#### Required Summary Fields
+- `total_frames`
+- `final_checksum_chain`
+- `elapsed_ms`
+
+#### Checksum Algorithm
+- **Primary**: FNV-1a 64-bit over the final buffer grid (row-major).
+- Hash input is the canonical serialized cell content + style:
+  - `content_kind` (u8)
+  - `content` (u32 char or u16 length + bytes for grapheme)
+  - `fg_rgba` (u32), `bg_rgba` (u32)
+  - `attrs` (u32)
+- Use existing buffer checksum helper where available; algorithm must match across crates.
+
+#### Payload Encoding (`diff_runs_v1`)
+Binary format (little-endian) for replay:
+```
+u16 width, u16 height, u32 run_count
+for each run:
+  u16 y, u16 x0, u16 x1
+  for x in [x0..x1]:
+    u8 content_kind
+    if content_kind == 0: (space)
+    if content_kind == 1: u32 char
+    if content_kind == 2: u16 len + [u8; len] grapheme bytes
+    if content_kind == 3: (continuation)
+    u32 fg_rgba
+    u32 bg_rgba
+    u32 attrs
+```
+Notes:
+- Continuation cells are emitted explicitly to preserve layout.
+- Grapheme bytes are UTF-8; `len` must be ≤ 4096 (hard cap).
+
+#### Normalization Rules (for determinism)
+- JSONL records must use stable key ordering and no extra whitespace.
+- `ts_ms` fields are optional and ignored in checksum computation.
+- Normalize line endings in any text payloads to `\n`.
+- Sync-output markers (`SYNC_BEGIN`/`SYNC_END`) are ignored for checksuming.
+
+---
+
+### 3.13 Conformal Predictor for Frame-Time Risk
+This spec defines a distribution-free, explainable predictor for frame-time risk.
+It outputs an *upper bound* on frame time with formal coverage guarantees and
+integrates cleanly with diff strategy selection and budget enforcement.
+
+#### 3.13.1 Goals
+- **Coverage guarantee**: For each bucket, `P(y_t <= U_t) >= 1 - alpha` under
+  exchangeability, where `U_t` is the predicted upper bound.
+- **Explainability**: Each prediction logs the calibration set size, quantile,
+  and residual statistics in the evidence ledger.
+- **Graceful degradation**: If data is sparse or drifting, fall back to broader
+  buckets or to a conservative baseline.
+- **Mode-aware**: Works for inline, inline-auto, and alt-screen modes.
+- **Large-screen priority**: Buckets must isolate large resolutions so coverage
+  is not diluted by small-screen behavior.
+
+#### 3.13.2 Definitions
+- `y_t`: observed frame time at frame `t` (render + present, in microseconds).
+- `x_t`: features for frame `t` (cols, rows, diff_cells, diff_runs, bytes,
+  mode, diff_strategy, ui_height, ui_anchor, etc.).
+- `f(x_t)`: point predictor (cost model from bd-3e1t.1.1 or fallback EMA).
+- `r_t = y_t - f(x_t)`: one-sided residual (only upper risk matters).
+
+#### 3.13.3 Buckets (Mondrian Conformal)
+We use *Mondrian* (bucketed) conformal to reduce heterogeneity.
+Bucket key `b` is a tuple:
+```
+mode_bucket = {inline, inline_auto, alt}
+diff_bucket = {full, dirty, redraw}
+size_bucket = floor(log2(cols * rows))   # isolates large screens
+b = (mode_bucket, diff_bucket, size_bucket)
+```
+Fallback hierarchy if `n_b < min_samples`:
+1. `(mode_bucket, diff_bucket, any_size)`
+2. `(mode_bucket, any_diff, any_size)`
+3. `global`
+
+#### 3.13.4 Prediction Rule (One-Sided)
+Given calibration residuals `{r_i}` in bucket `b` with size `n_b`:
+```
+q_b = quantile_{k}({r_i}),  k = ceil((n_b + 1) * (1 - alpha)) / n_b
+U_t = f(x_t) + max(0, q_b)
+```
+Coverage guarantee (exchangeability within bucket):
+```
+P(y_t <= U_t) >= 1 - alpha
+```
+If `n_b < min_samples`, set `q_b = max(r_i)` from the fallback bucket, or
+use a conservative constant `q_default` (documented in config).
+
+#### 3.13.5 Calibration Window
+We maintain a rolling window of residuals per bucket:
+- `window_size` (default 256) with ring buffer semantics.
+- For non-stationarity, BOCPD (bd-3e1t.2.*) may trigger **bucket reset** when a
+  regime change is detected.
+- Each reset is logged as a `conformal_reset` event with reason and evidence.
+
+#### 3.13.6 Outputs
+The predictor emits:
+- `upper_us`: upper bound `U_t` for frame time.
+- `risk`: boolean `upper_us > budget_us`.
+- `confidence`: `1 - alpha` (coverage, not probability).
+These outputs feed diff strategy selection and budget policy (bd-3e1t.3.3).
+
+#### 3.13.7 Evidence Ledger (Required Fields)
+Each prediction must log:
+- `frame_idx`, `bucket_key`, `n_b`, `alpha`, `q_b`
+- `y_hat` (`f(x_t)`), `upper_us`, `budget_us`, `risk`
+- `fallback_level` (0..3), `window_size`, `reset_count`
+
+#### 3.13.8 Tests (Required)
+Unit tests:
+- Quantile selection is correct for small `n_b` (edge cases).
+- Fallback hierarchy behaves deterministically.
+- One-sided coverage formula matches expected indices.
+
+Integration tests:
+- Bucket isolation for large-screen sizes (coverage not diluted).
+- Reset on regime shift (BOCPD reset causes temporary conservative bounds).
+
+E2E tests (with JSONL logging):
+- Inline + alt-screen coverage checks across size buckets.
+- Stress: repeated large-screen frames with injected latency spikes.
+
+#### 3.13.9 Implementation Targets
+Likely modules:
+- Predictor core: `crates/ftui-runtime/src/conformal.rs` (new or existing module)
+- Config: `crates/ftui-runtime/src/program.rs` (ProgramConfig)
+- Ledger logging: shared sink (bd-3e1t.4.7)
+
 ---
 
 ## 4) Notes for Contributors
