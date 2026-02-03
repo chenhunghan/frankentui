@@ -242,6 +242,33 @@ impl Shakespeare {
         section
     }
 
+    fn current_spotlight_line(&self) -> &str {
+        if self.lines.is_empty() {
+            return "…";
+        }
+        let center = self
+            .scroll_offset
+            .saturating_add(self.viewport_height.get() as usize / 2)
+            .min(self.lines.len().saturating_sub(1));
+        for delta in 0..6usize {
+            let forward = center.saturating_add(delta);
+            if forward < self.lines.len() {
+                let line = self.lines[forward].trim();
+                if !line.is_empty() {
+                    return line;
+                }
+            }
+            if center >= delta {
+                let back = center.saturating_sub(delta);
+                let line = self.lines[back].trim();
+                if !line.is_empty() {
+                    return line;
+                }
+            }
+        }
+        self.lines[center]
+    }
+
     fn set_focus(&mut self, focus: FocusPanel) {
         self.focus = focus;
         self.search_active = matches!(focus, FocusPanel::Search);
@@ -361,6 +388,7 @@ impl ShakespeareMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FocusPanel {
     Search,
     Text,
@@ -1197,6 +1225,227 @@ impl Shakespeare {
         }
     }
 
+    fn render_spotlight_panel(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Spotlight Stage")
+            .title_alignment(Alignment::Center)
+            .style(theme::panel_border_style(
+                self.focus == FocusPanel::Navigator,
+                theme::screen_accent::SHAKESPEARE,
+            ));
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        let rows = Flex::vertical()
+            .constraints([Constraint::Fixed(1), Constraint::Fixed(1), Constraint::Min(1)])
+            .split(inner);
+
+        let header = StyledText::new(format!(
+            "{} · {}",
+            self.mode.label(),
+            self.mode.subtitle()
+        ))
+        .effect(TextEffect::AnimatedGradient {
+            gradient: ColorGradient::cyberpunk(),
+            speed: 0.55,
+        })
+        .effect(TextEffect::Glow {
+            color: theme::accent::ACCENT_7.into(),
+            intensity: 0.4,
+        })
+        .time(self.time);
+        header.render(rows[0], frame);
+
+        let spotlight = self.current_spotlight_line();
+        let spotlight = truncate_to_width(spotlight, rows[1].width);
+        let spotlight_fx = StyledText::new(spotlight)
+            .effect(TextEffect::AnimatedGradient {
+                gradient: ColorGradient::sunset(),
+                speed: 0.8,
+            })
+            .effect(TextEffect::PulsingGlow {
+                color: PackedRgba::rgb(255, 180, 120),
+                speed: 1.6,
+            })
+            .effect(TextEffect::ChromaticAberration {
+                offset: 1,
+                direction: Direction::Right,
+                animated: true,
+                speed: 0.6,
+            })
+            .bold()
+            .time(self.time);
+        spotlight_fx.render(rows[1], frame);
+
+        if rows[2].is_empty() {
+            return;
+        }
+
+        let fx_rows = Flex::vertical()
+            .constraints([Constraint::Fixed(1), Constraint::Fixed(1), Constraint::Fixed(1)])
+            .split(rows[2]);
+
+        let cue_one = StyledText::new("CURTAIN UP · emotional arc ignites")
+            .effect(TextEffect::ColorWave {
+                color1: theme::accent::PRIMARY.into(),
+                color2: theme::accent::ACCENT_8.into(),
+                speed: 1.1,
+                wavelength: 10.0,
+            })
+            .time(self.time);
+        cue_one.render(fx_rows[0], frame);
+
+        let cue_two = StyledText::new("SPOTLIGHT · semantic resonance rising")
+            .effect(TextEffect::Reveal {
+                mode: RevealMode::LeftToRight,
+                progress: ((self.time * 0.5).sin() * 0.5 + 0.5).clamp(0.0, 1.0),
+                seed: 13,
+            })
+            .effect(TextEffect::Glow {
+                color: theme::accent::WARNING.into(),
+                intensity: 0.3,
+            })
+            .time(self.time);
+        cue_two.render(fx_rows[1], frame);
+
+        let cue_three = StyledText::new("ECHO LENS · multi-match halo engaged")
+            .effect(TextEffect::Scanline {
+                intensity: 0.25,
+                line_gap: 2,
+                scroll: true,
+                scroll_speed: 0.8,
+            })
+            .time(self.time);
+        cue_three.render(fx_rows[2], frame);
+    }
+
+    fn render_stagecraft_panel(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Stagecraft Console")
+            .title_alignment(Alignment::Center)
+            .style(theme::panel_border_style(
+                self.focus == FocusPanel::Insights,
+                theme::screen_accent::SHAKESPEARE,
+            ));
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        let rows = Flex::vertical()
+            .constraints([Constraint::Fixed(1), Constraint::Fixed(1), Constraint::Min(1)])
+            .split(inner);
+
+        let cue_header = StyledText::new("LIVE CUES · timing + intensity")
+            .effect(TextEffect::AnimatedGradient {
+                gradient: ColorGradient::ocean(),
+                speed: 0.5,
+            })
+            .time(self.time);
+        cue_header.render(rows[0], frame);
+
+        let control_line = format!(
+            "Matches: {:>4} · Focus: {:>7}",
+            self.search_matches.len(),
+            format!("{:?}", self.focus)
+        );
+        Paragraph::new(truncate_to_width(&control_line, rows[1].width))
+            .style(theme::muted())
+            .render(rows[1], frame);
+
+        if rows[2].is_empty() {
+            return;
+        }
+
+        let cues = [
+            ("Entrance", 0.35),
+            ("Conflict", 0.55),
+            ("Reversal", 0.45),
+            ("Finale", 0.7),
+        ];
+        for (i, (label, base)) in cues.iter().enumerate() {
+            let row_y = rows[2].y + i as u16;
+            if row_y >= rows[2].y + rows[2].height {
+                break;
+            }
+            let intensity = (base + (self.time * 0.3 + i as f64).sin() * 0.1).clamp(0.1, 0.95);
+            let bar_width = ((rows[2].width.saturating_sub(12)) as f64 * intensity) as usize;
+            let bar = "█".repeat(bar_width);
+            let line = format!("{label:>8} ▏{bar}");
+            Paragraph::new(truncate_to_width(&line, rows[2].width))
+                .style(Style::new().fg(theme::fg::SECONDARY))
+                .render(Rect::new(rows[2].x, row_y, rows[2].width, 1), frame);
+        }
+    }
+
+    fn render_concordance_panel(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Concordance Engine")
+            .title_alignment(Alignment::Center)
+            .style(theme::panel_border_style(
+                self.focus == FocusPanel::Navigator,
+                theme::screen_accent::SHAKESPEARE,
+            ));
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        let rows = Flex::vertical()
+            .constraints([Constraint::Fixed(1), Constraint::Fixed(1), Constraint::Min(1)])
+            .split(inner);
+
+        let headline = StyledText::new("INSTANT SEARCH INTELLIGENCE")
+            .effect(TextEffect::AnimatedGradient {
+                gradient: ColorGradient::gold(),
+                speed: 0.6,
+            })
+            .time(self.time);
+        headline.render(rows[0], frame);
+
+        let query = self.search_input.value();
+        let query = if query.is_empty() { "…" } else { query };
+        let summary = format!(
+            "Query: \"{}\" · Matches: {}",
+            truncate_to_width(query, 18),
+            self.search_matches.len()
+        );
+        Paragraph::new(truncate_to_width(&summary, rows[1].width))
+            .style(theme::muted())
+            .render(rows[1], frame);
+
+        if rows[2].is_empty() {
+            return;
+        }
+
+        let density = if self.match_density.is_empty() {
+            vec![0.0; 20]
+        } else {
+            self.match_density.clone()
+        };
+        Sparkline::new(&density)
+            .style(Style::new().fg(theme::accent::PRIMARY))
+            .gradient(
+                theme::accent::PRIMARY.into(),
+                theme::accent::ACCENT_8.into(),
+            )
+            .render(rows[2], frame);
+    }
+
     fn render_insights_panel(&self, frame: &mut Frame, area: Rect) {
         let block = Block::new()
             .borders(Borders::ALL)
@@ -1264,7 +1513,9 @@ impl Shakespeare {
         let pct = (self.scroll_offset * 100).checked_div(total).unwrap_or(0);
 
         let status = format!(
-            " Line {pos}/{total} ({pct}%) | {}",
+            " Mode: {} · Line {pos}/{total} ({pct}%) · Matches: {} | {}",
+            self.mode.label(),
+            self.search_matches.len(),
             if section.len() > 40 {
                 &section[..40]
             } else {
@@ -1272,7 +1523,7 @@ impl Shakespeare {
             }
         );
 
-        Paragraph::new(status)
+        Paragraph::new(truncate_to_width(&status, area.width))
             .style(Style::new().fg(theme::fg::MUTED).bg(theme::alpha::SURFACE))
             .render(area, frame);
     }

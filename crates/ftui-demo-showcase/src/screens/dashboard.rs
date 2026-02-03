@@ -1775,7 +1775,10 @@ impl Dashboard {
             .border_type(BorderType::Rounded)
             .title("Plasma")
             .title_alignment(Alignment::Center)
-            .style(Style::new().fg(theme::screen_accent::DASHBOARD));
+            .style(theme::panel_border_style(
+                self.is_focused(DashboardFocus::Plasma),
+                theme::screen_accent::DASHBOARD,
+            ));
 
         let inner = block.inner(area);
         block.render(area, frame);
@@ -1825,7 +1828,10 @@ impl Dashboard {
             .border_type(BorderType::Rounded)
             .title(title.as_str())
             .title_alignment(Alignment::Center)
-            .style(Style::new().fg(theme::screen_accent::DATA_VIZ));
+            .style(theme::panel_border_style(
+                self.is_focused(DashboardFocus::Charts),
+                theme::screen_accent::DATA_VIZ,
+            ));
 
         let inner = block.inner(area);
         block.render(area, frame);
@@ -2293,7 +2299,10 @@ impl Dashboard {
             .border_type(BorderType::Rounded)
             .title(title.as_str())
             .title_alignment(Alignment::Center)
-            .style(Style::new().fg(theme::screen_accent::CODE_EXPLORER));
+            .style(theme::panel_border_style(
+                self.is_focused(DashboardFocus::Code),
+                theme::screen_accent::CODE_EXPLORER,
+            ));
 
         let inner = block.inner(area);
         block.render(area, frame);
@@ -2321,7 +2330,10 @@ impl Dashboard {
             .border_type(BorderType::Rounded)
             .title("Info")
             .title_alignment(Alignment::Center)
-            .style(Style::new().fg(theme::screen_accent::PERFORMANCE));
+            .style(theme::panel_border_style(
+                self.is_focused(DashboardFocus::Info),
+                theme::screen_accent::PERFORMANCE,
+            ));
 
         let inner = block.inner(area);
         block.render(area, frame);
@@ -2755,7 +2767,10 @@ impl Dashboard {
             .border_type(BorderType::Rounded)
             .title(title.as_str())
             .title_alignment(Alignment::Center)
-            .style(Style::new().fg(theme::screen_accent::MARKDOWN));
+            .style(theme::panel_border_style(
+                self.is_focused(DashboardFocus::Markdown),
+                theme::screen_accent::MARKDOWN,
+            ));
 
         let inner = block.inner(area);
         block.render(area, frame);
@@ -2811,7 +2826,10 @@ impl Dashboard {
             .border_type(BorderType::Rounded)
             .title(title.as_str())
             .title_alignment(Alignment::Center)
-            .style(Style::new().fg(theme::screen_accent::WIDGET_GALLERY));
+            .style(theme::panel_border_style(
+                self.is_focused(DashboardFocus::TextFx),
+                theme::screen_accent::WIDGET_GALLERY,
+            ));
 
         let inner = block.inner(area);
         block.render(area, frame);
@@ -2898,7 +2916,10 @@ impl Dashboard {
             .border_type(BorderType::Rounded)
             .title("Activity")
             .title_alignment(Alignment::Center)
-            .style(Style::new().fg(theme::screen_accent::ADVANCED));
+            .style(theme::panel_border_style(
+                self.is_focused(DashboardFocus::Activity),
+                theme::screen_accent::ADVANCED,
+            ));
 
         let inner = block.inner(area);
         block.render(area, frame);
@@ -3160,12 +3181,19 @@ impl Dashboard {
             .split(main[1]);
 
         // Left: plasma
+        self.layout_plasma.set(cols[0]);
         self.render_plasma(frame, cols[0]);
 
         // Right: compact info with sparklines
         let right_rows = Flex::vertical()
             .constraints([Constraint::Min(1), Constraint::Fixed(2)])
             .split(cols[1]);
+        self.layout_charts.set(right_rows[0]);
+        self.layout_info.set(right_rows[1]);
+        self.layout_code.set(Rect::default());
+        self.layout_text_fx.set(Rect::default());
+        self.layout_activity.set(Rect::default());
+        self.layout_markdown.set(Rect::default());
 
         // Sparklines (just CPU and MEM)
         if !right_rows[0].is_empty() {

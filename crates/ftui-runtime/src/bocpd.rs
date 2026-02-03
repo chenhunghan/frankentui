@@ -624,6 +624,24 @@ impl BocpdDetector {
         self.last_evidence.as_ref().map(BocpdEvidence::to_jsonl)
     }
 
+    /// Return JSONL evidence with decision context applied.
+    #[must_use]
+    pub fn decision_log_jsonl(
+        &self,
+        steady_delay_ms: u64,
+        burst_delay_ms: u64,
+        hard_deadline_forced: bool,
+    ) -> Option<String> {
+        if !self.config.enable_logging {
+            return None;
+        }
+        let mut evidence = self.last_evidence.clone()?;
+        evidence.recommended_delay_ms =
+            Some(self.recommended_delay(steady_delay_ms, burst_delay_ms));
+        evidence.hard_deadline_forced = Some(hard_deadline_forced);
+        Some(evidence.to_jsonl())
+    }
+
     /// Get observation count.
     #[inline]
     pub fn observation_count(&self) -> u64 {
@@ -1020,9 +1038,11 @@ mod tests {
         let mut detector = BocpdDetector::with_defaults();
         let t = Instant::now();
         detector.observe_event(t);
+        detector.config.enable_logging = true;
 
-        let evidence = detector.last_evidence().unwrap();
-        let jsonl = evidence.to_jsonl();
+        let jsonl = detector
+            .decision_log_jsonl(16, 40, false)
+            .expect("jsonl should be emitted when enabled");
 
         assert!(jsonl.contains("bocpd-v1"));
         assert!(jsonl.contains("p_burst"));
@@ -1030,6 +1050,8 @@ mod tests {
         assert!(jsonl.contains("runlen_mean"));
         assert!(jsonl.contains("runlen_mode"));
         assert!(jsonl.contains("runlen_p95"));
+        assert!(jsonl.contains("delay_ms"));
+        assert!(jsonl.contains("forced_deadline"));
     }
 
     #[test]
