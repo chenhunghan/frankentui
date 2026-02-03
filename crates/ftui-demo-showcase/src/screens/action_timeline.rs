@@ -21,7 +21,6 @@
 use std::collections::VecDeque;
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
-use tracing::{debug, instrument, trace, warn};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
@@ -31,6 +30,7 @@ use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::paragraph::Paragraph;
+use tracing::{debug, instrument, trace, warn};
 
 use super::{HelpEntry, Screen};
 use crate::theme;
@@ -510,6 +510,7 @@ impl ActionTimeline {
     }
 
     fn cycle_component(&mut self) {
+        let prev = self.filter_component;
         self.filter_component = match self.filter_component {
             None => Some(Component::Core),
             Some(Component::Core) => Some(Component::Runtime),
@@ -517,9 +518,11 @@ impl ActionTimeline {
             Some(Component::Render) => Some(Component::Widgets),
             Some(Component::Widgets) => None,
         };
+        debug!(prev = ?prev, new = ?self.filter_component, "Cycled component filter");
     }
 
     fn cycle_severity(&mut self) {
+        let prev = self.filter_severity;
         self.filter_severity = match self.filter_severity {
             None => Some(Severity::Info),
             Some(Severity::Trace) => Some(Severity::Debug),
@@ -528,9 +531,11 @@ impl ActionTimeline {
             Some(Severity::Warn) => Some(Severity::Error),
             Some(Severity::Error) => None,
         };
+        debug!(prev = ?prev, new = ?self.filter_severity, "Cycled severity filter");
     }
 
     fn cycle_kind(&mut self) {
+        let prev = self.filter_kind;
         self.filter_kind = match self.filter_kind {
             None => Some(EventKind::Input),
             Some(EventKind::Input) => Some(EventKind::Command),
@@ -541,9 +546,16 @@ impl ActionTimeline {
             Some(EventKind::Capability) => Some(EventKind::Degrade),
             Some(EventKind::Degrade) => None,
         };
+        debug!(prev = ?prev, new = ?self.filter_kind, "Cycled kind filter");
     }
 
     fn clear_filters(&mut self) {
+        debug!(
+            prev_component = ?self.filter_component,
+            prev_severity = ?self.filter_severity,
+            prev_kind = ?self.filter_kind,
+            "Clearing all filters"
+        );
         self.filter_component = None;
         self.filter_severity = None;
         self.filter_kind = None;
@@ -705,9 +717,15 @@ impl ActionTimeline {
 impl Screen for ActionTimeline {
     type Message = Event;
 
+    #[instrument(name = "action_timeline::update", skip_all, fields(event_type))]
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
         if let Event::Resize { height, .. } = event {
             let usable = height.saturating_sub(6).max(1);
+            debug!(
+                new_height = %height,
+                viewport_height = usable,
+                "Resize event"
+            );
             self.viewport_height = usable as usize;
             self.sync_selection();
             return Cmd::None;
@@ -722,7 +740,9 @@ impl Screen for ActionTimeline {
         {
             match (*code, *modifiers) {
                 (KeyCode::Char('f'), Modifiers::NONE) | (KeyCode::Char('F'), Modifiers::NONE) => {
+                    let prev = self.follow;
                     self.follow = !self.follow;
+                    debug!(prev = prev, new = self.follow, "Toggled follow mode");
                 }
                 (KeyCode::Char('c'), Modifiers::NONE) | (KeyCode::Char('C'), Modifiers::NONE) => {
                     self.cycle_component();
@@ -797,9 +817,15 @@ impl Screen for ActionTimeline {
         Cmd::None
     }
 
+    #[instrument(name = "action_timeline::tick", skip(self), fields(tick = tick_count))]
     fn tick(&mut self, tick_count: u64) {
         self.tick_count = tick_count;
         if tick_count.is_multiple_of(EVENT_BURST_EVERY) {
+            trace!(
+                tick = tick_count,
+                burst_interval = EVENT_BURST_EVERY,
+                "Generating synthetic event"
+            );
             let event = self.synthetic_event();
             self.push_event(event);
             self.sync_selection();

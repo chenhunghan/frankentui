@@ -12,6 +12,7 @@ ftui-text = { path = "../ftui-text", features = ["markup"] }
 ftui-layout = { path = "../ftui-layout" }
 ftui-runtime = { path = "../ftui-runtime" }
 ftui-widgets = { path = "../ftui-widgets", features = ["tracing"] }
+tracing = "0.1"
 ftui-extras = { path = "../ftui-extras", features = [
     "canvas",
     "charts",
