@@ -240,3 +240,9 @@
 - [x] **Fix**: Implemented `TerminalWriter::gc()` and wired it into `Program` event loop.
 - [x] **Documentation**: Updated `FIXES_SUMMARY.md`.
 
+## 16. Current Session (Gemini) — Runtime Fairness & GC Fixes
+- [x] **Audit**: `ftui-runtime` for correctness and resource leaks.
+- [x] **Fix**: `InputFairnessGuard` logic (`should_process` always true).
+- [x] **Fix**: `RenderThread` memory leak (`GraphemePool` GC).
+- [x] **Verify**: `diff.rs` and `table.rs` correctness.
+- [x] **Report**: Updated `REVIEW_REPORT.md` with findings.

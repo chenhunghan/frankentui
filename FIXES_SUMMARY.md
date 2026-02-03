@@ -97,4 +97,26 @@ All tasks are complete. The codebase has been extensively refactored for Unicode
     - Added a `gc()` method to `TerminalWriter` that performs mark-and-sweep using the previous frame's buffer as the live set.
     - Updated `Program::run_event_loop` to trigger `writer.gc()` periodically (every 1000 loop iterations) to reclaim unused grapheme slots.
 
+## 73. Input Fairness Logic
+**File:** `crates/ftui-runtime/src/input_fairness.rs`
+**Issue:** `check_fairness` always returned `should_process: true`, ignoring the `yield_to_input` calculation. This disabled input starvation protection during rapid resize events.
+**Fix:**
+    - Updated `check_fairness` to bind `should_process` to `!yield_to_input`, ensuring the guard correctly intervenes when necessary.
 
+## 74. Render Thread GC Leak
+**File:** `crates/ftui-runtime/src/render_thread.rs`
+**Issue:** `render_loop` never called `writer.gc()`, leading to unbounded memory growth in the `GraphemePool` for apps using the dedicated render thread feature.
+**Fix:**
+    - Added periodic `writer.gc()` calls (every 1000 iterations) to the render thread loop.
+
+## 75. Rope Grapheme To Char Index Optimization
+**File:** `crates/ftui-text/src/rope.rs`
+**Issue:** `grapheme_to_char_idx` allocated the entire rope content into a string to find grapheme boundaries, causing severe performance degradation and memory usage for large documents.
+**Fix:**
+    - Re-implemented using line iteration (`rope.lines()`), avoiding full string allocation.
+
+## 76. Integer Truncation in List and Table
+**File:** `crates/ftui-widgets/src/list.rs`, `crates/ftui-widgets/src/table.rs`
+**Issue:** `usize` widths from `unicode-width` were cast to `u16` using truncating `as u16` cast, causing incorrect width calculations for extremely long lines (> 65535 columns).
+**Fix:**
+    - Replaced `as u16` with saturating cast (`.min(u16::MAX as usize) as u16`).
