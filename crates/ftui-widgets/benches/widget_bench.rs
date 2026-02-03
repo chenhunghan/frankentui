@@ -420,6 +420,8 @@ fn bench_scorer_incremental_query(c: &mut Criterion) {
     let scorer = BayesianScorer::fast();
     let corpus = make_command_corpus(100);
     let corpus_refs: Vec<&str> = corpus.iter().map(|s| s.as_str()).collect();
+    let corpus_lower: Vec<String> = corpus.iter().map(|s| s.to_lowercase()).collect();
+    let corpus_lower_refs: Vec<&str> = corpus_lower.iter().map(|s| s.as_str()).collect();
 
     // Simulate typing "git commit" one character at a time
     let queries = ["g", "gi", "git", "git ", "git c", "git co", "git com"];
@@ -442,7 +444,12 @@ fn bench_scorer_incremental_query(c: &mut Criterion) {
         b.iter(|| {
             let mut inc = IncrementalScorer::new();
             for query in &queries {
-                let results = inc.score_corpus(black_box(query), &corpus_refs, None);
+                let results = inc.score_corpus_with_lowered(
+                    black_box(query),
+                    &corpus_refs,
+                    &corpus_lower_refs,
+                    None,
+                );
                 black_box(&results);
             }
         })
@@ -464,12 +471,19 @@ fn bench_scorer_incremental_corpus_sizes(c: &mut Criterion) {
     ] {
         let corpus = make_command_corpus(size);
         let corpus_refs: Vec<&str> = corpus.iter().map(|s| s.as_str()).collect();
+        let corpus_lower: Vec<String> = corpus.iter().map(|s| s.to_lowercase()).collect();
+        let corpus_lower_refs: Vec<&str> = corpus_lower.iter().map(|s| s.as_str()).collect();
 
         group.bench_function(BenchmarkId::new("incremental", label), |b| {
             b.iter(|| {
                 let mut inc = IncrementalScorer::new();
                 for query in &queries {
-                    let results = inc.score_corpus(black_box(query), &corpus_refs, None);
+                    let results = inc.score_corpus_with_lowered(
+                        black_box(query),
+                        &corpus_refs,
+                        &corpus_lower_refs,
+                        None,
+                    );
                     black_box(&results);
                 }
             })
