@@ -126,6 +126,7 @@ pub mod screen_accent {
     pub const VISUAL_EFFECTS: ColorToken = accent::ACCENT_12;
     pub const RESPONSIVE_DEMO: ColorToken = accent::ACCENT_9;
     pub const LOG_SEARCH: ColorToken = accent::ACCENT_3;
+    pub const ACTION_TIMELINE: ColorToken = accent::ACCENT_2;
 }
 
 // ---------------------------------------------------------------------------
@@ -1202,6 +1203,7 @@ mod tests {
             ("FORMS_INPUT", screen_accent::FORMS_INPUT),
             ("ADVANCED", screen_accent::ADVANCED),
             ("PERFORMANCE", screen_accent::PERFORMANCE),
+            ("ACTION_TIMELINE", screen_accent::ACTION_TIMELINE),
         ];
         for (name, token) in screens {
             let ratio = cr(*token, bg::DEEP);

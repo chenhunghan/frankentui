@@ -1337,11 +1337,11 @@ mod widget_tests {
         // Check that at least one cell in the first result row is bold
         let mut found_bold = false;
         for x in 0..60u16 {
-            if let Some(cell) = frame.buffer.get(x, result_y) {
-                if cell.attrs.flags().contains(CellStyleFlags::BOLD) {
-                    found_bold = true;
-                    break;
-                }
+            if let Some(cell) = frame.buffer.get(x, result_y)
+                && cell.attrs.flags().contains(CellStyleFlags::BOLD)
+            {
+                found_bold = true;
+                break;
             }
         }
         assert!(
@@ -1368,11 +1368,11 @@ mod widget_tests {
         let result_y = palette_y + 2;
         let mut found_marker = false;
         for x in 0..60u16 {
-            if let Some(cell) = frame.buffer.get(x, result_y) {
-                if cell.content.as_char() == Some('>') {
-                    found_marker = true;
-                    break;
-                }
+            if let Some(cell) = frame.buffer.get(x, result_y)
+                && cell.content.as_char() == Some('>')
+            {
+                found_marker = true;
+                break;
             }
         }
         assert!(
@@ -1404,11 +1404,11 @@ mod widget_tests {
         let result_y = palette_y + 2;
         let mut found_ellipsis = false;
         for x in 0..40u16 {
-            if let Some(cell) = frame.buffer.get(x, result_y) {
-                if cell.content.as_char() == Some('\u{2026}') {
-                    found_ellipsis = true;
-                    break;
-                }
+            if let Some(cell) = frame.buffer.get(x, result_y)
+                && cell.content.as_char() == Some('\u{2026}')
+            {
+                found_ellipsis = true;
+                break;
             }
         }
         assert!(

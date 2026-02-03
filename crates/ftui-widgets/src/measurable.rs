@@ -572,4 +572,103 @@ mod tests {
             );
         }
     }
+
+    // --- Property tests (proptest) ---
+
+    mod property_tests {
+        use super::*;
+        use crate::paragraph::Paragraph;
+        use ftui_text::Text;
+        use proptest::prelude::*;
+
+        fn size_strategy() -> impl Strategy<Value = Size> {
+            (0u16..200, 0u16..100).prop_map(|(w, h)| Size::new(w, h))
+        }
+
+        fn text_strategy() -> impl Strategy<Value = String> {
+            "[a-zA-Z0-9 ]{0,200}".prop_map(|s| s.to_string())
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+
+            // Invariant: min <= preferred for both dimensions.
+            #[test]
+            fn paragraph_min_le_preferred(text in text_strategy(), available in size_strategy()) {
+                let para = Paragraph::new(Text::raw(text));
+                let c = para.measure(available);
+                prop_assert!(c.min.width <= c.preferred.width,
+                    "min.width {} > preferred.width {}", c.min.width, c.preferred.width);
+                prop_assert!(c.min.height <= c.preferred.height,
+                    "min.height {} > preferred.height {}", c.min.height, c.preferred.height);
+            }
+
+            // Invariant: preferred <= max when max is bounded.
+            #[test]
+            fn constraints_preferred_le_max(
+                min_w in 0u16..50,
+                min_h in 0u16..20,
+                pref_w in 1u16..100,
+                pref_h in 1u16..60,
+                max_w in 1u16..150,
+                max_h in 1u16..80,
+                input in size_strategy(),
+            ) {
+                let min = Size::new(min_w, min_h);
+                let preferred = Size::new(pref_w.max(min_w), pref_h.max(min_h));
+                let max = Size::new(max_w.max(preferred.width), max_h.max(preferred.height));
+
+                let c = SizeConstraints {
+                    min,
+                    preferred,
+                    max: Some(max),
+                };
+
+                // Clamp should never exceed max.
+                let clamped = c.clamp(input);
+                prop_assert!(clamped.width <= max.width);
+                prop_assert!(clamped.height <= max.height);
+
+                // Preferred is always <= max.
+                prop_assert!(c.preferred.width <= max.width);
+                prop_assert!(c.preferred.height <= max.height);
+            }
+
+            // Invariant: measure() is pure for the same inputs.
+            #[test]
+            fn paragraph_measure_is_pure(text in text_strategy(), available in size_strategy()) {
+                let para = Paragraph::new(Text::raw(text));
+                let c1 = para.measure(available);
+                let c2 = para.measure(available);
+                prop_assert_eq!(c1, c2);
+            }
+
+            // Invariant: min size does not depend on available size.
+            #[test]
+            fn paragraph_min_constant(text in text_strategy(), a in size_strategy(), b in size_strategy()) {
+                let para = Paragraph::new(Text::raw(text));
+                let c1 = para.measure(a);
+                let c2 = para.measure(b);
+                prop_assert_eq!(c1.min, c2.min);
+            }
+
+            // Invariant: clamp is idempotent.
+            #[test]
+            fn clamp_is_idempotent(
+                min_w in 0u16..50, min_h in 0u16..20,
+                pref_w in 1u16..120, pref_h in 1u16..80,
+                max_w in 1u16..200, max_h in 1u16..120,
+                input in size_strategy(),
+            ) {
+                let min = Size::new(min_w, min_h);
+                let preferred = Size::new(pref_w.max(min_w), pref_h.max(min_h));
+                let max = Size::new(max_w.max(preferred.width), max_h.max(preferred.height));
+                let c = SizeConstraints { min, preferred, max: Some(max) };
+
+                let clamped = c.clamp(input);
+                let clamped_again = c.clamp(clamped);
+                prop_assert_eq!(clamped, clamped_again);
+            }
+        }
+    }
 }

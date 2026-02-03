@@ -887,6 +887,128 @@ pub enum CursorPosition {
 }
 
 // =============================================================================
+// Reveal Animation Types
+// =============================================================================
+
+/// Character reveal mode for text animation.
+///
+/// Controls the order in which characters are revealed during a text
+/// reveal animation. Can be used with `TextEffect::Reveal`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RevealMode {
+    /// Classic typewriter: left to right.
+    #[default]
+    LeftToRight,
+    /// Reverse typewriter: right to left.
+    RightToLeft,
+    /// Expand from the center outward.
+    CenterOut,
+    /// Converge from edges toward center.
+    EdgesIn,
+    /// Random order (deterministic with seed).
+    Random,
+    /// Reveal word by word.
+    ByWord,
+    /// Reveal line by line (for multi-line text).
+    ByLine,
+}
+
+impl RevealMode {
+    /// Check if character at `idx` should be visible given `progress` (0.0-1.0).
+    ///
+    /// # Arguments
+    /// * `idx` - Character index (0-based)
+    /// * `total` - Total number of characters
+    /// * `progress` - Reveal progress from 0.0 (hidden) to 1.0 (visible)
+    /// * `seed` - Random seed for Random mode
+    /// * `text` - The original text (needed for ByWord mode)
+    pub fn is_visible(
+        &self,
+        idx: usize,
+        total: usize,
+        progress: f64,
+        seed: u64,
+        text: &str,
+    ) -> bool {
+        if total == 0 {
+            return true;
+        }
+        let progress = progress.clamp(0.0, 1.0);
+        if progress >= 1.0 {
+            return true;
+        }
+        if progress <= 0.0 {
+            return false;
+        }
+
+        match self {
+            RevealMode::LeftToRight => {
+                let threshold = (progress * total as f64) as usize;
+                idx < threshold
+            }
+            RevealMode::RightToLeft => {
+                let hidden_count = ((1.0 - progress) * total as f64) as usize;
+                idx >= hidden_count
+            }
+            RevealMode::CenterOut => {
+                let center = total as f64 / 2.0;
+                let max_dist = center;
+                let char_dist = (idx as f64 - center).abs();
+                let threshold = progress * max_dist;
+                char_dist <= threshold
+            }
+            RevealMode::EdgesIn => {
+                // Distance from nearest edge
+                let dist_from_left = idx;
+                let dist_from_right = total.saturating_sub(1).saturating_sub(idx);
+                let dist_from_edge = dist_from_left.min(dist_from_right);
+                let max_dist = total / 2;
+                let threshold = (progress * max_dist as f64) as usize;
+                dist_from_edge < threshold
+            }
+            RevealMode::Random => {
+                // Deterministic random based on seed and index
+                let hash = seed
+                    .wrapping_mul(idx as u64 + 1)
+                    .wrapping_add(0x9E3779B97F4A7C15);
+                let normalized = (hash % 10000) as f64 / 10000.0;
+                normalized < progress
+            }
+            RevealMode::ByWord => {
+                // Find which word this character belongs to
+                let mut word_idx = 0;
+                let mut in_word = false;
+                for (i, ch) in text.chars().enumerate() {
+                    if ch.is_whitespace() {
+                        if in_word {
+                            in_word = false;
+                        }
+                    } else if !in_word {
+                        in_word = true;
+                        if i > 0 {
+                            word_idx += 1;
+                        }
+                    }
+                    if i == idx {
+                        break;
+                    }
+                }
+                // Count total words
+                let word_count = text.split_whitespace().count().max(1);
+                let visible_words = (progress * word_count as f64).ceil() as usize;
+                word_idx < visible_words
+            }
+            RevealMode::ByLine => {
+                // For single-line text, just use LeftToRight behavior
+                // ByLine is meant for multi-line StyledMultiLine
+                let threshold = (progress * total as f64) as usize;
+                idx < threshold
+            }
+        }
+    }
+}
+
+// =============================================================================
 // Text Effects
 // =============================================================================
 
@@ -1073,6 +1195,58 @@ pub enum TextEffect {
         blink_speed: f64,
         /// Position of the cursor relative to the text.
         position: CursorPosition,
+    },
+
+    // --- Reveal Effects ---
+    /// Character reveal with configurable reveal mode.
+    ///
+    /// More flexible than Typewriter, supporting multiple reveal orders:
+    /// left-to-right, right-to-left, center-out, edges-in, random, by-word.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// StyledText::new("Hello World")
+    ///     .effect(TextEffect::Reveal {
+    ///         mode: RevealMode::CenterOut,
+    ///         progress: 0.5,
+    ///         seed: 0,
+    ///     })
+    /// // Characters reveal from center outward
+    /// ```
+    Reveal {
+        /// The reveal mode/order.
+        mode: RevealMode,
+        /// Progress from 0.0 (hidden) to 1.0 (fully revealed).
+        progress: f64,
+        /// Seed for Random mode (ignored for other modes).
+        seed: u64,
+    },
+
+    /// Gradient mask reveal with angle and softness control.
+    ///
+    /// Creates a sweeping reveal effect where a gradient mask moves
+    /// across the text at the specified angle. The softness controls
+    /// how gradual the transition is from hidden to visible.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// StyledText::new("WELCOME")
+    ///     .effect(TextEffect::RevealMask {
+    ///         angle: 45.0,
+    ///         progress: 0.5,
+    ///         softness: 0.3,
+    ///     })
+    /// // Diagonal sweep reveal with soft edge
+    /// ```
+    RevealMask {
+        /// Sweep angle in degrees (0 = left-to-right, 90 = top-to-bottom).
+        angle: f64,
+        /// Mask position from 0.0 (hidden) to 1.0 (fully revealed).
+        progress: f64,
+        /// Edge softness from 0.0 (hard edge) to 1.0 (gradient fade).
+        softness: f64,
     },
 }
 
@@ -1339,7 +1513,57 @@ impl StyledText {
             | TextEffect::Bounce { .. }
             | TextEffect::Shake { .. }
             | TextEffect::Cascade { .. }
-            | TextEffect::Cursor { .. } => base,
+            | TextEffect::Cursor { .. }
+            | TextEffect::Reveal { .. } => base,
+
+            TextEffect::RevealMask {
+                angle,
+                progress,
+                softness,
+            } => {
+                // Calculate position along sweep direction
+                let angle_rad = angle.to_radians();
+                let cos_a = angle_rad.cos();
+                let sin_a = angle_rad.sin();
+
+                // Normalized position (0-1)
+                let pos_x = if total > 1 {
+                    idx as f64 / (total - 1) as f64
+                } else {
+                    0.5
+                };
+                // For single-line, y is constant at 0.5
+                let pos_y = 0.5;
+
+                // Project position onto sweep direction
+                let sweep_pos = pos_x * cos_a + pos_y * sin_a;
+                let sweep_pos = (sweep_pos + 1.0) / 2.0; // Normalize to 0-1
+
+                // Calculate visibility with softness
+                if *softness <= 0.0 {
+                    // Hard edge
+                    if sweep_pos <= *progress {
+                        base
+                    } else {
+                        PackedRgba::TRANSPARENT
+                    }
+                } else {
+                    // Soft edge with gradient
+                    let edge_width = softness.clamp(0.0, 1.0);
+                    let edge_start = progress - edge_width / 2.0;
+                    let edge_end = progress + edge_width / 2.0;
+
+                    if sweep_pos <= edge_start {
+                        base
+                    } else if sweep_pos >= edge_end {
+                        PackedRgba::TRANSPARENT
+                    } else {
+                        // In the gradient zone
+                        let fade = (sweep_pos - edge_start) / edge_width;
+                        apply_alpha(base, 1.0 - fade)
+                    }
+                }
+            }
         }
     }
 
@@ -1372,6 +1596,26 @@ impl StyledText {
                 TextEffect::Typewriter { visible_chars } => {
                     if (idx as f64) >= *visible_chars {
                         return PackedRgba::TRANSPARENT;
+                    }
+                }
+                TextEffect::Reveal {
+                    mode,
+                    progress,
+                    seed,
+                } => {
+                    if !mode.is_visible(idx, total, *progress, *seed, &self.text) {
+                        return PackedRgba::TRANSPARENT;
+                    }
+                }
+                TextEffect::RevealMask { .. } => {
+                    // RevealMask handles visibility via effect_color with gradient alpha
+                    let mask_color = self.effect_color(effect, idx, total, color);
+                    if mask_color == PackedRgba::TRANSPARENT {
+                        return PackedRgba::TRANSPARENT;
+                    }
+                    // Apply partial alpha from soft edge
+                    if mask_color != color {
+                        alpha_multiplier *= mask_color.r() as f64 / color.r().max(1) as f64;
                     }
                 }
 
@@ -1753,31 +1997,31 @@ impl StyledText {
         }
 
         // Render cursor if visible
-        if self.cursor_visible() {
-            if let Some(cursor_idx) = self.cursor_index() {
-                let cursor_x = x.saturating_add(cursor_idx as u16);
+        if self.cursor_visible()
+            && let Some(cursor_idx) = self.cursor_index()
+        {
+            let cursor_x = x.saturating_add(cursor_idx as u16);
 
-                // Get cursor style from effect
-                if let Some(TextEffect::Cursor { style, .. }) = self.cursor_effect() {
-                    let cursor_char = style.char();
+            // Get cursor style from effect
+            if let Some(TextEffect::Cursor { style, .. }) = self.cursor_effect() {
+                let cursor_char = style.char();
 
-                    // Bounds check
-                    if cursor_x < frame_width {
-                        if let Some(cell) = frame.buffer.get_mut(cursor_x, y) {
-                            cell.content = CellContent::from_char(cursor_char);
-                            cell.fg = self.base_color;
+                // Bounds check
+                if cursor_x < frame_width
+                    && let Some(cell) = frame.buffer.get_mut(cursor_x, y)
+                {
+                    cell.content = CellContent::from_char(cursor_char);
+                    cell.fg = self.base_color;
 
-                            if let Some(bg) = self.bg_color {
-                                cell.bg = bg;
-                            }
-
-                            let mut flags = CellStyleFlags::empty();
-                            if self.bold {
-                                flags = flags.union(CellStyleFlags::BOLD);
-                            }
-                            cell.attrs = CellAttrs::new(flags, 0);
-                        }
+                    if let Some(bg) = self.bg_color {
+                        cell.bg = bg;
                     }
+
+                    let mut flags = CellStyleFlags::empty();
+                    if self.bold {
+                        flags = flags.union(CellStyleFlags::BOLD);
+                    }
+                    cell.attrs = CellAttrs::new(flags, 0);
                 }
             }
         }

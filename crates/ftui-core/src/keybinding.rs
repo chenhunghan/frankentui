@@ -91,10 +91,57 @@ use std::time::{Duration, Instant};
 use crate::event::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
 
 // ---------------------------------------------------------------------------
+// Configuration Constants
+// ---------------------------------------------------------------------------
+
+/// Default timeout for detecting Esc Esc sequence.
+pub const DEFAULT_ESC_SEQ_TIMEOUT_MS: u64 = 250;
+
+/// Minimum allowed value for Esc sequence timeout.
+pub const MIN_ESC_SEQ_TIMEOUT_MS: u64 = 150;
+
+/// Maximum allowed value for Esc sequence timeout.
+pub const MAX_ESC_SEQ_TIMEOUT_MS: u64 = 400;
+
+/// Default debounce before emitting single Esc.
+pub const DEFAULT_ESC_DEBOUNCE_MS: u64 = 50;
+
+/// Minimum allowed value for Esc debounce.
+pub const MIN_ESC_DEBOUNCE_MS: u64 = 0;
+
+/// Maximum allowed value for Esc debounce.
+pub const MAX_ESC_DEBOUNCE_MS: u64 = 100;
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
 /// Configuration for the sequence detector.
+///
+/// # Timing Defaults
+///
+/// | Setting | Default | Range | Description |
+/// |---------|---------|-------|-------------|
+/// | `esc_seq_timeout` | 250ms | 150-400ms | Window for detecting Esc Esc |
+/// | `esc_debounce` | 50ms | 0-100ms | Minimum wait before single Esc |
+///
+/// # Environment Variables
+///
+/// | Variable | Type | Default | Description |
+/// |----------|------|---------|-------------|
+/// | `FTUI_ESC_SEQ_TIMEOUT_MS` | u64 | 250 | Esc Esc detection window |
+/// | `FTUI_ESC_DEBOUNCE_MS` | u64 | 50 | Minimum Esc wait |
+/// | `FTUI_DISABLE_ESC_SEQ` | bool | false | Disable multi-key sequences |
+///
+/// # Example
+///
+/// ```bash
+/// # Faster double-tap detection (200ms window)
+/// export FTUI_ESC_SEQ_TIMEOUT_MS=200
+///
+/// # Disable Esc Esc entirely (for strict terminals)
+/// export FTUI_DISABLE_ESC_SEQ=1
+/// ```
 #[derive(Debug, Clone)]
 pub struct SequenceConfig {
     /// Maximum gap between Esc presses to detect Esc Esc sequence.
@@ -114,8 +161,8 @@ pub struct SequenceConfig {
 impl Default for SequenceConfig {
     fn default() -> Self {
         Self {
-            esc_seq_timeout: Duration::from_millis(250),
-            esc_debounce: Duration::from_millis(50),
+            esc_seq_timeout: Duration::from_millis(DEFAULT_ESC_SEQ_TIMEOUT_MS),
+            esc_debounce: Duration::from_millis(DEFAULT_ESC_DEBOUNCE_MS),
             disable_sequences: false,
         }
     }
@@ -149,6 +196,8 @@ impl SequenceConfig {
     /// - `FTUI_ESC_SEQ_TIMEOUT_MS`: Esc Esc detection window in milliseconds
     /// - `FTUI_ESC_DEBOUNCE_MS`: Minimum Esc wait in milliseconds
     /// - `FTUI_DISABLE_ESC_SEQ`: Set to "1" or "true" to disable sequences
+    ///
+    /// Values are automatically clamped to valid ranges.
     #[must_use]
     pub fn from_env() -> Self {
         let mut config = Self::default();
@@ -169,7 +218,56 @@ impl SequenceConfig {
             config.disable_sequences = val == "1" || val.eq_ignore_ascii_case("true");
         }
 
-        config
+        config.validated()
+    }
+
+    /// Validate and clamp values to safe ranges.
+    ///
+    /// Returns a new config with:
+    /// - `esc_seq_timeout` clamped to 150-400ms
+    /// - `esc_debounce` clamped to 0-100ms
+    /// - `esc_debounce` <= `esc_seq_timeout` (debounce is capped at timeout)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ftui_core::keybinding::SequenceConfig;
+    /// use std::time::Duration;
+    ///
+    /// let config = SequenceConfig::default()
+    ///     .with_timeout(Duration::from_millis(1000))  // Too high
+    ///     .validated();
+    ///
+    /// // Clamped to max 400ms
+    /// assert_eq!(config.esc_seq_timeout.as_millis(), 400);
+    /// ```
+    #[must_use]
+    pub fn validated(mut self) -> Self {
+        // Clamp timeout to valid range
+        let timeout_ms = self.esc_seq_timeout.as_millis() as u64;
+        let clamped_timeout = timeout_ms.clamp(MIN_ESC_SEQ_TIMEOUT_MS, MAX_ESC_SEQ_TIMEOUT_MS);
+        self.esc_seq_timeout = Duration::from_millis(clamped_timeout);
+
+        // Clamp debounce to valid range
+        let debounce_ms = self.esc_debounce.as_millis() as u64;
+        let clamped_debounce = debounce_ms.clamp(MIN_ESC_DEBOUNCE_MS, MAX_ESC_DEBOUNCE_MS);
+
+        // Ensure debounce <= timeout (debounce shouldn't exceed the timeout window)
+        let final_debounce = clamped_debounce.min(clamped_timeout);
+        self.esc_debounce = Duration::from_millis(final_debounce);
+
+        self
+    }
+
+    /// Check if values are within valid ranges.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        let timeout_ms = self.esc_seq_timeout.as_millis() as u64;
+        let debounce_ms = self.esc_debounce.as_millis() as u64;
+
+        (MIN_ESC_SEQ_TIMEOUT_MS..=MAX_ESC_SEQ_TIMEOUT_MS).contains(&timeout_ms)
+            && (MIN_ESC_DEBOUNCE_MS..=MAX_ESC_DEBOUNCE_MS).contains(&debounce_ms)
+            && debounce_ms <= timeout_ms
     }
 }
 
@@ -521,12 +619,56 @@ impl CtrlCIdleAction {
 // ---------------------------------------------------------------------------
 
 /// Configuration for action mapping behavior.
+///
+/// This struct combines sequence detection settings with keybinding behavior
+/// configuration. It controls how keys like Ctrl+C, Ctrl+D, Esc, and Esc Esc
+/// are interpreted based on application state.
+///
+/// # Environment Variables
+///
+/// | Variable | Type | Default | Description |
+/// |----------|------|---------|-------------|
+/// | `FTUI_CTRL_C_IDLE_ACTION` | string | "quit" | Action when Ctrl+C in idle state |
+/// | `FTUI_ESC_SEQ_TIMEOUT_MS` | u64 | 250 | Esc Esc detection window |
+/// | `FTUI_ESC_DEBOUNCE_MS` | u64 | 50 | Minimum Esc wait |
+/// | `FTUI_DISABLE_ESC_SEQ` | bool | false | Disable Esc Esc sequences |
+///
+/// # Example: Configure via environment
+///
+/// ```bash
+/// # Make Ctrl+C do nothing when idle (instead of quit)
+/// export FTUI_CTRL_C_IDLE_ACTION=noop
+///
+/// # Or make it beep
+/// export FTUI_CTRL_C_IDLE_ACTION=bell
+///
+/// # Faster double-Esc detection
+/// export FTUI_ESC_SEQ_TIMEOUT_MS=200
+/// ```
+///
+/// # Example: Configure in code
+///
+/// ```
+/// use ftui_core::keybinding::{ActionConfig, CtrlCIdleAction, SequenceConfig};
+/// use std::time::Duration;
+///
+/// let config = ActionConfig::default()
+///     .with_ctrl_c_idle(CtrlCIdleAction::Bell)
+///     .with_sequence_config(
+///         SequenceConfig::default()
+///             .with_timeout(Duration::from_millis(200))
+///     );
+/// ```
 #[derive(Debug, Clone)]
 pub struct ActionConfig {
-    /// Sequence detection configuration.
+    /// Sequence detection configuration (timeouts, debounce, disable flag).
     pub sequence_config: SequenceConfig,
 
     /// Action when Ctrl+C pressed with empty input and no task.
+    ///
+    /// - `Quit` (default): Exit the application
+    /// - `Noop`: Do nothing
+    /// - `Bell`: Emit terminal bell
     pub ctrl_c_idle_action: CtrlCIdleAction,
 }
 
@@ -573,6 +715,15 @@ impl ActionConfig {
         }
 
         config
+    }
+
+    /// Validate and return a config with clamped sequence values.
+    ///
+    /// Delegates to [`SequenceConfig::validated`] for timing bounds.
+    #[must_use]
+    pub fn validated(mut self) -> Self {
+        self.sequence_config = self.sequence_config.validated();
+        self
     }
 }
 
@@ -1677,6 +1828,86 @@ mod tests {
             let ctrl_c_upper = KeyEvent::new(KeyCode::Char('C')).with_modifiers(Modifiers::CTRL);
             let action = mapper.map(&ctrl_c_upper, &idle_state(), t);
             assert_eq!(action, Some(Action::Quit));
+        }
+
+        // --- Validation tests ---
+
+        #[test]
+        fn test_sequence_config_validation_clamps_high_timeout() {
+            let config = SequenceConfig::default()
+                .with_timeout(Duration::from_millis(1000)) // Too high
+                .validated();
+
+            // Should clamp to MAX_ESC_SEQ_TIMEOUT_MS (400ms)
+            assert_eq!(config.esc_seq_timeout.as_millis(), 400);
+        }
+
+        #[test]
+        fn test_sequence_config_validation_clamps_low_timeout() {
+            let config = SequenceConfig::default()
+                .with_timeout(Duration::from_millis(50)) // Too low
+                .validated();
+
+            // Should clamp to MIN_ESC_SEQ_TIMEOUT_MS (150ms)
+            assert_eq!(config.esc_seq_timeout.as_millis(), 150);
+        }
+
+        #[test]
+        fn test_sequence_config_validation_clamps_high_debounce() {
+            let config = SequenceConfig::default()
+                .with_debounce(Duration::from_millis(200)) // Too high
+                .validated();
+
+            // Should clamp to MAX_ESC_DEBOUNCE_MS (100ms)
+            assert_eq!(config.esc_debounce.as_millis(), 100);
+        }
+
+        #[test]
+        fn test_sequence_config_validation_debounce_not_exceeds_timeout() {
+            let config = SequenceConfig::default()
+                .with_timeout(Duration::from_millis(150))
+                .with_debounce(Duration::from_millis(200)) // Higher than timeout
+                .validated();
+
+            // Debounce should be clamped to min(100, 150) = 100,
+            // but also can't exceed timeout (150)
+            // Since debounce max is 100 and timeout is 150, debounce = 100
+            assert!(config.esc_debounce <= config.esc_seq_timeout);
+        }
+
+        #[test]
+        fn test_sequence_config_is_valid() {
+            assert!(SequenceConfig::default().is_valid());
+
+            // Invalid: timeout too high
+            let invalid = SequenceConfig::default().with_timeout(Duration::from_millis(500));
+            assert!(!invalid.is_valid());
+
+            // Valid after validation
+            assert!(invalid.validated().is_valid());
+        }
+
+        #[test]
+        fn test_sequence_config_constants() {
+            // Verify constants match spec
+            assert_eq!(DEFAULT_ESC_SEQ_TIMEOUT_MS, 250);
+            assert_eq!(MIN_ESC_SEQ_TIMEOUT_MS, 150);
+            assert_eq!(MAX_ESC_SEQ_TIMEOUT_MS, 400);
+            assert_eq!(DEFAULT_ESC_DEBOUNCE_MS, 50);
+            assert_eq!(MIN_ESC_DEBOUNCE_MS, 0);
+            assert_eq!(MAX_ESC_DEBOUNCE_MS, 100);
+        }
+
+        #[test]
+        fn test_action_config_validated() {
+            let config = ActionConfig::default()
+                .with_sequence_config(
+                    SequenceConfig::default().with_timeout(Duration::from_millis(1000)),
+                )
+                .validated();
+
+            // Sequence config should be validated
+            assert_eq!(config.sequence_config.esc_seq_timeout.as_millis(), 400);
         }
     }
 }

@@ -921,3 +921,224 @@ fn responsive_demo_breakpoint_transitions() {
         let _ = expected_cols; // Used in doc comments, verified by snapshots
     }
 }
+
+// ============================================================================
+// Action Timeline — Event stream viewer snapshots (bd-11ck.1)
+// ============================================================================
+
+#[test]
+fn action_timeline_initial_80x24() {
+    let screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_initial_80x24", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_initial_120x40() {
+    let screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_initial_120x40", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_after_ticks_120x40() {
+    let mut screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    // Generate more events via ticks
+    for t in 1..=20 {
+        screen.tick(t);
+    }
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_after_ticks_120x40", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_filter_component_120x40() {
+    let mut screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    // Press 'c' to cycle component filter
+    screen.update(&press(KeyCode::Char('c')));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_filter_component_120x40", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_filter_severity_120x40() {
+    let mut screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    // Press 's' to cycle severity filter
+    screen.update(&press(KeyCode::Char('s')));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_filter_severity_120x40", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_filter_kind_120x40() {
+    let mut screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    // Press 't' to cycle type/kind filter
+    screen.update(&press(KeyCode::Char('t')));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_filter_kind_120x40", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_navigate_up_120x40() {
+    let mut screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    // Navigate up from initial selection
+    for _ in 0..5 {
+        screen.update(&press(KeyCode::Up));
+    }
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_navigate_up_120x40", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_details_collapsed_120x40() {
+    let mut screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    // Toggle detail expansion with Enter
+    screen.update(&press(KeyCode::Enter));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_details_collapsed_120x40", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_follow_off_120x40() {
+    let mut screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    // Toggle follow mode with 'f'
+    screen.update(&press(KeyCode::Char('f')));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_follow_off_120x40", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_clear_filters_120x40() {
+    let mut screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    // Set some filters then clear
+    screen.update(&press(KeyCode::Char('c')));
+    screen.update(&press(KeyCode::Char('s')));
+    screen.update(&press(KeyCode::Char('x'))); // clear all filters
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_clear_filters_120x40", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_tiny_40x10() {
+    let screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(40, 10, &mut pool);
+    let area = Rect::new(0, 0, 40, 10);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_tiny_40x10", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_wide_200x50() {
+    let screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(200, 50, &mut pool);
+    let area = Rect::new(0, 0, 200, 50);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_wide_200x50", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_page_navigation_120x40() {
+    let mut screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    // Generate more events first
+    for t in 1..=30 {
+        screen.tick(t);
+    }
+    // Navigate with PageUp
+    screen.update(&press(KeyCode::PageUp));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_page_navigation_120x40", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_home_key_120x40() {
+    let mut screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    // Generate events then go to beginning
+    for t in 1..=20 {
+        screen.tick(t);
+    }
+    screen.update(&press(KeyCode::Home));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_home_key_120x40", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_end_key_120x40() {
+    let mut screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    // Go to beginning first, then end
+    screen.update(&press(KeyCode::Home));
+    screen.update(&press(KeyCode::End));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_end_key_120x40", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_vim_navigation_120x40() {
+    let mut screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    // Use vim-style j/k navigation
+    for _ in 0..3 {
+        screen.update(&press(KeyCode::Char('k')));
+    }
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("action_timeline_vim_navigation_120x40", &frame.buffer);
+}
+
+#[test]
+fn action_timeline_zero_area() {
+    let screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(1, 1, &mut pool);
+    let area = Rect::new(0, 0, 0, 0);
+    screen.view(&mut frame, area);
+    // No panic = success
+}
+
+#[test]
+fn action_timeline_title() {
+    let screen = ftui_demo_showcase::screens::action_timeline::ActionTimeline::new();
+    assert_eq!(screen.title(), "Action Timeline");
+    assert_eq!(screen.tab_label(), "Timeline");
+}

@@ -5,8 +5,8 @@
 //! Each screen implements the [`Screen`] trait and can be navigated to via the
 //! tab bar or number keys.
 
-pub mod advanced_features;
 pub mod action_timeline;
+pub mod advanced_features;
 pub mod code_explorer;
 pub mod dashboard;
 pub mod data_viz;

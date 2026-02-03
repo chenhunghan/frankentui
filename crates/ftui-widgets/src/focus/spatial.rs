@@ -69,7 +69,7 @@ pub fn spatial_navigate(graph: &FocusGraph, origin: FocusId, dir: NavDirection) 
 
         let score = distance_score_i32(oc, cc, dir);
 
-        if !best.is_some_and(|(_, best_score)| score >= best_score) {
+        if best.is_none_or(|(_, best_score)| score < best_score) {
             best = Some((candidate_id, score));
         }
     }

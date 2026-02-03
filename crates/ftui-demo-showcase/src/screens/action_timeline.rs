@@ -173,7 +173,8 @@ impl ActionTimeline {
         };
         for tick in 0..12 {
             timeline.tick_count = tick;
-            timeline.push_event(timeline.synthetic_event());
+            let event = timeline.synthetic_event();
+            timeline.push_event(event);
         }
         timeline
     }
@@ -234,9 +235,7 @@ impl ActionTimeline {
     fn filtered_indices(&self) -> Vec<usize> {
         let mut indices = Vec::new();
         for (idx, event) in self.events.iter().enumerate() {
-            if self
-                .filter_component
-                .map_or(true, |c| c == event.component)
+            if self.filter_component.map_or(true, |c| c == event.component)
                 && self.filter_severity.map_or(true, |s| s == event.severity)
                 && self.filter_kind.map_or(true, |k| k == event.kind)
             {
@@ -316,7 +315,7 @@ impl ActionTimeline {
     }
 
     fn render_filters(&self, frame: &mut Frame, area: Rect) {
-        let border_style = Style::new().fg(theme::screen_accent::ADVANCED);
+        let border_style = Style::new().fg(theme::screen_accent::ACTION_TIMELINE);
         let block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -330,14 +329,8 @@ impl ActionTimeline {
             return;
         }
 
-        let component = self
-            .filter_component
-            .map(|c| c.label())
-            .unwrap_or("all");
-        let severity = self
-            .filter_severity
-            .map(|s| s.label())
-            .unwrap_or("all");
+        let component = self.filter_component.map(|c| c.label()).unwrap_or("all");
+        let severity = self.filter_severity.map(|s| s.label()).unwrap_or("all");
         let kind = self.filter_kind.map(|k| k.label()).unwrap_or("all");
         let follow = if self.follow { "ON" } else { "OFF" };
 
@@ -350,7 +343,7 @@ impl ActionTimeline {
     }
 
     fn render_timeline(&self, frame: &mut Frame, area: Rect, filtered: &[usize]) {
-        let border_style = Style::new().fg(theme::screen_accent::ADVANCED);
+        let border_style = Style::new().fg(theme::screen_accent::ACTION_TIMELINE);
         let block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -407,12 +400,14 @@ impl ActionTimeline {
                 event.kind.label(),
                 event.summary
             );
-            Paragraph::new(line).style(style).render(Rect::new(inner.x, y, inner.width, 1), frame);
+            Paragraph::new(line)
+                .style(style)
+                .render(Rect::new(inner.x, y, inner.width, 1), frame);
         }
     }
 
     fn render_details(&self, frame: &mut Frame, area: Rect, filtered: &[usize]) {
-        let border_style = Style::new().fg(theme::screen_accent::ADVANCED);
+        let border_style = Style::new().fg(theme::screen_accent::ACTION_TIMELINE);
         let block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -476,6 +471,13 @@ impl Screen for ActionTimeline {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Resize { height, .. } = event {
+            let usable = height.saturating_sub(6).max(1);
+            self.viewport_height = usable as usize;
+            self.sync_selection();
+            return Cmd::None;
+        }
+
         if let Event::Key(KeyEvent {
             code,
             modifiers,
@@ -545,7 +547,8 @@ impl Screen for ActionTimeline {
     fn tick(&mut self, tick_count: u64) {
         self.tick_count = tick_count;
         if tick_count % EVENT_BURST_EVERY == 0 {
-            self.push_event(self.synthetic_event());
+            let event = self.synthetic_event();
+            self.push_event(event);
             self.sync_selection();
         }
     }

@@ -760,7 +760,7 @@ mod tests {
         let start = Instant::now();
         for _ in 0..iterations {
             let diff = BufferDiff::compute(&old, &new);
-            assert!(diff.len() > 0);
+            assert!(!diff.is_empty());
         }
         let elapsed = start.elapsed();
 
@@ -886,7 +886,7 @@ mod tests {
     #[test]
     fn golden_diff_80x24() {
         let old = Buffer::new(80, 24);
-        let new = build_golden_scene(80, 24, 0xD01DE5EED_0001);
+        let new = build_golden_scene(80, 24, 0x000D_01DE_5EED_0001);
 
         let diff = BufferDiff::compute(&old, &new);
         let checksum = fnv1a_hash(diff.changes());
@@ -920,7 +920,7 @@ mod tests {
     #[test]
     fn golden_diff_120x40() {
         let old = Buffer::new(120, 40);
-        let new = build_golden_scene(120, 40, 0xD01DE5EED_0002);
+        let new = build_golden_scene(120, 40, 0x000D_01DE_5EED_0002);
 
         let diff = BufferDiff::compute(&old, &new);
         let checksum = fnv1a_hash(diff.changes());
@@ -948,7 +948,7 @@ mod tests {
     #[test]
     fn golden_sparse_update() {
         // Start from a populated scene, apply a small update
-        let old = build_golden_scene(80, 24, 0xD01DE5EED_0003);
+        let old = build_golden_scene(80, 24, 0x000D_01DE_5EED_0003);
         let mut new = old.clone();
 
         // Apply 5 deterministic changes
@@ -1080,8 +1080,7 @@ mod tests {
 
             // JSONL log line (captured by --nocapture or CI artifact)
             eprintln!(
-                "{{\"ts\":\"{}\",\"seed\":{},\"width\":{},\"height\":{},\"scene\":\"{}\",\"changes\":{},\"runs\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"checksum\":\"0x{:016x}\"}}",
-                "2026-02-03T00:00:00Z",
+                "{{\"ts\":\"2026-02-03T00:00:00Z\",\"seed\":{},\"width\":{},\"height\":{},\"scene\":\"{}\",\"changes\":{},\"runs\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"checksum\":\"0x{:016x}\"}}",
                 seed,
                 width,
                 height,

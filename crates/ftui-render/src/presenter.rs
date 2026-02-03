@@ -1913,7 +1913,7 @@ mod tests {
             for x in 0..width {
                 let i = (y as usize * width as usize + x as usize) as u8;
                 let fg = PackedRgba::rgb(i, 255 - i, i.wrapping_mul(3));
-                let bg = if i % 4 == 0 {
+                let bg = if i.is_multiple_of(4) {
                     PackedRgba::rgb(i.wrapping_mul(7), i.wrapping_mul(11), i.wrapping_mul(13))
                 } else {
                     PackedRgba::TRANSPARENT
@@ -1941,7 +1941,7 @@ mod tests {
             for x in 0..width {
                 let i = (y as usize * width as usize + x as usize + 1) as u8;
                 let fg = PackedRgba::rgb(i, 255 - i, i.wrapping_mul(3));
-                let bg = if i % 4 == 0 {
+                let bg = if i.is_multiple_of(4) {
                     PackedRgba::rgb(i.wrapping_mul(7), i.wrapping_mul(11), i.wrapping_mul(13))
                 } else {
                     PackedRgba::TRANSPARENT
@@ -1968,7 +1968,7 @@ mod tests {
             frame2_bytes > 0,
             "Second frame should produce output for style churn"
         );
-        assert!(diff2.len() > 0, "Style shift should produce changes");
+        assert!(!diff2.is_empty(), "Style shift should produce changes");
 
         // Verify frame2 is at most frame1 size (delta should never be worse
         // than a full redraw for the same number of changed cells)
@@ -2266,7 +2266,7 @@ mod tests {
 
         let width = 120u16;
         let height = 40u16;
-        let seed = 0xBEEF_CAFE_42;
+        let seed = 0x00BE_EFCA_FE42;
         let scene = build_style_heavy_scene(width, height, seed);
         let blank = Buffer::new(width, height);
         let diff_full = BufferDiff::compute(&blank, &scene);
@@ -2373,7 +2373,7 @@ mod tests {
         let mut prev_buffer = Buffer::new(width, height);
         let mut presenter = test_presenter();
         let mut model = TerminalModel::new(width as usize, height as usize);
-        let mut rng = 0x5D2E55_DE5D_42u64;
+        let mut rng = 0x5D2E_55DE_5D42_u64;
         let mut next = || -> u64 {
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
             rng
@@ -2408,14 +2408,14 @@ mod tests {
         for y in 0..height {
             for x in 0..width {
                 let buf_cell = prev_buffer.get_unchecked(x, y);
-                if !buf_cell.is_empty() {
-                    if let Some(model_cell) = model.cell(x as usize, y as usize) {
-                        let expected = buf_cell.content.as_char().unwrap_or(' ');
-                        let mut buf = [0u8; 4];
-                        let expected_str = expected.encode_utf8(&mut buf);
-                        if model_cell.text.as_str() == expected_str {
-                            checked += 1;
-                        }
+                if !buf_cell.is_empty()
+                    && let Some(model_cell) = model.cell(x as usize, y as usize)
+                {
+                    let expected = buf_cell.content.as_char().unwrap_or(' ');
+                    let mut buf = [0u8; 4];
+                    let expected_str = expected.encode_utf8(&mut buf);
+                    if model_cell.text.as_str() == expected_str {
+                        checked += 1;
                     }
                 }
             }

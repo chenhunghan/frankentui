@@ -14,6 +14,10 @@
 //!
 //! - [`pty_process`] - Shell process management with `spawn()`, `kill()`, `is_alive()`.
 //! - [`virtual_terminal`] - In-memory terminal state machine for testing.
+//! - [`input_forwarding`] - Key-to-sequence conversion and paste handling.
+
+/// Input forwarding: key events to ANSI sequences.
+pub mod input_forwarding;
 
 /// PTY process management for shell spawning and lifecycle control.
 pub mod pty_process;

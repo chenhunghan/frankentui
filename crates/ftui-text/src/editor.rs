@@ -1103,4 +1103,586 @@ mod tests {
         ed.undo();
         assert_eq!(ed.text(), "hello world");
     }
+
+    // ================================================================
+    // Edge case tests
+    // ================================================================
+
+    #[test]
+    fn insert_empty_text_is_noop() {
+        let mut ed = Editor::with_text("hello");
+        let before = ed.text();
+        ed.insert_text("");
+        assert_eq!(ed.text(), before);
+        // No undo entry for empty insert
+        assert!(!ed.can_undo());
+    }
+
+    #[test]
+    fn unicode_emoji_handling() {
+        let mut ed = Editor::new();
+        ed.insert_text("hello 🎉 world");
+        assert_eq!(ed.text(), "hello 🎉 world");
+        // Emoji counts as one grapheme
+        ed.move_left(); // d
+        ed.move_left(); // l
+        ed.move_left(); // r
+        ed.move_left(); // o
+        ed.move_left(); // w
+        ed.move_left(); // space
+        ed.move_left(); // emoji (single grapheme move)
+        ed.delete_backward(); // deletes space before emoji
+        assert_eq!(ed.text(), "hello🎉 world");
+    }
+
+    #[test]
+    fn unicode_combining_character() {
+        let mut ed = Editor::new();
+        // é as e + combining acute accent
+        ed.insert_text("caf\u{0065}\u{0301}");
+        assert_eq!(ed.text(), "café");
+        // The combining sequence is one grapheme
+        ed.delete_backward();
+        assert_eq!(ed.text(), "caf");
+    }
+
+    #[test]
+    fn unicode_zwj_sequence() {
+        let mut ed = Editor::new();
+        // Woman astronaut: woman + ZWJ + rocket
+        ed.insert_text("👩\u{200D}🚀");
+        let text = ed.text();
+        assert!(text.contains("👩"));
+        // Move left should treat ZWJ sequence as one grapheme
+        ed.move_left();
+        // We're now before the ZWJ sequence
+        ed.insert_char('x');
+        assert!(ed.text().starts_with('x'));
+    }
+
+    #[test]
+    fn unicode_cjk_wide_chars() {
+        let mut ed = Editor::new();
+        ed.insert_text("世界");
+        assert_eq!(ed.text(), "世界");
+        ed.move_left();
+        assert_eq!(ed.cursor().grapheme, 1);
+        ed.move_left();
+        assert_eq!(ed.cursor().grapheme, 0);
+    }
+
+    #[test]
+    fn crlf_handling() {
+        let mut ed = Editor::with_text("hello\r\nworld");
+        assert_eq!(ed.line_count(), 2);
+        assert_eq!(ed.line_text(0), Some("hello".to_string()));
+        assert_eq!(ed.line_text(1), Some("world".to_string()));
+    }
+
+    #[test]
+    fn mixed_newlines() {
+        let mut ed = Editor::with_text("line1\nline2\r\nline3");
+        assert_eq!(ed.line_count(), 3);
+        assert_eq!(ed.line_text(0), Some("line1".to_string()));
+        assert_eq!(ed.line_text(1), Some("line2".to_string()));
+        assert_eq!(ed.line_text(2), Some("line3".to_string()));
+    }
+
+    #[test]
+    fn trailing_newline() {
+        let ed = Editor::with_text("hello\n");
+        assert_eq!(ed.line_count(), 2);
+        assert_eq!(ed.line_text(0), Some("hello".to_string()));
+        assert_eq!(ed.line_text(1), Some(String::new()));
+    }
+
+    #[test]
+    fn only_newlines() {
+        let ed = Editor::with_text("\n\n\n");
+        assert_eq!(ed.line_count(), 4);
+        for i in 0..4 {
+            assert_eq!(ed.line_text(i), Some(String::new()));
+        }
+    }
+
+    #[test]
+    fn delete_word_backward_at_start_is_noop() {
+        let mut ed = Editor::with_text("hello");
+        ed.set_cursor(CursorPosition::new(0, 0, 0));
+        assert!(!ed.delete_word_backward());
+        assert_eq!(ed.text(), "hello");
+    }
+
+    #[test]
+    fn delete_word_backward_multiple_spaces() {
+        let mut ed = Editor::with_text("hello    world");
+        // Cursor at end
+        assert!(ed.delete_word_backward());
+        // Should delete "world"
+        let remaining = ed.text();
+        assert!(remaining.starts_with("hello"));
+    }
+
+    #[test]
+    fn delete_to_end_at_document_end() {
+        let mut ed = Editor::with_text("hello");
+        // Cursor already at end from with_text
+        assert!(!ed.delete_to_end_of_line());
+        assert_eq!(ed.text(), "hello");
+    }
+
+    #[test]
+    fn select_word_operations() {
+        let mut ed = Editor::with_text("hello world");
+        ed.set_cursor(CursorPosition::new(0, 0, 0));
+        ed.select_word_right();
+        assert_eq!(ed.selected_text(), Some("hello".to_string()));
+        ed.clear_selection();
+        ed.move_to_line_end();
+        ed.select_word_left();
+        assert_eq!(ed.selected_text(), Some("world".to_string()));
+    }
+
+    #[test]
+    fn select_up_down() {
+        let mut ed = Editor::with_text("line1\nline2\nline3");
+        ed.set_cursor(CursorPosition::new(1, 3, 3));
+        ed.select_up();
+        let sel = ed.selection().expect("should have selection");
+        assert_eq!(sel.anchor.line, 1);
+        assert_eq!(sel.head.line, 0);
+        ed.select_down();
+        ed.select_down();
+        let sel = ed.selection().expect("should have selection");
+        assert_eq!(sel.head.line, 2);
+    }
+
+    #[test]
+    fn selection_extending_preserves_anchor() {
+        let mut ed = Editor::with_text("abcdef");
+        ed.set_cursor(CursorPosition::new(0, 2, 2));
+        ed.select_right();
+        ed.select_right();
+        ed.select_right();
+        let sel = ed.selection().unwrap();
+        assert_eq!(sel.anchor.grapheme, 2);
+        assert_eq!(sel.head.grapheme, 5);
+        // Now extend left
+        ed.select_left();
+        let sel = ed.selection().unwrap();
+        assert_eq!(sel.anchor.grapheme, 2);
+        assert_eq!(sel.head.grapheme, 4);
+    }
+
+    #[test]
+    fn empty_selection_returns_none() {
+        let mut ed = Editor::with_text("hello");
+        ed.set_cursor(CursorPosition::new(0, 2, 2));
+        // Create selection with same anchor and head
+        ed.select_right();
+        ed.select_left();
+        // Now anchor == head
+        let sel = ed.selection().unwrap();
+        assert!(sel.is_empty());
+        assert_eq!(ed.selected_text(), None);
+    }
+
+    #[test]
+    fn cursor_clamp_after_set_text() {
+        let mut ed = Editor::with_text("very long text here");
+        ed.set_text("hi");
+        // Cursor should be at end of "hi"
+        assert_eq!(ed.cursor().line, 0);
+        assert_eq!(ed.cursor().grapheme, 2);
+    }
+
+    #[test]
+    fn undo_redo_with_selection() {
+        let mut ed = Editor::with_text("hello world");
+        ed.set_cursor(CursorPosition::new(0, 6, 6));
+        // Select "world"
+        for _ in 0..5 {
+            ed.select_right();
+        }
+        ed.insert_text("universe");
+        assert_eq!(ed.text(), "hello universe");
+        ed.undo();
+        assert_eq!(ed.text(), "hello world");
+        ed.redo();
+        assert_eq!(ed.text(), "hello universe");
+    }
+
+    #[test]
+    fn rapid_insert_delete_cycle() {
+        let mut ed = Editor::new();
+        for i in 0..100 {
+            ed.insert_char(char::from_u32('a' as u32 + (i % 26)).unwrap());
+            if i % 3 == 0 {
+                ed.delete_backward();
+            }
+        }
+        // Should not panic, cursor should be valid
+        let cursor = ed.cursor();
+        assert!(cursor.line == 0);
+        assert!(cursor.grapheme <= ed.text().chars().count());
+    }
+
+    #[test]
+    fn multiline_select_all_and_replace() {
+        let mut ed = Editor::with_text("line1\nline2\nline3");
+        ed.select_all();
+        ed.insert_text("replaced");
+        assert_eq!(ed.text(), "replaced");
+        assert_eq!(ed.line_count(), 1);
+    }
+
+    #[test]
+    fn delete_forward_with_selection() {
+        let mut ed = Editor::with_text("hello world");
+        ed.set_cursor(CursorPosition::new(0, 0, 0));
+        for _ in 0..5 {
+            ed.select_right();
+        }
+        // delete_forward with selection should delete selection, not char after
+        ed.delete_forward();
+        assert_eq!(ed.text(), " world");
+    }
+
+    #[test]
+    fn delete_word_backward_with_selection() {
+        let mut ed = Editor::with_text("hello world");
+        ed.set_cursor(CursorPosition::new(0, 6, 6));
+        for _ in 0..5 {
+            ed.select_right();
+        }
+        // Should delete selection, not word
+        ed.delete_word_backward();
+        assert_eq!(ed.text(), "hello ");
+    }
+
+    #[test]
+    fn default_impl() {
+        let ed = Editor::default();
+        assert!(ed.is_empty());
+        assert_eq!(ed.cursor(), CursorPosition::default());
+    }
+
+    #[test]
+    fn line_text_out_of_bounds() {
+        let ed = Editor::with_text("hello");
+        assert_eq!(ed.line_text(0), Some("hello".to_string()));
+        assert_eq!(ed.line_text(1), None);
+        assert_eq!(ed.line_text(100), None);
+    }
+
+    #[test]
+    fn rope_accessor() {
+        let ed = Editor::with_text("test");
+        let rope = ed.rope();
+        assert_eq!(rope.len_bytes(), 4);
+    }
+
+    #[test]
+    fn cursor_position_after_multiline_insert() {
+        let mut ed = Editor::new();
+        ed.insert_text("hello\nworld\nfoo");
+        assert_eq!(ed.cursor().line, 2);
+        assert_eq!(ed.line_count(), 3);
+    }
+
+    #[test]
+    fn delete_backward_across_lines() {
+        let mut ed = Editor::with_text("abc\ndef");
+        ed.set_cursor(CursorPosition::new(1, 0, 0));
+        ed.delete_backward();
+        assert_eq!(ed.text(), "abcdef");
+        assert_eq!(ed.cursor().line, 0);
+        assert_eq!(ed.cursor().grapheme, 3);
+    }
+
+    #[test]
+    fn very_long_line() {
+        let long_text: String = "a".repeat(10000);
+        let mut ed = Editor::with_text(&long_text);
+        assert_eq!(ed.text().len(), 10000);
+        ed.move_to_line_start();
+        assert_eq!(ed.cursor().grapheme, 0);
+        ed.move_to_line_end();
+        assert_eq!(ed.cursor().grapheme, 10000);
+    }
+
+    #[test]
+    fn many_lines() {
+        let text: String = (0..1000)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let ed = Editor::with_text(&text);
+        assert_eq!(ed.line_count(), 1000);
+        assert_eq!(ed.line_text(999), Some("line999".to_string()));
+    }
+
+    #[test]
+    fn selection_byte_range_order() {
+        use crate::cursor::CursorNavigator;
+
+        let mut ed = Editor::with_text("hello world");
+        // Select backwards (anchor after head)
+        ed.set_cursor(CursorPosition::new(0, 8, 8));
+        ed.select_left();
+        ed.select_left();
+        ed.select_left();
+
+        let sel = ed.selection().unwrap();
+        let nav = CursorNavigator::new(ed.rope());
+        let (start, end) = sel.byte_range(&nav);
+        // byte_range should always have start <= end
+        assert!(start <= end);
+        assert_eq!(end - start, 3);
+    }
+}
+
+// ================================================================
+// Property-based tests
+// ================================================================
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Strategy for generating valid text content (ASCII + some unicode)
+    fn text_strategy() -> impl Strategy<Value = String> {
+        prop::string::string_regex("[a-zA-Z0-9 \n]{0,100}")
+            .unwrap()
+            .prop_filter("non-empty or empty", |_| true)
+    }
+
+    // Strategy for text with unicode
+    fn unicode_text_strategy() -> impl Strategy<Value = String> {
+        prop::collection::vec(
+            prop_oneof![
+                Just("a".to_string()),
+                Just(" ".to_string()),
+                Just("\n".to_string()),
+                Just("é".to_string()),
+                Just("世".to_string()),
+                Just("🎉".to_string()),
+            ],
+            0..50,
+        )
+        .prop_map(|v| v.join(""))
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(100))]
+
+        // Property: Cursor is always within valid bounds after any operation
+        #[test]
+        fn cursor_always_in_bounds(text in text_strategy()) {
+            let mut ed = Editor::with_text(&text);
+
+            // After creation
+            let c = ed.cursor();
+            prop_assert!(c.line < ed.line_count() || (c.line == 0 && ed.line_count() == 1));
+
+            // After various movements
+            ed.move_left();
+            let c = ed.cursor();
+            prop_assert!(c.line < ed.line_count() || (c.line == 0 && ed.line_count() == 1));
+
+            ed.move_right();
+            let c = ed.cursor();
+            prop_assert!(c.line < ed.line_count() || (c.line == 0 && ed.line_count() == 1));
+
+            ed.move_up();
+            let c = ed.cursor();
+            prop_assert!(c.line < ed.line_count() || (c.line == 0 && ed.line_count() == 1));
+
+            ed.move_down();
+            let c = ed.cursor();
+            prop_assert!(c.line < ed.line_count() || (c.line == 0 && ed.line_count() == 1));
+
+            ed.move_to_line_start();
+            let c = ed.cursor();
+            prop_assert_eq!(c.grapheme, 0);
+
+            ed.move_to_document_start();
+            let c = ed.cursor();
+            prop_assert_eq!(c.line, 0);
+            prop_assert_eq!(c.grapheme, 0);
+        }
+
+        // Property: Undo after insert restores original text
+        #[test]
+        fn undo_insert_restores_text(base in text_strategy(), insert in "[a-z]{1,20}") {
+            let mut ed = Editor::with_text(&base);
+            let original = ed.text();
+            ed.insert_text(&insert);
+            prop_assert!(ed.can_undo());
+            ed.undo();
+            prop_assert_eq!(ed.text(), original);
+        }
+
+        // Property: Undo after delete restores original text
+        #[test]
+        fn undo_delete_restores_text(text in "[a-zA-Z]{5,50}") {
+            let mut ed = Editor::with_text(&text);
+            let original = ed.text();
+            if ed.delete_backward() {
+                prop_assert!(ed.can_undo());
+                ed.undo();
+                prop_assert_eq!(ed.text(), original);
+            }
+        }
+
+        // Property: Redo after undo restores the edit
+        #[test]
+        fn redo_after_undo_restores(text in text_strategy(), insert in "[a-z]{1,10}") {
+            let mut ed = Editor::with_text(&text);
+            ed.insert_text(&insert);
+            let after_insert = ed.text();
+            ed.undo();
+            prop_assert!(ed.can_redo());
+            ed.redo();
+            prop_assert_eq!(ed.text(), after_insert);
+        }
+
+        // Property: select_all + delete = empty
+        #[test]
+        fn select_all_delete_empties(text in text_strategy()) {
+            let mut ed = Editor::with_text(&text);
+            ed.select_all();
+            ed.delete_backward();
+            prop_assert!(ed.is_empty());
+        }
+
+        // Property: Line count equals newline count + 1
+        #[test]
+        fn line_count_matches_newlines(text in text_strategy()) {
+            let ed = Editor::with_text(&text);
+            let newline_count = text.matches('\n').count();
+            // Line count is at least 1, and each \n adds a line
+            prop_assert_eq!(ed.line_count(), newline_count + 1);
+        }
+
+        // Property: text() roundtrip through set_text
+        #[test]
+        fn set_text_roundtrip(text in text_strategy()) {
+            let mut ed = Editor::new();
+            ed.set_text(&text);
+            prop_assert_eq!(ed.text(), text);
+        }
+
+        // Property: Cursor stays in bounds after unicode operations
+        #[test]
+        fn unicode_cursor_bounds(text in unicode_text_strategy()) {
+            let mut ed = Editor::with_text(&text);
+
+            // Move around
+            for _ in 0..10 {
+                ed.move_left();
+            }
+            let c = ed.cursor();
+            prop_assert!(c.line < ed.line_count() || ed.line_count() == 1);
+
+            for _ in 0..10 {
+                ed.move_right();
+            }
+            let c = ed.cursor();
+            prop_assert!(c.line < ed.line_count() || ed.line_count() == 1);
+        }
+
+        // Property: insert_char then delete_backward = original (when no prior content at cursor)
+        #[test]
+        fn insert_delete_roundtrip(ch in prop::char::any().prop_filter("printable", |c| !c.is_control())) {
+            let mut ed = Editor::new();
+            ed.insert_char(ch);
+            ed.delete_backward();
+            prop_assert!(ed.is_empty());
+        }
+
+        // Property: Multiple undos don't panic and eventually can't undo
+        #[test]
+        fn multiple_undos_safe(ops in prop::collection::vec(0..3u8, 0..20)) {
+            let mut ed = Editor::new();
+            for op in ops {
+                match op {
+                    0 => { ed.insert_char('x'); }
+                    1 => { ed.delete_backward(); }
+                    _ => { ed.undo(); }
+                }
+            }
+            // Should be able to undo until stack is empty
+            while ed.can_undo() {
+                prop_assert!(ed.undo());
+            }
+            prop_assert!(!ed.can_undo());
+        }
+
+        // Property: Selection byte_range always has start <= end
+        #[test]
+        fn selection_range_ordered(text in "[a-zA-Z]{10,50}") {
+            use crate::cursor::CursorNavigator;
+
+            let mut ed = Editor::with_text(&text);
+            ed.set_cursor(CursorPosition::new(0, 5, 5));
+
+            // Select in various directions
+            ed.select_left();
+            ed.select_left();
+
+            if let Some(sel) = ed.selection() {
+                let nav = CursorNavigator::new(ed.rope());
+                let (start, end) = sel.byte_range(&nav);
+                prop_assert!(start <= end);
+            }
+
+            ed.select_right();
+            ed.select_right();
+            ed.select_right();
+            ed.select_right();
+
+            if let Some(sel) = ed.selection() {
+                let nav = CursorNavigator::new(ed.rope());
+                let (start, end) = sel.byte_range(&nav);
+                prop_assert!(start <= end);
+            }
+        }
+
+        // Property: Word movement always makes progress or stays at boundary
+        #[test]
+        fn word_movement_progress(text in "[a-zA-Z ]{5,50}") {
+            let mut ed = Editor::with_text(&text);
+            ed.set_cursor(CursorPosition::new(0, 0, 0));
+
+            let start = ed.cursor();
+            ed.move_word_right();
+            let after = ed.cursor();
+            // Either made progress or was already at end
+            prop_assert!(after.grapheme >= start.grapheme);
+
+            ed.move_to_line_end();
+            let end_pos = ed.cursor();
+            ed.move_word_left();
+            let after_left = ed.cursor();
+            // Either made progress or was already at start
+            prop_assert!(after_left.grapheme <= end_pos.grapheme);
+        }
+
+        // Property: Document start/end are at expected positions
+        #[test]
+        fn document_bounds(text in text_strategy()) {
+            let mut ed = Editor::with_text(&text);
+
+            ed.move_to_document_start();
+            prop_assert_eq!(ed.cursor().line, 0);
+            prop_assert_eq!(ed.cursor().grapheme, 0);
+
+            ed.move_to_document_end();
+            let c = ed.cursor();
+            let last_line = ed.line_count().saturating_sub(1);
+            prop_assert_eq!(c.line, last_line);
+        }
+    }
 }

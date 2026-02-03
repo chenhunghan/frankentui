@@ -950,6 +950,42 @@ mod tests {
     }
 
     #[test]
+    fn stream_position_advances() {
+        let mut screen = MarkdownRichText::new();
+        let initial = screen.stream_position;
+        screen.tick_stream();
+        assert!(screen.stream_position > initial);
+    }
+
+    #[test]
+    fn stream_completes_eventually() {
+        let mut screen = MarkdownRichText::new();
+        for _ in 0..10_000 {
+            screen.tick_stream();
+            if screen.stream_complete() {
+                break;
+            }
+        }
+        assert!(screen.stream_complete());
+    }
+
+    #[test]
+    fn current_fragment_never_panics() {
+        let mut screen = MarkdownRichText::new();
+        for _ in 0..5_000 {
+            let _ = screen.current_stream_fragment();
+            screen.tick_stream();
+        }
+    }
+
+    #[test]
+    fn progress_in_valid_range() {
+        let screen = MarkdownRichText::new();
+        let progress = screen.stream_position as f64 / STREAMING_MARKDOWN.len() as f64;
+        assert!((0.0..=1.0).contains(&progress));
+    }
+
+    #[test]
     fn keybindings_non_empty() {
         let screen = MarkdownRichText::new();
         assert!(!screen.keybindings().is_empty());
