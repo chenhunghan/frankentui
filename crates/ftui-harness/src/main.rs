@@ -96,6 +96,17 @@ struct AgentHarness {
     action_mapper: ActionMapper,
     /// Whether the tree view overlay is visible.
     tree_view_open: bool,
+    /// Enable stress mode for the UI inspector (large widget trees).
+    inspector_stress: bool,
+    /// Grid columns for inspector stress tree.
+    #[allow(dead_code)]
+    inspector_grid_cols: u16,
+    /// Grid rows for inspector stress tree.
+    #[allow(dead_code)]
+    inspector_grid_rows: u16,
+    /// Depth for nested inspector widgets in stress mode.
+    #[allow(dead_code)]
+    inspector_depth: u8,
 }
 
 /// Messages for the agent harness.
@@ -211,6 +222,25 @@ impl AgentHarness {
                 }
             });
 
+        let inspector_stress = std::env::var("FTUI_HARNESS_INSPECTOR_STRESS")
+            .ok()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        let inspector_grid_cols = std::env::var("FTUI_HARNESS_INSPECTOR_GRID_COLS")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(12)
+            .max(1);
+        let inspector_grid_rows = std::env::var("FTUI_HARNESS_INSPECTOR_GRID_ROWS")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(8)
+            .max(1);
+        let inspector_depth = std::env::var("FTUI_HARNESS_INSPECTOR_DEPTH")
+            .ok()
+            .and_then(|value| value.parse::<u8>().ok())
+            .unwrap_or(3)
+            .max(1);
+
         Self {
             log_viewer,
             log_state: RefCell::new(LogViewerState::default()),
@@ -229,6 +259,10 @@ impl AgentHarness {
             log_keys,
             action_mapper: ActionMapper::from_env(),
             tree_view_open: false,
+            inspector_stress,
+            inspector_grid_cols,
+            inspector_grid_rows,
+            inspector_depth,
         }
     }
 
@@ -975,23 +1009,116 @@ impl AgentHarness {
         let mut inspector = InspectorState::new();
         inspector.mode = InspectorMode::Full;
         inspector.show_detail_panel = true;
-        inspector.selected = Some(HitId::new(1));
-        inspector.hover_pos = Some((button_hit.x + 1, button_hit.y + 1));
+        if self.inspector_stress {
+            self.populate_inspector_stress(area, frame, &mut inspector);
+        } else {
+            inspector.selected = Some(HitId::new(1));
+            inspector.hover_pos = Some((button_hit.x + 1, button_hit.y + 1));
 
-        let mut root = WidgetInfo::new("Harness", area).with_depth(0);
-        let mut left_info = WidgetInfo::new("LogPanel", chunks[0])
-            .with_depth(1)
-            .with_hit_id(HitId::new(1));
-        left_info.add_child(WidgetInfo::new("LogText", left_inner).with_depth(2));
-        let mut right_info = WidgetInfo::new("ActionPanel", chunks[1])
-            .with_depth(1)
-            .with_hit_id(HitId::new(2));
-        right_info.add_child(WidgetInfo::new("PrimaryButton", button_hit).with_depth(2));
-        root.add_child(left_info);
-        root.add_child(right_info);
-        inspector.register_widget(root);
+            let mut root = WidgetInfo::new("Harness", area).with_depth(0);
+            let mut left_info = WidgetInfo::new("LogPanel", chunks[0])
+                .with_depth(1)
+                .with_hit_id(HitId::new(1));
+            left_info.add_child(WidgetInfo::new("LogText", left_inner).with_depth(2));
+            let mut right_info = WidgetInfo::new("ActionPanel", chunks[1])
+                .with_depth(1)
+                .with_hit_id(HitId::new(2));
+            right_info.add_child(WidgetInfo::new("PrimaryButton", button_hit).with_depth(2));
+            root.add_child(left_info);
+            root.add_child(right_info);
+            inspector.register_widget(root);
+        }
 
         InspectorOverlay::new(&inspector).render(area, frame);
+    }
+
+    fn populate_inspector_stress(&self, area: Rect, frame: &mut Frame, inspector: &mut InspectorState) {
+        let cols = self.inspector_grid_cols.max(1);
+        let rows = self.inspector_grid_rows.max(1);
+        let cell_width = (area.width / cols).max(1);
+        let cell_height = (area.height / rows).max(1);
+
+        let mut root = WidgetInfo::new("HarnessStress", area).with_depth(0);
+        let mut id_counter: u64 = 1;
+        let mut selected_set = false;
+
+        for row in 0..rows {
+            let y = area.y.saturating_add(row.saturating_mul(cell_height));
+            if y >= area.bottom() {
+                break;
+            }
+            let height = area.bottom().saturating_sub(y).min(cell_height);
+            if height == 0 {
+                continue;
+            }
+
+            for col in 0..cols {
+                let x = area.x.saturating_add(col.saturating_mul(cell_width));
+                if x >= area.right() {
+                    break;
+                }
+                let width = area.right().saturating_sub(x).min(cell_width);
+                if width == 0 {
+                    continue;
+                }
+
+                let rect = Rect::new(x, y, width, height);
+                let mut widget = self.build_inspector_chain(
+                    format!("Cell {col},{row}"),
+                    rect,
+                    1,
+                    self.inspector_depth,
+                );
+                widget.hit_id = Some(HitId::new(id_counter));
+
+                frame.register_hit(rect, HitId::new(id_counter), HitRegion::Content, id_counter);
+
+                if !selected_set {
+                    inspector.selected = Some(HitId::new(id_counter));
+                    inspector.hover_pos = Some((
+                        rect.x.saturating_add(rect.width / 2),
+                        rect.y.saturating_add(rect.height / 2),
+                    ));
+                    selected_set = true;
+                }
+
+                root.add_child(widget);
+                id_counter = id_counter.saturating_add(1);
+            }
+        }
+
+        inspector.register_widget(root);
+    }
+
+    fn build_inspector_chain(
+        &self,
+        name: String,
+        area: Rect,
+        depth: u8,
+        max_depth: u8,
+    ) -> WidgetInfo {
+        let mut widget = WidgetInfo::new(name, area).with_depth(depth);
+
+        if depth < max_depth {
+            let next_depth = depth.saturating_add(1);
+            let child_area = Rect::new(
+                area.x.saturating_add(1),
+                area.y.saturating_add(1),
+                area.width.saturating_sub(2),
+                area.height.saturating_sub(2),
+            );
+            if !child_area.is_empty() {
+                let child = self.build_inspector_chain(
+                    format!("Depth {}", next_depth),
+                    child_area,
+                    next_depth,
+                    max_depth,
+                );
+                widget.add_child(child);
+            }
+        }
+
+        widget
     }
 
     /// Render the tree view overlay (toggled via Esc Esc).
