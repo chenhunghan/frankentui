@@ -529,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn quality_off_renders_transparent() {
+    fn quality_off_leaves_buffer_unchanged() {
         let theme = ThemeInputs::default_dark();
         let mut fx = MetaballsFx::default();
         let ctx = FxContext {
@@ -540,8 +540,15 @@ mod tests {
             quality: FxQuality::Off,
             theme: &theme,
         };
-        let mut out = vec![PackedRgba::rgb(255, 0, 0); ctx.len()];
+        // When quality is Off, backdrop effects should NOT modify the buffer.
+        // This is the correct behavior - decorative effects are non-essential
+        // and should simply skip rendering, leaving the existing content intact.
+        let sentinel = PackedRgba::rgb(255, 0, 0);
+        let mut out = vec![sentinel; ctx.len()];
         fx.render(ctx, &mut out);
-        assert!(out.iter().all(|&px| px == PackedRgba::TRANSPARENT));
+        assert!(
+            out.iter().all(|&px| px == sentinel),
+            "Off quality should leave buffer unchanged"
+        );
     }
 }
