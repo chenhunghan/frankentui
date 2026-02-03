@@ -33,6 +33,7 @@
 //! crate's `CARGO_MANIFEST_DIR`.
 
 pub mod asciicast;
+pub mod flicker_detection;
 pub mod golden;
 pub mod terminal_model;
 pub mod time_travel;
