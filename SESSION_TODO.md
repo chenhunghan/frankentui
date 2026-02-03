@@ -233,3 +233,10 @@
 - [x] **Release file reservations** for advanced_text_editor.rs
 - [x] **Send completion message** to Agent Mail
 - [ ] **Close bead** (br command failing due to missing "dev" script)
+
+## 15. Current Session (Gemini) — Grapheme Pool Garbage Collection
+- [x] **Audit**: Re-verified `ftui-render` and `ftui-runtime` for memory leaks.
+- [x] **Identify Issue**: Found unbounded `GraphemePool` growth in `TerminalWriter`.
+- [x] **Fix**: Implemented `TerminalWriter::gc()` and wired it into `Program` event loop.
+- [x] **Documentation**: Updated `FIXES_SUMMARY.md`.
+
