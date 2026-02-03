@@ -2,8 +2,11 @@
 
 //! Shakespeare Library screen — complete works with search and virtualized scroll.
 
-use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers};
+use std::cell::Cell;
+
+use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
+use ftui_extras::charts::Sparkline;
 use ftui_extras::text_effects::{ColorGradient, Direction, RevealMode, StyledText, TextEffect};
 use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::PackedRgba;
@@ -18,10 +21,11 @@ use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::input::TextInput;
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
-use ftui_widgets::tree::{Tree, TreeGuides, TreeNode};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::{HelpEntry, Screen};
+use crate::app::ScreenId;
+use crate::chrome;
 use crate::theme;
 
 /// Embedded complete works of Shakespeare.
@@ -41,22 +45,37 @@ pub struct Shakespeare {
     scroll_offset: usize,
     /// Table of contents entries.
     toc_entries: Vec<TocEntry>,
-    /// Tree widget for TOC display.
-    toc_tree: Tree,
+    /// Selected TOC entry.
+    toc_selected: usize,
+    /// Scroll offset for TOC list.
+    toc_scroll: Cell<usize>,
     /// Search input widget.
     search_input: TextInput,
     /// Whether search bar is focused/visible.
     search_active: bool,
     /// Line indices matching the current search query.
     search_matches: Vec<usize>,
+    /// Search match density (bucketed) for heatmap/sparkline.
+    match_density: Vec<f64>,
     /// Index into search_matches for current highlighted match.
     current_match: usize,
     /// Viewport height (lines visible), updated each render.
-    viewport_height: u16,
+    viewport_height: Cell<u16>,
     /// Animation tick counter.
     tick_count: u64,
     /// Animation time (seconds).
     time: f64,
+    /// Current view mode.
+    mode: ShakespeareMode,
+    /// Focused panel for keyboard/mouse interaction.
+    focus: FocusPanel,
+    /// Layout hit areas for mouse focus.
+    layout_search: Cell<Rect>,
+    layout_text: Cell<Rect>,
+    layout_nav: Cell<Rect>,
+    layout_toc: Cell<Rect>,
+    layout_insights: Cell<Rect>,
+    layout_status: Cell<Rect>,
 }
 
 impl Default for Shakespeare {
@@ -69,13 +88,13 @@ impl Shakespeare {
     pub fn new() -> Self {
         let lines: Vec<&'static str> = SHAKESPEARE_TEXT.lines().collect();
         let toc_entries = Self::build_toc(&lines);
-        let toc_tree = Self::build_tree(&toc_entries);
 
         let mut state = Self {
             lines,
             scroll_offset: 0,
             toc_entries,
-            toc_tree,
+            toc_selected: 0,
+            toc_scroll: Cell::new(0),
             search_input: TextInput::new()
                 .with_placeholder("Search... (/ to focus, Esc to close)")
                 .with_style(
@@ -86,12 +105,22 @@ impl Shakespeare {
                 .with_placeholder_style(Style::new().fg(theme::fg::MUTED)),
             search_active: false,
             search_matches: Vec::new(),
+            match_density: Vec::new(),
             current_match: 0,
-            viewport_height: 20,
+            viewport_height: Cell::new(20),
             tick_count: 0,
             time: 0.0,
+            mode: ShakespeareMode::Library,
+            focus: FocusPanel::Text,
+            layout_search: Cell::new(Rect::default()),
+            layout_text: Cell::new(Rect::default()),
+            layout_nav: Cell::new(Rect::default()),
+            layout_toc: Cell::new(Rect::default()),
+            layout_insights: Cell::new(Rect::default()),
+            layout_status: Cell::new(Rect::default()),
         };
         state.apply_theme();
+        state.update_match_density();
         state
     }
 
@@ -138,30 +167,6 @@ impl Shakespeare {
         entries
     }
 
-    /// Build a Tree widget from TOC entries.
-    fn build_tree(entries: &[TocEntry]) -> Tree {
-        let mut root = TreeNode::new("Complete Works").with_expanded(true);
-        for entry in entries.iter().take(50) {
-            // Truncate long titles for the tree
-            let label = if entry.title.len() > 35 {
-                format!("{}...", &entry.title[..32])
-            } else {
-                entry.title.clone()
-            };
-            root = root.child(TreeNode::new(label));
-        }
-        Tree::new(root)
-            .with_show_root(true)
-            .with_guides(TreeGuides::Unicode)
-            .with_guide_style(Style::new().fg(theme::fg::MUTED))
-            .with_label_style(Style::new().fg(theme::fg::SECONDARY))
-            .with_root_style(
-                Style::new()
-                    .fg(theme::accent::PRIMARY)
-                    .attrs(StyleFlags::BOLD),
-            )
-    }
-
     fn total_lines(&self) -> usize {
         self.lines.len()
     }
@@ -169,7 +174,7 @@ impl Shakespeare {
     fn scroll_by(&mut self, delta: i32) {
         let max_offset = self
             .total_lines()
-            .saturating_sub(self.viewport_height as usize);
+            .saturating_sub(self.viewport_height.get() as usize);
         if delta < 0 {
             self.scroll_offset = self
                 .scroll_offset
@@ -182,7 +187,7 @@ impl Shakespeare {
     fn scroll_to(&mut self, line: usize) {
         let max_offset = self
             .total_lines()
-            .saturating_sub(self.viewport_height as usize);
+            .saturating_sub(self.viewport_height.get() as usize);
         self.scroll_offset = line.min(max_offset);
     }
 
@@ -191,6 +196,7 @@ impl Shakespeare {
         self.search_matches.clear();
         self.current_match = 0;
         if query.len() < 2 {
+            self.match_density = vec![0.0; 48];
             return;
         }
         for (i, line) in self.lines.iter().enumerate() {
@@ -203,6 +209,7 @@ impl Shakespeare {
         if let Some(&first) = self.search_matches.first() {
             self.scroll_to(first.saturating_sub(3));
         }
+        self.update_match_density();
     }
 
     fn next_match(&mut self) {
@@ -236,6 +243,132 @@ impl Shakespeare {
         }
         section
     }
+
+    fn set_focus(&mut self, focus: FocusPanel) {
+        self.focus = focus;
+        self.search_active = matches!(focus, FocusPanel::Search);
+        self.search_input.set_focused(self.search_active);
+    }
+
+    fn update_match_density(&mut self) {
+        let buckets = 48usize;
+        let mut density = vec![0.0; buckets];
+        if self.search_matches.is_empty() {
+            self.match_density = density;
+            return;
+        }
+        let total = self.total_lines().max(1);
+        for &line in &self.search_matches {
+            let idx = (line * buckets) / total;
+            if let Some(slot) = density.get_mut(idx) {
+                *slot += 1.0;
+            }
+        }
+        let max = density
+            .iter()
+            .copied()
+            .fold(0.0, |a, b| if b > a { b } else { a });
+        if max > 0.0 {
+            for slot in &mut density {
+                *slot /= max;
+            }
+        }
+        self.match_density = density;
+    }
+
+    fn set_current_match(&mut self, idx: usize) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        self.current_match = idx.min(self.search_matches.len() - 1);
+        let line = self.search_matches[self.current_match];
+        self.scroll_to(line.saturating_sub(3));
+    }
+
+    fn focus_from_point(&mut self, x: u16, y: u16) {
+        let search = self.layout_search.get();
+        let text = self.layout_text.get();
+        let nav = self.layout_nav.get();
+        let toc = self.layout_toc.get();
+        let insights = self.layout_insights.get();
+        let status = self.layout_status.get();
+
+        if !search.is_empty() && search.contains(x, y) {
+            self.set_focus(FocusPanel::Search);
+            return;
+        }
+        if text.contains(x, y) {
+            self.set_focus(FocusPanel::Text);
+            return;
+        }
+        if nav.contains(x, y) {
+            self.set_focus(FocusPanel::Navigator);
+            return;
+        }
+        if toc.contains(x, y) {
+            self.set_focus(FocusPanel::Toc);
+            return;
+        }
+        if insights.contains(x, y) {
+            self.set_focus(FocusPanel::Insights);
+            return;
+        }
+        if status.contains(x, y) {
+            self.set_focus(FocusPanel::Status);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Clone, Copy, Debug, PartialEq, Eq)]
+enum ShakespeareMode {
+    Library,
+    Spotlight,
+    Concordance,
+}
+
+impl ShakespeareMode {
+    const ALL: [Self; 3] = [Self::Library, Self::Spotlight, Self::Concordance];
+
+    fn next(self) -> Self {
+        match self {
+            Self::Library => Self::Spotlight,
+            Self::Spotlight => Self::Concordance,
+            Self::Concordance => Self::Library,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            Self::Library => Self::Concordance,
+            Self::Spotlight => Self::Library,
+            Self::Concordance => Self::Spotlight,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Library => "Library",
+            Self::Spotlight => "Spotlight",
+            Self::Concordance => "Concordance",
+        }
+    }
+
+    fn subtitle(self) -> &'static str {
+        match self {
+            Self::Library => "Full text + navigator",
+            Self::Spotlight => "Stage view + FX",
+            Self::Concordance => "Search intelligence",
+        }
+    }
+}
+
+enum FocusPanel {
+    Search,
+    Text,
+    Navigator,
+    Toc,
+    Insights,
+    Status,
 }
 
 /// Check if a line looks like a title (mostly uppercase with allowed punctuation).
@@ -253,6 +386,41 @@ impl Screen for Shakespeare {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Mouse(mouse) = event {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.focus_from_point(mouse.x, mouse.y);
+                    if self.focus == FocusPanel::Navigator {
+                        let nav = self.layout_nav.get();
+                        let rel_y = mouse.y.saturating_sub(nav.y);
+                        let index = self.current_match.saturating_sub(2) + rel_y as usize;
+                        self.set_current_match(index);
+                    } else if self.focus == FocusPanel::Toc {
+                        let toc = self.layout_toc.get();
+                        let rel_y = mouse.y.saturating_sub(toc.y);
+                        let idx = self.toc_scroll.get() + rel_y as usize;
+                        if idx < self.toc_entries.len() {
+                            self.toc_selected = idx;
+                            let line = self.toc_entries[idx].line;
+                            self.scroll_to(line.saturating_sub(2));
+                        }
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    if self.focus == FocusPanel::Text {
+                        self.scroll_by(-3);
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    if self.focus == FocusPanel::Text {
+                        self.scroll_by(3);
+                    }
+                }
+                _ => {}
+            }
+            return Cmd::None;
+        }
+
         if let Event::Key(key) = event {
             if key.kind != KeyEventKind::Press {
                 return Cmd::None;
@@ -262,8 +430,7 @@ impl Screen for Shakespeare {
             if self.search_active {
                 match (key.code, key.modifiers) {
                     (KeyCode::Escape, _) => {
-                        self.search_active = false;
-                        self.search_input.set_focused(false);
+                        self.set_focus(FocusPanel::Text);
                         return Cmd::None;
                     }
                     (KeyCode::Enter, _) | (KeyCode::Down, _) => {
@@ -296,30 +463,70 @@ impl Screen for Shakespeare {
             // Normal mode keybindings
             match (key.code, key.modifiers) {
                 (KeyCode::Char('/'), Modifiers::NONE) => {
-                    self.search_active = true;
-                    self.search_input.set_focused(true);
+                    self.set_focus(FocusPanel::Search);
+                }
+                (KeyCode::Tab, Modifiers::NONE) => {
+                    self.focus = match self.focus {
+                        FocusPanel::Text => FocusPanel::Navigator,
+                        FocusPanel::Navigator => FocusPanel::Toc,
+                        FocusPanel::Toc => FocusPanel::Insights,
+                        FocusPanel::Insights => FocusPanel::Text,
+                        FocusPanel::Search => FocusPanel::Text,
+                        FocusPanel::Status => FocusPanel::Text,
+                    };
                 }
                 (KeyCode::Char('n'), Modifiers::NONE) => self.next_match(),
                 (KeyCode::Char('N'), Modifiers::NONE) | (KeyCode::Char('n'), Modifiers::SHIFT) => {
                     self.prev_match();
                 }
-                (KeyCode::Char('j'), Modifiers::NONE) | (KeyCode::Down, Modifiers::NONE) => {
-                    self.scroll_by(1);
+                (KeyCode::Char('m'), Modifiers::NONE) => {
+                    self.mode = self.mode.next();
                 }
-                (KeyCode::Char('k'), Modifiers::NONE) | (KeyCode::Up, Modifiers::NONE) => {
-                    self.scroll_by(-1);
+                (KeyCode::Char('M'), _) | (KeyCode::Char('m'), Modifiers::SHIFT) => {
+                    self.mode = self.mode.prev();
                 }
+                (KeyCode::Down, Modifiers::NONE) => match self.focus {
+                    FocusPanel::Navigator => self.next_match(),
+                    FocusPanel::Toc => {
+                        if self.toc_selected + 1 < self.toc_entries.len() {
+                            self.toc_selected += 1;
+                            let line = self.toc_entries[self.toc_selected].line;
+                            self.scroll_to(line.saturating_sub(2));
+                        }
+                    }
+                    _ => self.scroll_by(1),
+                },
+                (KeyCode::Up, Modifiers::NONE) => match self.focus {
+                    FocusPanel::Navigator => self.prev_match(),
+                    FocusPanel::Toc => {
+                        if self.toc_selected > 0 {
+                            self.toc_selected -= 1;
+                            let line = self.toc_entries[self.toc_selected].line;
+                            self.scroll_to(line.saturating_sub(2));
+                        }
+                    }
+                    _ => self.scroll_by(-1),
+                },
+                (KeyCode::Char('j'), Modifiers::NONE) => self.scroll_by(1),
+                (KeyCode::Char('k'), Modifiers::NONE) => self.scroll_by(-1),
                 (KeyCode::Char('d'), Modifiers::CTRL) | (KeyCode::PageDown, _) => {
-                    self.scroll_by(self.viewport_height as i32 / 2);
+                    self.scroll_by(self.viewport_height.get() as i32 / 2);
                 }
                 (KeyCode::Char('u'), Modifiers::CTRL) | (KeyCode::PageUp, _) => {
-                    self.scroll_by(-(self.viewport_height as i32 / 2));
+                    self.scroll_by(-(self.viewport_height.get() as i32 / 2));
                 }
                 (KeyCode::Home, _) | (KeyCode::Char('g'), Modifiers::NONE) => {
                     self.scroll_to(0);
                 }
                 (KeyCode::End, _) | (KeyCode::Char('G'), Modifiers::NONE) => {
                     self.scroll_to(self.total_lines());
+                }
+                (KeyCode::Enter, Modifiers::NONE) => {
+                    if self.focus == FocusPanel::Toc {
+                        if let Some(entry) = self.toc_entries.get(self.toc_selected) {
+                            self.scroll_to(entry.line.saturating_sub(2));
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -355,13 +562,34 @@ impl Screen for Shakespeare {
             (v_chunks[0], v_chunks[1])
         };
 
-        // Body: left (text) + right (TOC)
+        // Body: left (text) + right (navigator/toc/insights)
         let h_chunks = Flex::horizontal()
-            .constraints([Constraint::Percentage(72.0), Constraint::Percentage(28.0)])
+            .constraints([Constraint::Percentage(66.0), Constraint::Percentage(34.0)])
             .split(body_area);
 
+        let right_rows = Flex::vertical()
+            .constraints([
+                Constraint::Percentage(40.0),
+                Constraint::Percentage(35.0),
+                Constraint::Percentage(25.0),
+            ])
+            .split(h_chunks[1]);
+
+        self.layout_text.set(h_chunks[0]);
+        self.layout_nav.set(right_rows[0]);
+        self.layout_toc.set(right_rows[1]);
+        self.layout_insights.set(right_rows[2]);
+        self.layout_status.set(status_area);
+        if self.search_active {
+            self.layout_search.set(v_chunks[0]);
+        } else {
+            self.layout_search.set(Rect::default());
+        }
+
         self.render_text_panel(frame, h_chunks[0]);
-        self.render_toc_panel(frame, h_chunks[1]);
+        self.render_match_panel(frame, right_rows[0]);
+        self.render_toc_panel(frame, right_rows[1]);
+        self.render_insights_panel(frame, right_rows[2]);
         self.render_status_bar(frame, status_area);
     }
 
@@ -370,6 +598,10 @@ impl Screen for Shakespeare {
             HelpEntry {
                 key: "/",
                 action: "Search",
+            },
+            HelpEntry {
+                key: "Tab",
+                action: "Cycle focus",
             },
             HelpEntry {
                 key: "Enter/↓/Tab",
@@ -394,6 +626,10 @@ impl Screen for Shakespeare {
             HelpEntry {
                 key: "PgUp/PgDn",
                 action: "Page scroll",
+            },
+            HelpEntry {
+                key: "Mouse",
+                action: "Click panes to focus",
             },
         ]
     }
@@ -533,13 +769,18 @@ impl Shakespeare {
             .border_type(BorderType::Heavy)
             .title("Complete Works of William Shakespeare")
             .title_alignment(Alignment::Center)
-            .style(theme::content_border());
+            .style(theme::panel_border_style(
+                self.focus == FocusPanel::Text,
+                theme::screen_accent::SHAKESPEARE,
+            ));
         let inner = block.inner(area);
         block.render(area, frame);
 
         if inner.height == 0 || inner.width < 5 {
             return;
         }
+
+        self.viewport_height.set(inner.height);
 
         // Reserve 1 col for scrollbar on the right
         let text_width = inner.width.saturating_sub(1);
@@ -737,9 +978,12 @@ impl Shakespeare {
         let block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title("Contents")
+            .title("Navigator")
             .title_alignment(Alignment::Center)
-            .style(theme::content_border());
+            .style(theme::panel_border_style(
+                self.focus == FocusPanel::Toc,
+                theme::screen_accent::SHAKESPEARE,
+            ));
         let inner = block.inner(area);
         block.render(area, frame);
 
@@ -747,7 +991,218 @@ impl Shakespeare {
             return;
         }
 
-        self.toc_tree.render(inner, frame);
+        let visible = inner.height as usize;
+        if self.toc_selected >= self.toc_entries.len() {
+            return;
+        }
+
+        let max_scroll = self.toc_entries.len().saturating_sub(visible).max(0);
+        let mut start = self.toc_scroll.get().min(max_scroll);
+        if self.toc_selected < start {
+            start = self.toc_selected;
+        } else if self.toc_selected >= start + visible {
+            start = self.toc_selected.saturating_sub(visible.saturating_sub(1));
+        }
+        self.toc_scroll.set(start);
+
+        let end = (start + visible).min(self.toc_entries.len());
+        let is_focused = self.focus == FocusPanel::Toc;
+
+        for (i, entry) in self.toc_entries[start..end].iter().enumerate() {
+            let row = inner.y + i as u16;
+            let row_area = Rect::new(inner.x, row, inner.width, 1);
+            let label = truncate_to_width(&entry.title, inner.width);
+            if start + i == self.toc_selected {
+                if is_focused {
+                    StyledText::new(format!("▶ {label}"))
+                        .effect(TextEffect::PulsingGlow {
+                            color: theme::accent::PRIMARY.into(),
+                            speed: 1.6,
+                        })
+                        .bold()
+                        .time(self.time)
+                        .render(row_area, frame);
+                } else {
+                    Paragraph::new(format!("▶ {label}"))
+                        .style(
+                            Style::new()
+                                .fg(theme::fg::PRIMARY)
+                                .bg(theme::alpha::SURFACE),
+                        )
+                        .render(row_area, frame);
+                }
+            } else {
+                Paragraph::new(format!("  {label}"))
+                    .style(Style::new().fg(theme::fg::SECONDARY))
+                    .render(row_area, frame);
+            }
+        }
+    }
+
+    fn render_match_panel(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Match Navigator")
+            .title_alignment(Alignment::Center)
+            .style(theme::panel_border_style(
+                self.focus == FocusPanel::Navigator,
+                theme::screen_accent::SHAKESPEARE,
+            ));
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        let rows = Flex::vertical()
+            .constraints([
+                Constraint::Fixed(1),
+                Constraint::Min(1),
+                Constraint::Fixed(1),
+            ])
+            .split(inner);
+
+        let summary = if self.search_matches.is_empty() {
+            "No matches yet".to_string()
+        } else {
+            format!(
+                "{}/{} matches · density {:.0}%",
+                self.current_match + 1,
+                self.search_matches.len(),
+                self.match_density
+                    .iter()
+                    .copied()
+                    .fold(0.0, |a, b| if b > a { b } else { a })
+                    * 100.0
+            )
+        };
+        let summary = truncate_to_width(&summary, rows[0].width);
+        StyledText::new(summary)
+            .effect(TextEffect::AnimatedGradient {
+                gradient: ColorGradient::ocean(),
+                speed: 0.45,
+            })
+            .time(self.time)
+            .render(rows[0], frame);
+
+        if !rows[1].is_empty() {
+            let list_height = rows[1].height as usize;
+            let start = self.current_match.saturating_sub(list_height / 2);
+            let end = (start + list_height).min(self.search_matches.len());
+            let is_focused = self.focus == FocusPanel::Navigator;
+            for (i, match_idx) in self.search_matches[start..end].iter().enumerate() {
+                let y = rows[1].y + i as u16;
+                let row_area = Rect::new(rows[1].x, y, rows[1].width, 1);
+                let line_text = self.lines[*match_idx];
+                let snippet = truncate_to_width(line_text, row_area.width.saturating_sub(10));
+                let label = format!("{:>6} {snippet}", match_idx + 1);
+                if start + i == self.current_match {
+                    if is_focused {
+                        StyledText::new(format!("▶ {label}"))
+                            .effect(TextEffect::PulsingGlow {
+                                color: theme::accent::WARNING.into(),
+                                speed: 1.8,
+                            })
+                            .time(self.time)
+                            .render(row_area, frame);
+                    } else {
+                        Paragraph::new(format!("▶ {label}"))
+                            .style(
+                                Style::new()
+                                    .fg(theme::fg::PRIMARY)
+                                    .bg(theme::alpha::SURFACE),
+                            )
+                            .render(row_area, frame);
+                    }
+                } else {
+                    Paragraph::new(format!("  {label}"))
+                        .style(Style::new().fg(theme::fg::SECONDARY))
+                        .render(row_area, frame);
+                }
+            }
+        }
+
+        if !rows[2].is_empty() {
+            if self.search_matches.is_empty() {
+                Paragraph::new("Type / to search instantly")
+                    .style(theme::muted())
+                    .render(rows[2], frame);
+            } else {
+                let idx = self.search_matches[self.current_match];
+                let preview = truncate_to_width(self.lines[idx], rows[2].width);
+                let styled = StyledText::new(preview)
+                    .effect(TextEffect::ColorWave {
+                        color1: theme::accent::PRIMARY.into(),
+                        color2: theme::accent::ACCENT_8.into(),
+                        speed: 1.2,
+                        wavelength: 12.0,
+                    })
+                    .time(self.time);
+                styled.render(rows[2], frame);
+            }
+        }
+    }
+
+    fn render_insights_panel(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Search Insights")
+            .title_alignment(Alignment::Center)
+            .style(theme::panel_border_style(
+                self.focus == FocusPanel::Insights,
+                theme::screen_accent::SHAKESPEARE,
+            ));
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        let rows = Flex::vertical()
+            .constraints([
+                Constraint::Fixed(1),
+                Constraint::Fixed(1),
+                Constraint::Min(1),
+            ])
+            .split(inner);
+
+        let section = truncate_to_width(self.current_section(), rows[0].width);
+        StyledText::new(format!("Section: {section}"))
+            .effect(TextEffect::Reveal {
+                mode: RevealMode::LeftToRight,
+                progress: ((self.time * 0.4).sin() * 0.5 + 0.5).clamp(0.0, 1.0),
+                seed: 7,
+            })
+            .time(self.time)
+            .render(rows[0], frame);
+
+        let stats = format!(
+            "Matches: {} · View: {} lines",
+            self.search_matches.len(),
+            self.viewport_height.get()
+        );
+        Paragraph::new(truncate_to_width(&stats, rows[1].width))
+            .style(theme::muted())
+            .render(rows[1], frame);
+
+        if !rows[2].is_empty() {
+            let density = if self.match_density.is_empty() {
+                vec![0.0; 20]
+            } else {
+                self.match_density.clone()
+            };
+            Sparkline::new(&density)
+                .style(Style::new().fg(theme::accent::PRIMARY))
+                .gradient(
+                    theme::accent::PRIMARY.into(),
+                    theme::accent::ACCENT_8.into(),
+                )
+                .render(rows[2], frame);
+        }
     }
 
     fn render_status_bar(&self, frame: &mut Frame, area: Rect) {
@@ -815,16 +1270,18 @@ mod tests {
     #[test]
     fn shakespeare_scroll_to_end() {
         let mut s = Shakespeare::new();
-        s.viewport_height = 40;
+        s.viewport_height.set(40);
         s.scroll_to(s.total_lines());
-        let max_offset = s.total_lines().saturating_sub(s.viewport_height as usize);
+        let max_offset = s
+            .total_lines()
+            .saturating_sub(s.viewport_height.get() as usize);
         assert_eq!(s.scroll_offset, max_offset);
     }
 
     #[test]
     fn shakespeare_scroll_navigation() {
         let mut s = Shakespeare::new();
-        s.viewport_height = 40;
+        s.viewport_height.set(40);
         s.scroll_by(10);
         assert_eq!(s.scroll_offset, 10);
         s.scroll_by(-5);

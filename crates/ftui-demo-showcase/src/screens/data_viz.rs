@@ -238,6 +238,55 @@ impl DataViz {
         chart.render(inner, frame);
     }
 
+    fn render_spectrum_panel(&self, frame: &mut Frame, area: Rect) {
+        let border_style = theme::panel_border_style(
+            self.focus == ChartPanel::Spectrum,
+            theme::screen_accent::DATA_VIZ,
+        );
+
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Spectrum Bars")
+            .title_alignment(Alignment::Center)
+            .style(border_style);
+
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        let labels = ["32Hz", "64Hz", "125Hz", "250Hz", "500Hz", "1k", "2k", "4k"];
+        let mut groups = Vec::with_capacity(labels.len());
+        let phase = self.tick_count as f64 * 0.12;
+        for (idx, label) in labels.iter().enumerate() {
+            let t = phase + idx as f64 * 0.55;
+            let a = (t.sin() * 0.5 + 0.5) * 70.0 + 10.0;
+            let b = (t.cos() * 0.5 + 0.5) * 55.0 + 12.0;
+            let c = ((t * 1.3).sin() * 0.5 + 0.5) * 40.0 + 8.0;
+            groups.push(BarGroup::new(label, vec![a, b, c]));
+        }
+
+        let colors = vec![
+            theme::accent::PRIMARY.into(),
+            theme::accent::ACCENT_9.into(),
+            theme::accent::ACCENT_10.into(),
+        ];
+
+        let chart = BarChart::new(groups)
+            .direction(BarDirection::Vertical)
+            .mode(BarMode::Stacked)
+            .bar_width(1)
+            .bar_gap(0)
+            .group_gap(theme::spacing::XS)
+            .colors(colors)
+            .style(Style::new().fg(theme::fg::PRIMARY));
+
+        chart.render(inner, frame);
+    }
+
     fn render_linechart_panel(&self, frame: &mut Frame, area: Rect) {
         let border_style = theme::panel_border_style(
             self.focus == ChartPanel::LineChart,
@@ -354,6 +403,43 @@ impl DataViz {
         }
     }
 
+    fn render_heatmap_panel(&self, frame: &mut Frame, area: Rect) {
+        let border_style = theme::panel_border_style(
+            self.focus == ChartPanel::Heatmap,
+            theme::screen_accent::DATA_VIZ,
+        );
+
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Signal Matrix")
+            .title_alignment(Alignment::Center)
+            .style(border_style);
+
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() || inner.width < 4 || inner.height < 3 {
+            return;
+        }
+
+        let rows = Flex::vertical()
+            .constraints([Constraint::Fixed(1), Constraint::Min(1)])
+            .split(inner);
+
+        if !rows[0].is_empty() {
+            let legend_cols = Flex::horizontal()
+                .constraints([Constraint::Fixed(14), Constraint::Min(1)])
+                .split(rows[0]);
+            Paragraph::new("Heatmap:")
+                .style(Style::new().fg(theme::fg::SECONDARY))
+                .render(legend_cols[0], frame);
+            render_gradient_bar(frame, legend_cols[1]);
+        }
+
+        self.render_heatmap_grid(frame, rows[1]);
+    }
+
     fn render_heatmap(&self, frame: &mut Frame, area: Rect) {
         if area.is_empty() || area.width < 4 || area.height < 3 {
             return;
@@ -369,7 +455,14 @@ impl DataViz {
                 .render(rows[0], frame);
         }
 
-        let grid = rows[1];
+        self.render_heatmap_grid(frame, rows[1]);
+    }
+
+    fn render_heatmap_grid(&self, frame: &mut Frame, grid: Rect) {
+        if grid.is_empty() {
+            return;
+        }
+
         let w = grid.width.max(1) as f64;
         let h = grid.height.max(1) as f64;
         let phase = self.tick_count as f64 * 0.05;
@@ -459,6 +552,23 @@ fn render_mini_bar(frame: &mut Frame, area: Rect, label: &str, value: f64, color
     }
 }
 
+fn render_gradient_bar(frame: &mut Frame, area: Rect) {
+    if area.is_empty() {
+        return;
+    }
+
+    let width = area.width.max(1) as f64;
+    for dx in 0..area.width {
+        let t = dx as f64 / (width - 1.0).max(1.0);
+        let color = heatmap_gradient(t);
+        let mut cell = Cell::from_char(' ');
+        cell.bg = color;
+        if let Some(slot) = frame.buffer.get_mut(area.x + dx, area.y) {
+            *slot = cell;
+        }
+    }
+}
+
 impl Screen for DataViz {
     type Message = Event;
 
@@ -475,12 +585,34 @@ impl Screen for DataViz {
             return Cmd::None;
         }
         if let Event::Key(KeyEvent {
+            code: KeyCode::Right | KeyCode::Down,
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event
+            && !modifiers.contains(Modifiers::CTRL)
+        {
+            self.focus = self.focus.next();
+            return Cmd::None;
+        }
+        if let Event::Key(KeyEvent {
             code: KeyCode::Left,
             modifiers,
             kind: KeyEventKind::Press,
             ..
         }) = event
             && modifiers.contains(Modifiers::CTRL)
+        {
+            self.focus = self.focus.prev();
+            return Cmd::None;
+        }
+        if let Event::Key(KeyEvent {
+            code: KeyCode::Left | KeyCode::Up,
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event
+            && !modifiers.contains(Modifiers::CTRL)
         {
             self.focus = self.focus.prev();
             return Cmd::None;
@@ -513,27 +645,37 @@ impl Screen for DataViz {
             .constraints([Constraint::Min(1), Constraint::Fixed(1)])
             .split(area);
 
-        // 2x2 grid of chart panels
+        // 2x3 grid of chart panels
         let rows = Flex::vertical()
             .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
             .split(main[0]);
 
         let top_cols = Flex::horizontal()
-            .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+            .constraints([
+                Constraint::Percentage(33.0),
+                Constraint::Percentage(33.0),
+                Constraint::Percentage(34.0),
+            ])
             .split(rows[0]);
 
         let bot_cols = Flex::horizontal()
-            .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+            .constraints([
+                Constraint::Percentage(33.0),
+                Constraint::Percentage(33.0),
+                Constraint::Percentage(34.0),
+            ])
             .split(rows[1]);
 
         self.render_sparkline_panel(frame, top_cols[0]);
         self.render_barchart_panel(frame, top_cols[1]);
+        self.render_spectrum_panel(frame, top_cols[2]);
         self.render_linechart_panel(frame, bot_cols[0]);
         self.render_canvas_panel(frame, bot_cols[1]);
+        self.render_heatmap_panel(frame, bot_cols[2]);
 
         // Status bar
         let status = format!(
-            "Tick: {} | Ctrl+\u{2190}/\u{2192}: panels | d: toggle bar direction",
+            "Tick: {} | \u{2190}/\u{2192}/\u{2191}/\u{2193}: panels | d: toggle bar direction",
             self.tick_count
         );
         Paragraph::new(&*status)
@@ -544,7 +686,7 @@ impl Screen for DataViz {
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {
-                key: "Ctrl+\u{2190}/\u{2192}",
+                key: "\u{2190}/\u{2192}/\u{2191}/\u{2193}",
                 action: "Switch panel",
             },
             HelpEntry {
@@ -597,7 +739,7 @@ mod tests {
         screen.update(&ctrl_press(KeyCode::Right));
         assert_eq!(screen.focus, ChartPanel::BarChart);
         screen.update(&ctrl_press(KeyCode::Right));
-        assert_eq!(screen.focus, ChartPanel::LineChart);
+        assert_eq!(screen.focus, ChartPanel::Spectrum);
         screen.update(&ctrl_press(KeyCode::Left));
         assert_eq!(screen.focus, ChartPanel::BarChart);
     }

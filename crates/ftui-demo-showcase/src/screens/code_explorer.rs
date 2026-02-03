@@ -2,8 +2,11 @@
 
 //! Code Explorer screen — SQLite C source with syntax highlighting and search.
 
-use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers};
+use std::cell::Cell;
+
+use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
+use ftui_extras::charts::Sparkline;
 use ftui_extras::filesize;
 use ftui_extras::syntax::{GenericTokenizer, GenericTokenizerConfig, SyntaxHighlighter};
 use ftui_extras::text_effects::{ColorGradient, Direction, StyledText, TextEffect};
@@ -139,7 +142,7 @@ pub struct CodeExplorer {
     /// Current scroll offset (top visible line).
     scroll_offset: usize,
     /// Viewport height in lines.
-    viewport_height: u16,
+    viewport_height: Cell<u16>,
     /// Syntax highlighter with C language support.
     highlighter: SyntaxHighlighter,
     /// Search input.
@@ -152,6 +155,8 @@ pub struct CodeExplorer {
     goto_active: bool,
     /// Line indices matching search query.
     search_matches: Vec<usize>,
+    /// Search match density (bucketed) for radar/sparkline.
+    match_density: Vec<f64>,
     /// Current match index.
     current_match: usize,
     /// File metadata as JSON string.
@@ -166,6 +171,16 @@ pub struct CodeExplorer {
     current_hotspot: usize,
     /// Feature spotlight index.
     feature_index: usize,
+    /// Focused panel for interaction.
+    focus: FocusPanel,
+    /// Layout hit areas for mouse focus.
+    layout_input: Cell<Rect>,
+    layout_code: Cell<Rect>,
+    layout_info: Cell<Rect>,
+    layout_context: Cell<Rect>,
+    layout_hotspots: Cell<Rect>,
+    layout_radar: Cell<Rect>,
+    layout_spotlight: Cell<Rect>,
 }
 
 impl Default for CodeExplorer {
@@ -196,7 +211,7 @@ impl CodeExplorer {
         Self {
             lines,
             scroll_offset: 0,
-            viewport_height: 30,
+            viewport_height: Cell::new(30),
             highlighter,
             search_input: TextInput::new()
                 .with_placeholder("Search code... (/ to focus)")
@@ -217,6 +232,7 @@ impl CodeExplorer {
                 .with_placeholder_style(Style::new().fg(theme::fg::MUTED)),
             goto_active: false,
             search_matches: Vec::new(),
+            match_density: Vec::new(),
             current_match: 0,
             metadata_json,
             tick_count: 0,
@@ -224,6 +240,14 @@ impl CodeExplorer {
             hotspots,
             current_hotspot: 0,
             feature_index: 0,
+            focus: FocusPanel::Code,
+            layout_input: Cell::new(Rect::default()),
+            layout_code: Cell::new(Rect::default()),
+            layout_info: Cell::new(Rect::default()),
+            layout_context: Cell::new(Rect::default()),
+            layout_hotspots: Cell::new(Rect::default()),
+            layout_radar: Cell::new(Rect::default()),
+            layout_spotlight: Cell::new(Rect::default()),
         }
     }
 
@@ -294,7 +318,7 @@ impl CodeExplorer {
     fn scroll_by(&mut self, delta: i32) {
         let max_offset = self
             .total_lines()
-            .saturating_sub(self.viewport_height as usize);
+            .saturating_sub(self.viewport_height.get() as usize);
         if delta < 0 {
             self.scroll_offset = self
                 .scroll_offset
@@ -307,7 +331,7 @@ impl CodeExplorer {
     fn scroll_to(&mut self, line: usize) {
         let max_offset = self
             .total_lines()
-            .saturating_sub(self.viewport_height as usize);
+            .saturating_sub(self.viewport_height.get() as usize);
         self.scroll_offset = line.min(max_offset);
     }
 
@@ -316,6 +340,7 @@ impl CodeExplorer {
         self.search_matches.clear();
         self.current_match = 0;
         if query.len() < 2 {
+            self.match_density = vec![0.0; 48];
             return;
         }
         for (i, line) in self.lines.iter().enumerate() {
@@ -327,6 +352,7 @@ impl CodeExplorer {
         if let Some(&first) = self.search_matches.first() {
             self.scroll_to(first.saturating_sub(3));
         }
+        self.update_match_density();
     }
 
     fn next_match(&mut self) {
@@ -379,12 +405,141 @@ impl CodeExplorer {
         }
         "Top of file"
     }
+
+    fn set_focus(&mut self, focus: FocusPanel) {
+        self.focus = focus;
+        if matches!(focus, FocusPanel::Input) {
+            self.search_active = true;
+            self.search_input.set_focused(true);
+        }
+    }
+
+    fn update_match_density(&mut self) {
+        let buckets = 48usize;
+        let mut density = vec![0.0; buckets];
+        if self.search_matches.is_empty() {
+            self.match_density = density;
+            return;
+        }
+        let total = self.total_lines().max(1);
+        for &line in &self.search_matches {
+            let idx = (line * buckets) / total;
+            if let Some(slot) = density.get_mut(idx) {
+                *slot += 1.0;
+            }
+        }
+        let max = density
+            .iter()
+            .copied()
+            .fold(0.0, |a, b| if b > a { b } else { a });
+        if max > 0.0 {
+            for slot in &mut density {
+                *slot /= max;
+            }
+        }
+        self.match_density = density;
+    }
+
+    fn set_current_match(&mut self, idx: usize) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        self.current_match = idx.min(self.search_matches.len() - 1);
+        let line = self.search_matches[self.current_match];
+        self.scroll_to(line.saturating_sub(3));
+    }
+
+    fn focus_from_point(&mut self, x: u16, y: u16) {
+        self.search_active = false;
+        self.search_input.set_focused(false);
+        let input = self.layout_input.get();
+        let code = self.layout_code.get();
+        let info = self.layout_info.get();
+        let context = self.layout_context.get();
+        let hotspots = self.layout_hotspots.get();
+        let radar = self.layout_radar.get();
+        let spotlight = self.layout_spotlight.get();
+
+        if !input.is_empty() && input.contains(x, y) {
+            self.set_focus(FocusPanel::Input);
+            return;
+        }
+        if code.contains(x, y) {
+            self.focus = FocusPanel::Code;
+            return;
+        }
+        if info.contains(x, y) {
+            self.focus = FocusPanel::Info;
+            return;
+        }
+        if context.contains(x, y) {
+            self.focus = FocusPanel::Context;
+            return;
+        }
+        if hotspots.contains(x, y) {
+            self.focus = FocusPanel::Hotspots;
+            return;
+        }
+        if radar.contains(x, y) {
+            self.focus = FocusPanel::Radar;
+            return;
+        }
+        if spotlight.contains(x, y) {
+            self.focus = FocusPanel::Spotlight;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusPanel {
+    Input,
+    Code,
+    Info,
+    Context,
+    Hotspots,
+    Radar,
+    Spotlight,
 }
 
 impl Screen for CodeExplorer {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Mouse(mouse) = event {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.focus_from_point(mouse.x, mouse.y);
+                    if self.focus == FocusPanel::Hotspots {
+                        let area = self.layout_hotspots.get();
+                        let rel_y = mouse.y.saturating_sub(area.y);
+                        let idx = rel_y as usize;
+                        if idx < self.hotspots.len() {
+                            self.current_hotspot = idx;
+                            let line = self.hotspots[self.current_hotspot].line;
+                            self.scroll_to(line.saturating_sub(3));
+                        }
+                    } else if self.focus == FocusPanel::Radar {
+                        let area = self.layout_radar.get();
+                        let rel_y = mouse.y.saturating_sub(area.y);
+                        let idx = self.current_match.saturating_sub(2) + rel_y as usize;
+                        self.set_current_match(idx);
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    if self.focus == FocusPanel::Code {
+                        self.scroll_by(-3);
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    if self.focus == FocusPanel::Code {
+                        self.scroll_by(3);
+                    }
+                }
+                _ => {}
+            }
+            return Cmd::None;
+        }
+
         if let Event::Key(key) = event {
             if key.kind != KeyEventKind::Press {
                 return Cmd::None;
@@ -446,6 +601,7 @@ impl Screen for CodeExplorer {
                 (KeyCode::Char('/'), Modifiers::NONE) => {
                     self.search_active = true;
                     self.search_input.set_focused(true);
+                    self.focus = FocusPanel::Input;
                 }
                 (KeyCode::Char('g'), Modifiers::CTRL) => {
                     self.goto_active = true;
@@ -461,13 +617,23 @@ impl Screen for CodeExplorer {
                 (KeyCode::Char('f'), Modifiers::NONE) => {
                     self.feature_index = (self.feature_index + 1) % FEATURE_SPOTLIGHT.len();
                 }
-                (KeyCode::Char('j'), Modifiers::NONE) | (KeyCode::Down, _) => self.scroll_by(1),
-                (KeyCode::Char('k'), Modifiers::NONE) | (KeyCode::Up, _) => self.scroll_by(-1),
+                (KeyCode::Down, _) => match self.focus {
+                    FocusPanel::Hotspots => self.next_hotspot(),
+                    FocusPanel::Radar => self.next_match(),
+                    _ => self.scroll_by(1),
+                },
+                (KeyCode::Up, _) => match self.focus {
+                    FocusPanel::Hotspots => self.prev_hotspot(),
+                    FocusPanel::Radar => self.prev_match(),
+                    _ => self.scroll_by(-1),
+                },
+                (KeyCode::Char('j'), Modifiers::NONE) => self.scroll_by(1),
+                (KeyCode::Char('k'), Modifiers::NONE) => self.scroll_by(-1),
                 (KeyCode::Char('d'), Modifiers::CTRL) | (KeyCode::PageDown, _) => {
-                    self.scroll_by(self.viewport_height as i32 / 2);
+                    self.scroll_by(self.viewport_height.get() as i32 / 2);
                 }
                 (KeyCode::Char('u'), Modifiers::CTRL) | (KeyCode::PageUp, _) => {
-                    self.scroll_by(-(self.viewport_height as i32 / 2));
+                    self.scroll_by(-(self.viewport_height.get() as i32 / 2));
                 }
                 // Vim: g or Home for top
                 (KeyCode::Home, _) | (KeyCode::Char('g'), Modifiers::NONE) => self.scroll_to(0),
@@ -475,6 +641,20 @@ impl Screen for CodeExplorer {
                 (KeyCode::End, _) | (KeyCode::Char('G'), Modifiers::NONE) => {
                     self.scroll_to(self.total_lines())
                 }
+                (KeyCode::Enter, _) => match self.focus {
+                    FocusPanel::Hotspots => {
+                        if let Some(hotspot) = self.current_hotspot() {
+                            self.scroll_to(hotspot.line.saturating_sub(3));
+                        }
+                    }
+                    FocusPanel::Radar => {
+                        if !self.search_matches.is_empty() {
+                            let line = self.search_matches[self.current_match];
+                            self.scroll_to(line.saturating_sub(3));
+                        }
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -503,8 +683,10 @@ impl Screen for CodeExplorer {
 
         let (body_area, status_area) = if self.search_active || self.goto_active {
             self.render_input_bar(frame, v_chunks[0]);
+            self.layout_input.set(v_chunks[0]);
             (v_chunks[1], v_chunks[2])
         } else {
+            self.layout_input.set(Rect::default());
             (v_chunks[0], v_chunks[1])
         };
 
@@ -513,6 +695,7 @@ impl Screen for CodeExplorer {
             .constraints([Constraint::Percentage(72.0), Constraint::Percentage(28.0)])
             .split(body_area);
 
+        self.layout_code.set(h_chunks[0]);
         self.render_code_panel(frame, h_chunks[0]);
         self.render_sidebar(frame, h_chunks[1]);
         self.render_status_bar(frame, status_area);
@@ -559,6 +742,10 @@ impl Screen for CodeExplorer {
             HelpEntry {
                 key: "Ctrl+D/U",
                 action: "Page scroll",
+            },
+            HelpEntry {
+                key: "Mouse",
+                action: "Click pane to focus",
             },
         ]
     }
@@ -707,13 +894,18 @@ impl CodeExplorer {
             .border_type(BorderType::Double)
             .title("sqlite3.c")
             .title_alignment(Alignment::Center)
-            .style(theme::content_border());
+            .style(theme::panel_border_style(
+                self.focus == FocusPanel::Code,
+                theme::screen_accent::CODE_EXPLORER,
+            ));
         let inner = block.inner(area);
         block.render(area, frame);
 
         if inner.height == 0 || inner.width < 10 {
             return;
         }
+
+        self.viewport_height.set(inner.height);
 
         let text_width = inner.width.saturating_sub(1);
         let text_area = Rect::new(inner.x, inner.y, text_width, inner.height);
@@ -913,13 +1105,23 @@ impl CodeExplorer {
     }
 
     fn render_sidebar(&self, frame: &mut Frame, area: Rect) {
-        let rows = if area.height >= 24 {
+        let rows = if area.height >= 28 {
+            Flex::vertical()
+                .constraints([
+                    Constraint::Percentage(20.0),
+                    Constraint::Percentage(20.0),
+                    Constraint::Percentage(20.0),
+                    Constraint::Percentage(20.0),
+                    Constraint::Percentage(20.0),
+                ])
+                .split(area)
+        } else if area.height >= 22 {
             Flex::vertical()
                 .constraints([
                     Constraint::Percentage(25.0),
                     Constraint::Percentage(25.0),
-                    Constraint::Percentage(25.0),
-                    Constraint::Percentage(25.0),
+                    Constraint::Percentage(20.0),
+                    Constraint::Percentage(30.0),
                 ])
                 .split(area)
         } else {
@@ -933,12 +1135,16 @@ impl CodeExplorer {
         };
 
         // Panel 1: JSON metadata
+        self.layout_info.set(rows[0]);
         let json_block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .title("File Info")
             .title_alignment(Alignment::Center)
-            .style(theme::content_border());
+            .style(theme::panel_border_style(
+                self.focus == FocusPanel::Info,
+                theme::screen_accent::CODE_EXPLORER,
+            ));
         let json_inner = json_block.inner(rows[0]);
         json_block.render(rows[0], frame);
         let json_view = JsonView::new(&self.metadata_json)
@@ -949,13 +1155,17 @@ impl CodeExplorer {
             .with_punct_style(Style::new().fg(theme::fg::MUTED));
         json_view.render(json_inner, frame);
 
-        // Panel 2: Context + hotspot
+        // Panel 2: Context
+        self.layout_context.set(rows[1]);
         let ctx_block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .title("Context")
             .title_alignment(Alignment::Center)
-            .style(theme::content_border());
+            .style(theme::panel_border_style(
+                self.focus == FocusPanel::Context,
+                theme::screen_accent::CODE_EXPLORER,
+            ));
         let ctx_inner = ctx_block.inner(rows[1]);
         ctx_block.render(rows[1], frame);
 
@@ -969,43 +1179,93 @@ impl CodeExplorer {
             .style(Style::new().fg(theme::fg::SECONDARY))
             .render(ctx_inner, frame);
 
-        if rows.len() == 4 {
-            // Panel 3: Match radar
+        if rows.len() == 5 {
+            // Panel 3: Hotspots
+            self.layout_hotspots.set(rows[2]);
+            self.render_hotspot_panel(frame, rows[2]);
+
+            // Panel 4: Match radar
+            self.layout_radar.set(rows[3]);
             let radar_block = Block::new()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title("Match Radar")
                 .title_alignment(Alignment::Center)
-                .style(theme::content_border());
-            let radar_inner = radar_block.inner(rows[2]);
-            radar_block.render(rows[2], frame);
+                .style(theme::panel_border_style(
+                    self.focus == FocusPanel::Radar,
+                    theme::screen_accent::CODE_EXPLORER,
+                ));
+            let radar_inner = radar_block.inner(rows[3]);
+            radar_block.render(rows[3], frame);
             self.render_match_radar(frame, radar_inner);
 
-            // Panel 4: Feature spotlight
+            // Panel 5: Feature spotlight
+            self.layout_spotlight.set(rows[4]);
             let feature_block = Block::new()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title("FrankenTUI Spotlight")
                 .title_alignment(Alignment::Center)
-                .style(theme::content_border());
-            let feature_inner = feature_block.inner(rows[3]);
-            feature_block.render(rows[3], frame);
+                .style(theme::panel_border_style(
+                    self.focus == FocusPanel::Spotlight,
+                    theme::screen_accent::CODE_EXPLORER,
+                ));
+            let feature_inner = feature_block.inner(rows[4]);
+            feature_block.render(rows[4], frame);
             self.render_feature_spotlight(frame, feature_inner);
-        } else {
-            // Panel 3: combined radar + spotlight
+        } else if rows.len() == 4 {
+            // Panel 3: Hotspots
+            self.layout_hotspots.set(rows[2]);
+            self.render_hotspot_panel(frame, rows[2]);
+
+            // Panel 4: combined radar + spotlight
+            self.layout_radar.set(rows[3]);
+            self.layout_spotlight.set(rows[3]);
             let combo_block = Block::new()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title("Radar + Spotlight")
                 .title_alignment(Alignment::Center)
-                .style(theme::content_border());
-            let combo_inner = combo_block.inner(rows[2]);
-            combo_block.render(rows[2], frame);
+                .style(theme::panel_border_style(
+                    self.focus == FocusPanel::Radar || self.focus == FocusPanel::Spotlight,
+                    theme::screen_accent::CODE_EXPLORER,
+                ));
+            let combo_inner = combo_block.inner(rows[3]);
+            combo_block.render(rows[3], frame);
             let combo_rows = Flex::vertical()
                 .constraints([Constraint::Percentage(45.0), Constraint::Percentage(55.0)])
                 .split(combo_inner);
             self.render_match_radar(frame, combo_rows[0]);
             self.render_feature_spotlight(frame, combo_rows[1]);
+        } else {
+            // Panel 3: combo hotspot + radar + spotlight
+            self.layout_hotspots.set(rows[2]);
+            self.layout_radar.set(rows[2]);
+            self.layout_spotlight.set(rows[2]);
+            let combo_block = Block::new()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title("Hotspots + Radar + Spotlight")
+                .title_alignment(Alignment::Center)
+                .style(theme::panel_border_style(
+                    matches!(
+                        self.focus,
+                        FocusPanel::Hotspots | FocusPanel::Radar | FocusPanel::Spotlight
+                    ),
+                    theme::screen_accent::CODE_EXPLORER,
+                ));
+            let combo_inner = combo_block.inner(rows[2]);
+            combo_block.render(rows[2], frame);
+            let combo_rows = Flex::vertical()
+                .constraints([
+                    Constraint::Percentage(35.0),
+                    Constraint::Percentage(30.0),
+                    Constraint::Percentage(35.0),
+                ])
+                .split(combo_inner);
+            self.render_hotspot_panel(frame, combo_rows[0]);
+            self.render_match_radar(frame, combo_rows[1]);
+            self.render_feature_spotlight(frame, combo_rows[2]);
         }
     }
 
@@ -1013,30 +1273,118 @@ impl CodeExplorer {
         if area.is_empty() {
             return;
         }
-        let mut lines = Vec::new();
-        if self.search_matches.is_empty() {
-            lines.push("Type to search for instant highlights".to_owned());
+        let rows = Flex::vertical()
+            .constraints([Constraint::Fixed(1), Constraint::Min(1)])
+            .split(area);
+        let hint = if self.search_matches.is_empty() {
+            "Type / for instant highlights".to_string()
         } else {
-            let start = self.current_match.saturating_sub(2);
-            let end = (start + area.height as usize).min(self.search_matches.len());
-            for (i, idx) in self.search_matches[start..end].iter().enumerate() {
-                let marker = if start + i == self.current_match {
-                    "▶"
-                } else {
-                    "•"
-                };
-                lines.push(format!("{marker} line {}", idx + 1));
+            format!(
+                "{}/{} matches",
+                self.current_match + 1,
+                self.search_matches.len()
+            )
+        };
+        Paragraph::new(truncate_to_width(&hint, rows[0].width))
+            .style(theme::muted())
+            .render(rows[0], frame);
+
+        if !rows[1].is_empty() {
+            let mut lines = Vec::new();
+            if self.search_matches.is_empty() {
+                lines.push("Awaiting query...".to_owned());
+            } else {
+                let start = self.current_match.saturating_sub(2);
+                let end = (start + rows[1].height as usize).min(self.search_matches.len());
+                for (i, idx) in self.search_matches[start..end].iter().enumerate() {
+                    let marker = if start + i == self.current_match {
+                        "▶"
+                    } else {
+                        "•"
+                    };
+                    lines.push(format!("{marker} line {}", idx + 1));
+                }
+            }
+            for (i, line) in lines.iter().enumerate() {
+                if i as u16 >= rows[1].height {
+                    break;
+                }
+                let y = rows[1].y + i as u16;
+                let line_area = Rect::new(rows[1].x, y, rows[1].width, 1);
+                Paragraph::new(truncate_to_width(line, rows[1].width))
+                    .style(Style::new().fg(theme::fg::SECONDARY))
+                    .render(line_area, frame);
             }
         }
-        for (i, line) in lines.iter().enumerate() {
-            if i as u16 >= area.height {
+    }
+
+    fn render_hotspot_panel(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Hotspots")
+            .title_alignment(Alignment::Center)
+            .style(theme::panel_border_style(
+                self.focus == FocusPanel::Hotspots,
+                theme::screen_accent::CODE_EXPLORER,
+            ));
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        let list_height = inner.height.saturating_sub(1).max(1);
+        let visible = list_height as usize;
+        let start = self.current_hotspot.saturating_sub(visible / 2);
+        let end = (start + visible).min(self.hotspots.len());
+        let is_focused = self.focus == FocusPanel::Hotspots;
+
+        for (i, hotspot) in self.hotspots[start..end].iter().enumerate() {
+            let y = inner.y + i as u16;
+            if y >= inner.y + list_height {
                 break;
             }
-            let y = area.y + i as u16;
-            let line_area = Rect::new(area.x, y, area.width, 1);
-            Paragraph::new(truncate_to_width(line, area.width))
-                .style(Style::new().fg(theme::fg::SECONDARY))
-                .render(line_area, frame);
+            let row_area = Rect::new(inner.x, y, inner.width, 1);
+            let label = truncate_to_width(
+                &format!("{:>6}  {}", hotspot.line + 1, hotspot.label),
+                inner.width.saturating_sub(2),
+            );
+            if start + i == self.current_hotspot {
+                if is_focused {
+                    StyledText::new(format!("▶ {label}"))
+                        .effect(TextEffect::PulsingGlow {
+                            color: theme::accent::PRIMARY.into(),
+                            speed: 1.6,
+                        })
+                        .time(self.time)
+                        .render(row_area, frame);
+                } else {
+                    Paragraph::new(format!("▶ {label}"))
+                        .style(
+                            Style::new()
+                                .fg(theme::fg::PRIMARY)
+                                .bg(theme::alpha::SURFACE),
+                        )
+                        .render(row_area, frame);
+                }
+            } else {
+                Paragraph::new(format!("  {label}"))
+                    .style(Style::new().fg(theme::fg::SECONDARY))
+                    .render(row_area, frame);
+            }
+        }
+
+        if !inner.is_empty() && !self.match_density.is_empty() {
+            let spark_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
+            Sparkline::new(&self.match_density)
+                .style(Style::new().fg(theme::accent::PRIMARY))
+                .gradient(
+                    theme::accent::PRIMARY.into(),
+                    theme::accent::ACCENT_8.into(),
+                )
+                .render(spark_area, frame);
         }
     }
 
@@ -1120,7 +1468,7 @@ mod tests {
     #[test]
     fn code_explorer_goto_line() {
         let mut ce = CodeExplorer::new();
-        ce.viewport_height = 40;
+        ce.viewport_height.set(40);
         ce.goto_input.set_value("1000");
         ce.goto_line();
         assert_eq!(ce.scroll_offset, 999);

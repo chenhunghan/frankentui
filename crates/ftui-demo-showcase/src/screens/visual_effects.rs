@@ -29,12 +29,14 @@ use ftui_extras::text_effects::{
 use ftui_extras::visual_fx::{
     FxQuality, MetaballsCanvasAdapter, PlasmaCanvasAdapter, PlasmaPalette, ThemeInputs,
 };
+use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
 use ftui_text::WrapMode;
 use ftui_text::text::Text;
+use ftui_text::truncate_to_width;
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
@@ -429,6 +431,19 @@ impl TextEffectsDemo {
             TextEffectsTab::SpecialFx => self.build_special_fx_effect(),
             TextEffectsTab::Presets => self.build_preset_effect(),
             TextEffectsTab::Combinations => self.build_combo_effect(),
+        }
+    }
+
+    fn variant_with_effect(&self, effect_idx: usize) -> Self {
+        Self {
+            tab: self.tab,
+            effect_idx: effect_idx % self.tab.effect_count(),
+            time: self.time,
+            easing_mode: self.easing_mode,
+            easing: self.easing,
+            combo_enabled: self.combo_enabled,
+            demo_text: self.demo_text,
+            ascii_cache: self.ascii_cache.clone(),
         }
     }
 
@@ -2267,12 +2282,21 @@ impl WaveInterferenceState {
         self.sources[1].y = 0.5 + 0.1 * (t + TAU / 2.0).sin();
     }
 
-    fn render(&self, painter: &mut Painter, width: u16, height: u16) {
+    fn render(&self, painter: &mut Painter, width: u16, height: u16, quality: FxQuality) {
+        if width == 0 || height == 0 {
+            return;
+        }
+
+        let stride = fx_stride(quality);
+        if stride == 0 {
+            return;
+        }
+
         let w = width as f64;
         let h = height as f64;
 
-        for py in 0..height as i32 {
-            for px in 0..width as i32 {
+        for py in (0..height as usize).step_by(stride) {
+            for px in (0..width as usize).step_by(stride) {
                 let x = px as f64 / w;
                 let y = py as f64 / h;
 
@@ -2291,7 +2315,7 @@ impl WaveInterferenceState {
                 // Normalize and map to color
                 let normalized = (sum / self.sources.len() as f64 + 1.0) / 2.0;
                 let color = palette_ocean(normalized);
-                painter.point_colored(px, py, color);
+                painter.point_colored(px as i32, py as i32, color);
             }
         }
     }
@@ -2347,14 +2371,26 @@ impl SpiralState {
         self.rotation += 0.008;
     }
 
-    fn render(&self, painter: &mut Painter, width: u16, height: u16) {
+    fn render(&self, painter: &mut Painter, width: u16, height: u16, quality: FxQuality) {
+        if width == 0 || height == 0 {
+            return;
+        }
+
+        let step = fx_stride(quality);
+        if step == 0 {
+            return;
+        }
+
         let w = width as f64;
         let h = height as f64;
         let cx = w / 2.0;
         let cy = h / 2.0;
         let scale = w.min(h) * 0.4;
 
-        for star in &self.stars {
+        for (idx, star) in self.stars.iter().enumerate() {
+            if idx % step != 0 {
+                continue;
+            }
             // Logarithmic spiral: r = a * e^(b*theta)
             let arm_angle = (star.arm as f64 / self.num_arms as f64) * TAU;
             let theta = star.angle + arm_angle + self.rotation;
@@ -2539,16 +2575,24 @@ impl SpinLatticeState {
         self.phi = new_phi;
     }
 
-    fn render(&self, painter: &mut Painter, width: u16, height: u16) {
+    fn render(&self, painter: &mut Painter, width: u16, height: u16, quality: FxQuality) {
         if !self.initialized || self.width == 0 || self.height == 0 {
+            return;
+        }
+        if width == 0 || height == 0 {
+            return;
+        }
+
+        let stride = fx_stride(quality);
+        if stride == 0 {
             return;
         }
 
         let scale_x = self.width as f64 / width as f64;
         let scale_y = self.height as f64 / height as f64;
 
-        for py in 0..height as i32 {
-            for px in 0..width as i32 {
+        for py in (0..height as usize).step_by(stride) {
+            for px in (0..width as usize).step_by(stride) {
                 let gx = ((px as f64 * scale_x) as usize).min(self.width - 1);
                 let gy = ((py as f64 * scale_y) as usize).min(self.height - 1);
                 let idx = gy * self.width + gx;
@@ -2564,7 +2608,7 @@ impl SpinLatticeState {
                 let hue = (phi / TAU + 0.5) % 1.0;
 
                 let (r, g, b) = hsv_to_rgb(hue * 360.0, 0.9, brightness);
-                painter.point_colored(px, py, PackedRgba::rgb(r, g, b));
+                painter.point_colored(px as i32, py as i32, PackedRgba::rgb(r, g, b));
             }
         }
     }
@@ -2584,6 +2628,15 @@ fn rand_simple() -> f64 {
         .unwrap();
     let new = old.wrapping_mul(6364136223846793005).wrapping_add(1);
     (new >> 33) as f64 / (1u64 << 31) as f64
+}
+
+fn fx_stride(quality: FxQuality) -> usize {
+    match quality {
+        FxQuality::Full => 1,
+        FxQuality::Reduced => 2,
+        FxQuality::Minimal => 3,
+        FxQuality::Off => 0,
+    }
 }
 
 // =============================================================================
@@ -2792,10 +2845,56 @@ impl VisualEffectsScreen {
 
     /// Render the main text effects demo content
     fn render_text_effects_demo(&self, frame: &mut Frame, area: Rect) {
-        let effect = self.text_effects.build_effect();
-        let demo_text = self.text_effects.demo_text;
+        let slots = if area.width >= 100 {
+            3
+        } else if area.width >= 70 {
+            2
+        } else {
+            1
+        };
 
-        // Center the demo text
+        let mut constraints = Vec::new();
+        for _ in 0..slots {
+            constraints.push(Constraint::Ratio(1, slots as u32));
+        }
+        let cols = Flex::horizontal().constraints(constraints).split(area);
+
+        for (idx, col) in cols.iter().enumerate() {
+            if col.width < 10 || col.height < 4 {
+                continue;
+            }
+
+            let effect_idx =
+                (self.text_effects.effect_idx + idx) % self.text_effects.tab.effect_count();
+            let demo = self.text_effects.variant_with_effect(effect_idx);
+            let rows = Flex::vertical()
+                .constraints([
+                    Constraint::Fixed(1),
+                    Constraint::Min(2),
+                    Constraint::Fixed(1),
+                ])
+                .split(*col);
+
+            let label = format!("{} · {}", idx + 1, demo.current_effect_name());
+            Paragraph::new(truncate_to_width(&label, rows[0].width.into()))
+                .style(Style::new().fg(PackedRgba::rgb(160, 190, 220)))
+                .render(rows[0], frame);
+
+            self.render_text_effect_variant(frame, rows[1], &demo);
+
+            let desc = truncate_to_width(demo.current_effect_description(), rows[2].width.into());
+            Paragraph::new(desc)
+                .style(Style::new().fg(PackedRgba::rgb(120, 140, 160)))
+                .render(rows[2], frame);
+        }
+    }
+
+    fn render_text_effect_variant(&self, frame: &mut Frame, area: Rect, demo: &TextEffectsDemo) {
+        if area.is_empty() || area.height < 2 {
+            return;
+        }
+
+        let demo_text = demo.demo_text;
         let text_y = area.y + area.height / 2;
         let text_x = area.x + (area.width.saturating_sub(demo_text.len() as u16)) / 2;
         let text_area = Rect {
@@ -2805,51 +2904,33 @@ impl VisualEffectsScreen {
             height: 3,
         };
 
-        // Handle special typography effects
-        match self.text_effects.tab {
+        let effect = demo.build_effect();
+        match demo.tab {
             TextEffectsTab::Typography => {
-                self.render_typography_demo(frame, text_area, demo_text);
+                self.render_typography_demo(frame, text_area, demo_text, demo);
             }
-            TextEffectsTab::SpecialFx if self.text_effects.effect_idx >= 2 => {
-                // Scanline and Matrix effects
-                self.render_special_fx_demo(frame, text_area, demo_text);
+            TextEffectsTab::SpecialFx if demo.effect_idx >= 2 => {
+                self.render_special_fx_demo(frame, text_area, demo_text, demo);
             }
             _ => {
-                // Standard StyledText rendering
                 let styled = StyledText::new(demo_text)
                     .bold()
                     .effect(effect)
-                    .time(self.text_effects.time);
+                    .time(demo.time + (demo.effect_idx as f64 * 0.1));
                 styled.render(text_area, frame);
             }
-        }
-
-        // Effect info below
-        let info_y = text_y + 3;
-        if info_y < area.y + area.height {
-            let info_area = Rect {
-                x: area.x + 2,
-                y: info_y,
-                width: area.width.saturating_sub(4),
-                height: 2,
-            };
-            let effect_name = self.text_effects.current_effect_name();
-            let info = format!(
-                "Effect: {} │ Tab: {} │ Index: {}/{}",
-                effect_name,
-                self.text_effects.tab.name(),
-                self.text_effects.effect_idx + 1,
-                self.text_effects.tab.effect_count()
-            );
-            let info_para =
-                Paragraph::new(info).style(Style::new().fg(PackedRgba::rgb(150, 180, 200)));
-            info_para.render(info_area, frame);
         }
     }
 
     /// Render typography-specific demos (Shadow, Glow, Mirror, ASCII)
-    fn render_typography_demo(&self, frame: &mut Frame, area: Rect, text: &str) {
-        match self.text_effects.effect_idx {
+    fn render_typography_demo(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        text: &str,
+        demo: &TextEffectsDemo,
+    ) {
+        match demo.effect_idx {
             0 => {
                 // Shadow effect - render shadow first, then main text
                 let shadow_offset = 1;
@@ -2875,7 +2956,7 @@ impl VisualEffectsScreen {
                 let styled = StyledText::new(text)
                     .bold()
                     .effect(glow_effect)
-                    .time(self.text_effects.time);
+                    .time(demo.time);
                 styled.render(area, frame);
             }
             2 => {
@@ -2898,7 +2979,7 @@ impl VisualEffectsScreen {
                     .bold()
                     .base_color(PackedRgba::rgb(200, 220, 255))
                     .reflection(reflection)
-                    .time(self.text_effects.time);
+                    .time(demo.time);
                 styled.render(area, frame);
             }
             _ => {
@@ -2906,18 +2987,24 @@ impl VisualEffectsScreen {
                 let ascii = AsciiArtText::new(text, AsciiArtStyle::Block);
                 let ascii_styled = StyledMultiLine::from_ascii_art(ascii)
                     .effect(TextEffect::RainbowGradient { speed: 0.3 })
-                    .time(self.text_effects.time);
+                    .time(demo.time);
                 ascii_styled.render(area, frame);
             }
         }
     }
 
     /// Render special FX demos (scanline, matrix style)
-    fn render_special_fx_demo(&self, frame: &mut Frame, area: Rect, text: &str) {
-        match self.text_effects.effect_idx {
+    fn render_special_fx_demo(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        text: &str,
+        demo: &TextEffectsDemo,
+    ) {
+        match demo.effect_idx {
             2 => {
                 // Scanline effect - alternate brightness
-                let scanline_time = (self.text_effects.time * 10.0) as usize;
+                let scanline_time = (demo.time * 10.0) as usize;
                 let brightness = if scanline_time.is_multiple_of(2) {
                     255u8
                 } else {
@@ -2940,7 +3027,7 @@ impl VisualEffectsScreen {
                 let styled = StyledText::new(text)
                     .bold()
                     .effect(matrix_effect)
-                    .time(self.text_effects.time);
+                    .time(demo.time);
                 styled.render(area, frame);
             }
         }
@@ -3193,9 +3280,11 @@ impl Screen for VisualEffectsScreen {
                 EffectType::Lissajous => self.lissajous.render(&mut painter, pw, ph),
                 EffectType::FlowField => self.flow_field.render(&mut painter, pw, ph),
                 EffectType::Julia => self.julia.render(&mut painter, pw, ph),
-                EffectType::WaveInterference => self.wave_interference.render(&mut painter, pw, ph),
-                EffectType::Spiral => self.spiral.render(&mut painter, pw, ph),
-                EffectType::SpinLattice => self.spin_lattice.render(&mut painter, pw, ph),
+                EffectType::WaveInterference => {
+                    self.wave_interference.render(&mut painter, pw, ph, quality)
+                }
+                EffectType::Spiral => self.spiral.render(&mut painter, pw, ph, quality),
+                EffectType::SpinLattice => self.spin_lattice.render(&mut painter, pw, ph, quality),
                 // Canvas adapters for metaballs and plasma (bd-l8x9.5.3)
                 EffectType::Metaballs => {
                     self.metaballs_adapter.borrow_mut().fill_frame(

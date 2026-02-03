@@ -15,7 +15,7 @@ use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_runtime::input_macro::{
-    FilteredEventRecorder, InputMacro, MacroPlayback, RecordingFilter,
+    FilteredEventRecorder, InputMacro, MacroMetadata, MacroPlayback, RecordingFilter, TimedEvent,
 };
 use ftui_style::Style;
 use ftui_text::{Line, Span, Text};
@@ -32,6 +32,31 @@ const SPEED_MIN: f64 = 0.25;
 const SPEED_MAX: f64 = 4.0;
 const SPEED_STEP: f64 = 0.25;
 const MAX_EVENT_LINES: usize = 10;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusPanel {
+    Controls,
+    Timeline,
+    Scenarios,
+}
+
+impl FocusPanel {
+    fn next(self) -> Self {
+        match self {
+            Self::Controls => Self::Timeline,
+            Self::Timeline => Self::Scenarios,
+            Self::Scenarios => Self::Controls,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            Self::Controls => Self::Scenarios,
+            Self::Timeline => Self::Controls,
+            Self::Scenarios => Self::Timeline,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum UiState {
@@ -51,15 +76,15 @@ struct ScenarioInfo {
 const SCENARIOS: &[ScenarioInfo] = &[
     ScenarioInfo {
         name: "Tab Tour",
-        description: "Cycle screens, toggle help, return to recorder",
+        description: "Cycle tabs and toggle the help overlay",
     },
     ScenarioInfo {
         name: "Search Flow",
-        description: "Open Shakespeare screen, search for a phrase",
+        description: "Open palette, type a target, confirm",
     },
     ScenarioInfo {
         name: "Layout Lab",
-        description: "Adjust constraints and switch grid presets",
+        description: "Cycle screens and n/p adjustments",
     },
 ];
 
@@ -77,6 +102,10 @@ pub struct MacroRecorderScreen {
     looping: bool,
     terminal_size: (u16, u16),
     last_tick_count: u64,
+    focus: FocusPanel,
+    timeline_cursor: usize,
+    scenario_index: usize,
+    status_note: Option<String>,
 }
 
 impl Default for MacroRecorderScreen {
@@ -101,6 +130,12 @@ impl MacroRecorderScreen {
             looping: false,
             terminal_size: (80, 24),
             last_tick_count: 0,
+            focus: FocusPanel::Controls,
+            timeline_cursor: 0,
+            scenario_index: 0,
+            status_note: Some(
+                "Press Space to record or Enter in Scenarios to load a demo".to_string(),
+            ),
         }
     }
 
@@ -146,6 +181,8 @@ impl MacroRecorderScreen {
         self.playback_last_tick = None;
         self.recording_started = Some(Instant::now());
         self.state = UiState::Recording;
+        self.timeline_cursor = 0;
+        self.status_note = Some("Recording… navigate anywhere to capture inputs".to_string());
     }
 
     fn stop_recording(&mut self) {
@@ -162,6 +199,8 @@ impl MacroRecorderScreen {
         self.playback_last_tick = None;
         self.recording_started = None;
         self.state = UiState::Stopped;
+        self.clamp_timeline_cursor();
+        self.status_note = Some(format!("Recorded {recorded} events"));
     }
 
     fn start_playback(&mut self, tick_count: u64) {
@@ -188,6 +227,7 @@ impl MacroRecorderScreen {
         self.playback = Some(playback);
         self.playback_last_tick = Some(tick_count);
         self.state = UiState::Playing;
+        self.status_note = None;
     }
 
     fn pause_playback(&mut self) {
@@ -208,6 +248,7 @@ impl MacroRecorderScreen {
         self.playback = None;
         self.playback_last_tick = None;
         self.state = UiState::Stopped;
+        self.status_note = Some("Playback stopped".to_string());
     }
 
     fn toggle_playback(&mut self, tick_count: u64) {
@@ -238,6 +279,10 @@ impl MacroRecorderScreen {
         if let Some(playback) = &mut self.playback {
             playback.set_looping(self.looping);
         }
+        self.status_note = Some(format!(
+            "Looping {}",
+            if self.looping { "enabled" } else { "disabled" }
+        ));
     }
 
     fn adjust_speed(&mut self, delta: f64) {
@@ -247,6 +292,84 @@ impl MacroRecorderScreen {
         if let Some(playback) = &mut self.playback {
             playback.set_speed(self.speed);
         }
+        self.status_note = Some(format!("Speed set to {:.2}x", self.speed));
+    }
+
+    fn set_macro_data(&mut self, macro_data: InputMacro) {
+        self.macro_data = Some(macro_data);
+        self.playback = None;
+        self.playback_last_tick = None;
+        self.recording_started = None;
+        self.state = UiState::Stopped;
+        self.clamp_timeline_cursor();
+    }
+
+    fn clamp_timeline_cursor(&mut self) {
+        let len = self.macro_data.as_ref().map(|m| m.len()).unwrap_or(0);
+        if len == 0 {
+            self.timeline_cursor = 0;
+        } else {
+            self.timeline_cursor = self.timeline_cursor.min(len - 1);
+        }
+    }
+
+    fn move_timeline_cursor(&mut self, delta: i32) {
+        let len = self.macro_data.as_ref().map(|m| m.len()).unwrap_or(0) as i32;
+        if len == 0 {
+            self.timeline_cursor = 0;
+            return;
+        }
+        let next = (self.timeline_cursor as i32 + delta).clamp(0, len - 1);
+        self.timeline_cursor = next as usize;
+    }
+
+    fn scenario_macro(&self, scenario: ScenarioInfo) -> InputMacro {
+        let steps: Vec<(Event, u64)> = match scenario.name {
+            "Tab Tour" => vec![
+                (key_event(KeyCode::Tab, Modifiers::NONE), 180),
+                (key_event(KeyCode::Tab, Modifiers::NONE), 180),
+                (key_event(KeyCode::Tab, Modifiers::NONE), 180),
+                (key_event(KeyCode::Char('?'), Modifiers::NONE), 250),
+                (key_event(KeyCode::BackTab, Modifiers::SHIFT), 200),
+                (key_event(KeyCode::BackTab, Modifiers::SHIFT), 200),
+                (key_event(KeyCode::Char('?'), Modifiers::NONE), 250),
+            ],
+            "Search Flow" => vec![
+                (key_event(KeyCode::Char('k'), Modifiers::CTRL), 200),
+                (key_event(KeyCode::Char('s'), Modifiers::NONE), 120),
+                (key_event(KeyCode::Char('h'), Modifiers::NONE), 120),
+                (key_event(KeyCode::Char('a'), Modifiers::NONE), 120),
+                (key_event(KeyCode::Enter, Modifiers::NONE), 260),
+                (key_event(KeyCode::Char('?'), Modifiers::NONE), 250),
+            ],
+            "Layout Lab" => vec![
+                (key_event(KeyCode::Tab, Modifiers::NONE), 200),
+                (key_event(KeyCode::Tab, Modifiers::NONE), 200),
+                (key_event(KeyCode::Tab, Modifiers::NONE), 200),
+                (key_event(KeyCode::Char('n'), Modifiers::NONE), 200),
+                (key_event(KeyCode::Char('p'), Modifiers::NONE), 200),
+                (key_event(KeyCode::Char('n'), Modifiers::NONE), 200),
+                (key_event(KeyCode::Char('t'), Modifiers::CTRL), 220),
+            ],
+            _ => vec![],
+        };
+
+        let mut total = Duration::ZERO;
+        let mut events = Vec::with_capacity(steps.len());
+        for (event, delay_ms) in steps {
+            let delay = Duration::from_millis(delay_ms);
+            total += delay;
+            events.push(TimedEvent::new(event, delay));
+        }
+
+        InputMacro::new(
+            events,
+            MacroMetadata {
+                name: scenario.name.to_string(),
+                terminal_size: self.terminal_size,
+                total_duration: total,
+            },
+        )
     }
 
     fn handle_controls(&mut self, event: &Event) {
@@ -262,6 +385,83 @@ impl MacroRecorderScreen {
 
         let (code, modifiers) = (*code, *modifiers);
 
+        if modifiers.contains(Modifiers::CTRL) {
+            match code {
+                KeyCode::Left | KeyCode::Up => {
+                    self.focus = self.focus.prev();
+                    return;
+                }
+                KeyCode::Right | KeyCode::Down => {
+                    self.focus = self.focus.next();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if self.focus == FocusPanel::Timeline {
+            match code {
+                KeyCode::Up => {
+                    self.move_timeline_cursor(-1);
+                    return;
+                }
+                KeyCode::Down => {
+                    self.move_timeline_cursor(1);
+                    return;
+                }
+                KeyCode::PageUp => {
+                    self.move_timeline_cursor(-(MAX_EVENT_LINES as i32 / 2).max(1));
+                    return;
+                }
+                KeyCode::PageDown => {
+                    self.move_timeline_cursor((MAX_EVENT_LINES as i32 / 2).max(1));
+                    return;
+                }
+                KeyCode::Home => {
+                    self.timeline_cursor = 0;
+                    return;
+                }
+                KeyCode::End => {
+                    if let Some(macro_data) = &self.macro_data
+                        && !macro_data.is_empty()
+                    {
+                        self.timeline_cursor = macro_data.len() - 1;
+                    }
+                    return;
+                }
+                KeyCode::Enter => {
+                    self.toggle_playback(self.last_tick_count);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if self.focus == FocusPanel::Scenarios {
+            match code {
+                KeyCode::Up => {
+                    if self.scenario_index == 0 {
+                        self.scenario_index = SCENARIOS.len().saturating_sub(1);
+                    } else {
+                        self.scenario_index = self.scenario_index.saturating_sub(1);
+                    }
+                    return;
+                }
+                KeyCode::Down => {
+                    self.scenario_index = (self.scenario_index + 1) % SCENARIOS.len();
+                    return;
+                }
+                KeyCode::Enter => {
+                    let scenario = SCENARIOS[self.scenario_index];
+                    let macro_data = self.scenario_macro(scenario);
+                    self.set_macro_data(macro_data);
+                    self.status_note = Some(format!("Loaded scenario: {}", scenario.name));
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match (code, modifiers) {
             (KeyCode::Char('r'), Modifiers::NONE) => {
                 if self.state == UiState::Recording {
@@ -276,6 +476,14 @@ impl MacroRecorderScreen {
                 self.adjust_speed(SPEED_STEP)
             }
             (KeyCode::Char('-'), Modifiers::NONE) => self.adjust_speed(-SPEED_STEP),
+            (KeyCode::Char(' '), Modifiers::NONE) => {
+                if self.state == UiState::Recording {
+                    self.stop_recording();
+                } else {
+                    self.start_recording();
+                }
+            }
+            (KeyCode::Enter, Modifiers::NONE) => self.toggle_playback(self.last_tick_count),
             (KeyCode::Escape, _) => {
                 if self.state == UiState::Recording {
                     self.stop_recording();
@@ -297,27 +505,43 @@ impl MacroRecorderScreen {
         if self.state != UiState::Playing {
             return;
         }
-        let Some(playback) = &mut self.playback else {
+        if self.playback.is_none() {
             return;
-        };
+        }
 
         let last_tick = self.playback_last_tick.get_or_insert(tick_count);
         let delta_ticks = tick_count.saturating_sub(*last_tick).max(1);
         *last_tick = tick_count;
 
-        let delta = Duration::from_millis(delta_ticks * TICK_MS);
-        let events = playback.advance(delta);
-        self.pending_playback.extend(events);
+        let (events, done, playhead_pos) = {
+            let playback = self.playback.as_mut().expect("playback checked above");
+            let delta = Duration::from_millis(delta_ticks * TICK_MS);
+            let events = playback.advance(delta);
+            (events, playback.is_done(), playback.position())
+        };
 
-        if playback.is_done() {
+        self.pending_playback.extend(events);
+        if done {
             self.state = UiState::Stopped;
             self.playback = None;
             self.playback_last_tick = None;
+            self.status_note = Some("Playback complete".to_string());
+        }
+
+        if self.focus != FocusPanel::Timeline
+            && let Some(macro_data) = &self.macro_data
+            && !macro_data.is_empty()
+        {
+            let pos = playhead_pos.min(macro_data.len() - 1);
+            self.timeline_cursor = pos;
         }
     }
 
     fn render_controls_panel(&self, frame: &mut Frame, area: Rect) {
-        let border_style = Style::new().fg(theme::screen_accent::ADVANCED);
+        let border_style = theme::panel_border_style(
+            self.focus == FocusPanel::Controls,
+            theme::screen_accent::ADVANCED,
+        );
         let block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -374,6 +598,14 @@ impl MacroRecorderScreen {
 
         let progress = self.playback_progress();
 
+        let focus_style = |active: bool| {
+            if active {
+                Style::new().fg(theme::accent::PRIMARY).bold()
+            } else {
+                Style::new().fg(theme::fg::MUTED)
+            }
+        };
+
         let mut lines = vec![
             Line::from_spans([
                 Span::styled("State: ", Style::new().fg(theme::fg::SECONDARY)),
@@ -387,25 +619,6 @@ impl MacroRecorderScreen {
                 Span::raw("   "),
                 Span::styled("Duration: ", Style::new().fg(theme::fg::SECONDARY)),
                 Span::styled(duration_label, Style::new().fg(theme::fg::PRIMARY)),
-                Span::raw("   "),
-                Span::styled("Filtered: ", Style::new().fg(theme::fg::SECONDARY)),
-                Span::styled(
-                    format!("{}", self.filtered_events),
-                    Style::new().fg(theme::fg::MUTED),
-                ),
-            ]),
-            Line::from_spans([
-                Span::styled("Controls: ", Style::new().fg(theme::fg::SECONDARY)),
-                Span::styled("r", Style::new().fg(theme::accent::PRIMARY)),
-                Span::raw(" record/stop  "),
-                Span::styled("p", Style::new().fg(theme::accent::PRIMARY)),
-                Span::raw(" play/pause  "),
-                Span::styled("l", Style::new().fg(theme::accent::PRIMARY)),
-                Span::raw(" loop  "),
-                Span::styled("+/-", Style::new().fg(theme::accent::PRIMARY)),
-                Span::raw(" speed  "),
-                Span::styled("Esc", Style::new().fg(theme::accent::PRIMARY)),
-                Span::raw(" stop"),
             ]),
             Line::from_spans([
                 Span::styled("Speed: ", Style::new().fg(theme::fg::SECONDARY)),
@@ -429,8 +642,53 @@ impl MacroRecorderScreen {
                     format!("{:>3.0}%", progress * 100.0),
                     Style::new().fg(theme::fg::PRIMARY),
                 ),
+                Span::raw("   "),
+                Span::styled("Filtered: ", Style::new().fg(theme::fg::SECONDARY)),
+                Span::styled(
+                    format!("{}", self.filtered_events),
+                    Style::new().fg(theme::fg::MUTED),
+                ),
+            ]),
+            Line::from_spans([
+                Span::styled("Focus: ", Style::new().fg(theme::fg::SECONDARY)),
+                Span::styled(
+                    "[Controls]",
+                    focus_style(self.focus == FocusPanel::Controls),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    "[Timeline]",
+                    focus_style(self.focus == FocusPanel::Timeline),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    "[Scenarios]",
+                    focus_style(self.focus == FocusPanel::Scenarios),
+                ),
+                Span::raw("   "),
+                Span::styled("Ctrl+Arrows", Style::new().fg(theme::accent::PRIMARY)),
+                Span::raw(" switch panel"),
+            ]),
+            Line::from_spans([
+                Span::styled("Space/r", Style::new().fg(theme::accent::PRIMARY)),
+                Span::raw(" record/stop  "),
+                Span::styled("Enter/p", Style::new().fg(theme::accent::PRIMARY)),
+                Span::raw(" play/pause  "),
+                Span::styled("Esc", Style::new().fg(theme::accent::PRIMARY)),
+                Span::raw(" stop  "),
+                Span::styled("L", Style::new().fg(theme::accent::PRIMARY)),
+                Span::raw(" loop  "),
+                Span::styled("+/-", Style::new().fg(theme::accent::PRIMARY)),
+                Span::raw(" speed"),
             ]),
         ];
+
+        if let Some(note) = &self.status_note {
+            lines.push(Line::from_spans([Span::styled(
+                note,
+                Style::new().fg(theme::fg::SECONDARY).italic(),
+            )]));
+        }
 
         if let UiState::Error(message) = &self.state {
             // A11y: error row uses underline + distinct color to be
@@ -452,12 +710,16 @@ impl MacroRecorderScreen {
     }
 
     fn render_timeline_panel(&self, frame: &mut Frame, area: Rect) {
+        let border_style = theme::panel_border_style(
+            self.focus == FocusPanel::Timeline,
+            theme::screen_accent::ADVANCED,
+        );
         let block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .title("Timeline")
             .title_alignment(Alignment::Center)
-            .style(theme::content_border());
+            .style(border_style);
 
         let inner = block.inner(area);
         block.render(area, frame);
@@ -467,9 +729,12 @@ impl MacroRecorderScreen {
         }
 
         let Some(macro_data) = &self.macro_data else {
-            Paragraph::new("No macro recorded yet.")
-                .style(Style::new().fg(theme::fg::MUTED))
-                .render(inner, frame);
+            Paragraph::new(
+                "No macro loaded.\n\
+                 Space to record, or select a scenario and press Enter.",
+            )
+            .style(Style::new().fg(theme::fg::MUTED))
+            .render(inner, frame);
             return;
         };
 
@@ -486,12 +751,18 @@ impl MacroRecorderScreen {
             .as_ref()
             .map(MacroPlayback::position)
             .unwrap_or(0);
+        let cursor = self.timeline_cursor.min(events.len().saturating_sub(1));
         let max_lines = inner.height as usize;
         let mut lines = Vec::new();
 
         let visible = MAX_EVENT_LINES.min(max_lines).min(events.len());
-        let start = if playhead >= visible {
-            playhead + 1 - visible
+        let anchor = if self.focus == FocusPanel::Timeline {
+            cursor
+        } else {
+            playhead
+        };
+        let start = if anchor >= visible {
+            anchor + 1 - visible
         } else {
             0
         };
@@ -521,22 +792,60 @@ impl MacroRecorderScreen {
             // stays readable at narrow widths (bd-2lus.9).
             let max_label = (inner.width as usize).saturating_sub(22);
             let label = truncate_with_ellipsis(&raw_label, max_label);
+            let selected = self.focus == FocusPanel::Timeline && idx == cursor;
+            let mut marker_style = if idx == playhead && self.state == UiState::Playing {
+                Style::new().fg(theme::accent::SUCCESS).bold()
+            } else {
+                Style::new().fg(theme::accent::PRIMARY)
+            };
+            if selected {
+                marker_style = marker_style.bg(theme::alpha::HIGHLIGHT);
+            }
+            let row_style = if selected {
+                Style::new()
+                    .fg(theme::fg::PRIMARY)
+                    .bg(theme::alpha::HIGHLIGHT)
+            } else {
+                Style::new().fg(theme::fg::PRIMARY)
+            };
+
             let line = Line::from_spans([
-                Span::styled(marker, Style::new().fg(theme::accent::PRIMARY)),
+                Span::styled(marker, marker_style),
                 Span::raw(" "),
-                Span::styled(format!("{:03}", idx + 1), Style::new().fg(theme::fg::MUTED)),
+                Span::styled(
+                    format!("{:03}", idx + 1),
+                    if selected {
+                        Style::new()
+                            .fg(theme::fg::MUTED)
+                            .bg(theme::alpha::HIGHLIGHT)
+                    } else {
+                        Style::new().fg(theme::fg::MUTED)
+                    },
+                ),
                 Span::raw("  +"),
                 Span::styled(
                     format!("{:>4}ms", timed.delay.as_millis()),
-                    Style::new().fg(theme::fg::SECONDARY),
+                    if selected {
+                        Style::new()
+                            .fg(theme::fg::SECONDARY)
+                            .bg(theme::alpha::HIGHLIGHT)
+                    } else {
+                        Style::new().fg(theme::fg::SECONDARY)
+                    },
                 ),
                 Span::raw("  @"),
                 Span::styled(
                     format!("{:>5}ms", cumulative_ms),
-                    Style::new().fg(theme::fg::MUTED),
+                    if selected {
+                        Style::new()
+                            .fg(theme::fg::MUTED)
+                            .bg(theme::alpha::HIGHLIGHT)
+                    } else {
+                        Style::new().fg(theme::fg::MUTED)
+                    },
                 ),
                 Span::raw("  "),
-                Span::styled(label, Style::new().fg(theme::fg::PRIMARY)),
+                Span::styled(label, row_style),
             ]);
             lines.push(line);
         }
@@ -546,13 +855,114 @@ impl MacroRecorderScreen {
             .render(inner, frame);
     }
 
+    fn render_event_detail_panel(&self, frame: &mut Frame, area: Rect) {
+        let border_style = theme::panel_border_style(
+            self.focus == FocusPanel::Timeline,
+            theme::screen_accent::ADVANCED,
+        );
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Event Detail")
+            .title_alignment(Alignment::Center)
+            .style(border_style);
+
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        let Some(macro_data) = &self.macro_data else {
+            Paragraph::new("Select a scenario or record a macro to see details.")
+                .style(Style::new().fg(theme::fg::MUTED))
+                .render(inner, frame);
+            return;
+        };
+
+        let events = macro_data.events();
+        if events.is_empty() {
+            Paragraph::new("Macro is empty.")
+                .style(Style::new().fg(theme::fg::MUTED))
+                .render(inner, frame);
+            return;
+        }
+
+        let idx = self.timeline_cursor.min(events.len().saturating_sub(1));
+        let mut cumulative_ms: u64 = 0;
+        for (i, timed) in events.iter().enumerate() {
+            cumulative_ms += timed.delay.as_millis() as u64;
+            if i == idx {
+                break;
+            }
+        }
+        let timed = &events[idx];
+
+        let mut lines = vec![
+            Line::from_spans([
+                Span::styled("Selected: ", Style::new().fg(theme::fg::SECONDARY)),
+                Span::styled(
+                    format!("#{idx:03}"),
+                    Style::new().fg(theme::fg::PRIMARY).bold(),
+                ),
+            ]),
+            Line::from_spans([
+                Span::styled("Delay: ", Style::new().fg(theme::fg::SECONDARY)),
+                Span::styled(
+                    format!("{:>4}ms", timed.delay.as_millis()),
+                    Style::new().fg(theme::fg::PRIMARY),
+                ),
+                Span::raw("   "),
+                Span::styled("At: ", Style::new().fg(theme::fg::SECONDARY)),
+                Span::styled(
+                    format!("{:>5}ms", cumulative_ms),
+                    Style::new().fg(theme::fg::PRIMARY),
+                ),
+            ]),
+            Line::new(),
+            Line::from_spans([
+                Span::styled("Event: ", Style::new().fg(theme::fg::SECONDARY)),
+                Span::styled(
+                    format_event(&timed.event),
+                    Style::new().fg(theme::fg::PRIMARY),
+                ),
+            ]),
+        ];
+
+        if let Event::Key(key) = &timed.event {
+            lines.push(Line::from_spans([
+                Span::styled("Kind: ", Style::new().fg(theme::fg::SECONDARY)),
+                Span::styled(
+                    format!("{:?}", key.kind),
+                    Style::new().fg(theme::fg::PRIMARY),
+                ),
+            ]));
+            lines.push(Line::from_spans([
+                Span::styled("Modifiers: ", Style::new().fg(theme::fg::SECONDARY)),
+                Span::styled(
+                    format!("{:?}", key.modifiers),
+                    Style::new().fg(theme::fg::PRIMARY),
+                ),
+            ]));
+        }
+
+        Paragraph::new(Text::from_lines(lines))
+            .style(Style::new().fg(theme::fg::PRIMARY))
+            .render(inner, frame);
+    }
+
     fn render_scenarios_panel(&self, frame: &mut Frame, area: Rect) {
+        let border_style = theme::panel_border_style(
+            self.focus == FocusPanel::Scenarios,
+            theme::screen_accent::ADVANCED,
+        );
         let block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .title("Scenario Runner")
             .title_alignment(Alignment::Center)
-            .style(theme::content_border());
+            .style(border_style);
 
         let inner = block.inner(area);
         block.render(area, frame);
@@ -563,19 +973,33 @@ impl MacroRecorderScreen {
 
         let mut lines = Vec::new();
         lines.push(Line::from_spans([Span::styled(
-            "Preset scenarios (WIP)",
+            "Preset scenarios (Enter to load)",
             Style::new().fg(theme::fg::SECONDARY),
         )]));
         lines.push(Line::new());
 
-        for scenario in SCENARIOS {
-            lines.push(Line::from_spans([Span::styled(
-                scenario.name,
-                Style::new().fg(theme::accent::PRIMARY),
-            )]));
+        for (idx, scenario) in SCENARIOS.iter().enumerate() {
+            let selected = self.focus == FocusPanel::Scenarios && idx == self.scenario_index;
+            let name_style = if selected {
+                Style::new()
+                    .fg(theme::fg::PRIMARY)
+                    .bg(theme::alpha::HIGHLIGHT)
+                    .bold()
+            } else {
+                Style::new().fg(theme::accent::PRIMARY)
+            };
+            let desc_style = if selected {
+                Style::new()
+                    .fg(theme::fg::SECONDARY)
+                    .bg(theme::alpha::HIGHLIGHT)
+            } else {
+                Style::new().fg(theme::fg::MUTED)
+            };
+
+            lines.push(Line::from_spans([Span::styled(scenario.name, name_style)]));
             lines.push(Line::from_spans([Span::styled(
                 format!("  {}", scenario.description),
-                Style::new().fg(theme::fg::MUTED),
+                desc_style,
             )]));
             lines.push(Line::new());
         }
@@ -614,11 +1038,13 @@ impl Screen for MacroRecorderScreen {
     }
 
     fn view(&self, frame: &mut Frame, area: Rect) {
-        let controls_height: u16 = if matches!(&self.state, UiState::Error(_)) {
-            7
-        } else {
-            6
-        };
+        let mut controls_height: u16 = 5;
+        if self.status_note.is_some() {
+            controls_height += 1;
+        }
+        if matches!(&self.state, UiState::Error(_)) {
+            controls_height += 1;
+        }
         let sections = Flex::vertical()
             .constraints([Constraint::Fixed(controls_height), Constraint::Min(1)])
             .split(area);
@@ -629,19 +1055,32 @@ impl Screen for MacroRecorderScreen {
             .constraints([Constraint::Percentage(60.0), Constraint::Percentage(40.0)])
             .split(sections[1]);
 
+        let right = Flex::vertical()
+            .constraints([Constraint::Percentage(45.0), Constraint::Percentage(55.0)])
+            .split(bottom[1]);
+
         self.render_timeline_panel(frame, bottom[0]);
-        self.render_scenarios_panel(frame, bottom[1]);
+        self.render_event_detail_panel(frame, right[0]);
+        self.render_scenarios_panel(frame, right[1]);
     }
 
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {
-                key: "r",
+                key: "Space/r",
                 action: "Record / Stop",
             },
             HelpEntry {
-                key: "p",
+                key: "Enter/p",
                 action: "Play / Pause",
+            },
+            HelpEntry {
+                key: "Ctrl+\u{2190}/\u{2191}/\u{2192}/\u{2193}",
+                action: "Switch panel focus",
+            },
+            HelpEntry {
+                key: "\u{2191}/\u{2193}",
+                action: "Select event/scenario",
             },
             HelpEntry {
                 key: "l",
@@ -693,8 +1132,22 @@ fn is_control_key(event: &Event) -> bool {
             | (KeyCode::Char('+'), Modifiers::NONE)
             | (KeyCode::Char('='), Modifiers::NONE)
             | (KeyCode::Char('-'), Modifiers::NONE)
+            | (KeyCode::Char(' '), Modifiers::NONE)
+            | (KeyCode::Enter, Modifiers::NONE)
+            | (KeyCode::Left, Modifiers::CTRL)
+            | (KeyCode::Right, Modifiers::CTRL)
+            | (KeyCode::Up, Modifiers::CTRL)
+            | (KeyCode::Down, Modifiers::CTRL)
             | (KeyCode::Escape, _)
     )
+}
+
+fn key_event(code: KeyCode, modifiers: Modifiers) -> Event {
+    Event::Key(KeyEvent {
+        code,
+        modifiers,
+        kind: KeyEventKind::Press,
+    })
 }
 
 fn format_event(event: &Event) -> String {

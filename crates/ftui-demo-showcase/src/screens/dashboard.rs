@@ -19,7 +19,9 @@ use std::time::Instant;
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ftui_core::geometry::Rect;
 use ftui_extras::canvas::{Canvas, Mode, Painter};
-use ftui_extras::charts::Sparkline;
+use ftui_extras::charts::{
+    BarChart, BarDirection, BarGroup, BarMode, LineChart, Series, Sparkline, heatmap_gradient,
+};
 use ftui_extras::markdown::{MarkdownRenderer, MarkdownTheme};
 use ftui_extras::syntax::SyntaxHighlighter;
 use ftui_extras::text_effects::{
@@ -27,11 +29,12 @@ use ftui_extras::text_effects::{
     StyledMultiLine, StyledText, TextEffect,
 };
 use ftui_layout::{Constraint, Flex};
-use ftui_render::cell::PackedRgba;
+use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
 use ftui_text::{Line, Span, Text, WrapMode};
+use ftui_widgets::Badge;
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
@@ -53,166 +56,1080 @@ const CODE_SAMPLES: &[CodeSample] = &[
     CodeSample {
         label: "Rust",
         lang: "rs",
-        code: r#"// runtime.rs
-use ftui_runtime::{Cmd, Model, Program};
-use ftui_core::event::Event;
+        code: r###"// runtime.rs
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
-struct AppState {
-    frames: u64,
-    last_resize: (u16, u16),
+use ftui_core::event::Event;
+use ftui_render::cell::Cell;
+use ftui_render::frame::Frame;
+use ftui_runtime::{Cmd, Model, Program};
+
+#[derive(Debug, Clone)]
+enum Msg {
+    Tick(u64),
+    Resize { w: u16, h: u16 },
+    Log(String),
+    Quit,
 }
 
-impl Model for AppState {
-    type Message = Event;
+struct App<T: Send + Sync + 'static> {
+    frames: u64,
+    last_size: (u16, u16),
+    cache: HashMap<String, Arc<T>>,
+}
 
-    fn update(&mut self, msg: Event) -> Cmd<Event> {
+impl<T: Send + Sync + 'static> App<T> {
+    fn push(&mut self, key: impl Into<String>, value: T) {
+        self.cache.insert(key.into(), Arc::new(value));
+    }
+}
+
+impl<T: Send + Sync + 'static> Model for App<T> {
+    type Message = Msg;
+
+    fn init(&mut self) -> Cmd<Msg> {
+        Cmd::Tick(Duration::from_millis(16))
+    }
+
+    fn update(&mut self, msg: Msg) -> Cmd<Msg> {
         match msg {
-            Event::Key(k) if k.is_char('q') => Cmd::quit(),
-            Event::Resize { width, height } => {
-                self.last_resize = (width, height);
+            Msg::Tick(n) => {
+                self.frames = self.frames.saturating_add(n);
+                Cmd::Tick(Duration::from_millis(16))
+            }
+            Msg::Resize { w, h } => {
+                self.last_size = (w, h);
                 Cmd::none()
             }
-            _ => Cmd::none(),
+            Msg::Log(line) => Cmd::log(format!("[{:#x}] {line}", self.frames)),
+            Msg::Quit => Cmd::quit(),
         }
     }
 
-    fn view(&self, frame: &mut ftui_render::frame::Frame) {
-        // draw widgets...
-        let _ = frame;
+    fn view(&self, frame: &mut Frame) {
+        let label = format!("frames={} size={:?}", self.frames, self.last_size);
+        for (i, ch) in label.chars().enumerate() {
+            frame.buffer.set_raw(i as u16, 0, Cell::from_char(ch));
+        }
     }
 }
 
 fn main() -> ftui::Result<()> {
-    let mut app = AppState { frames: 0, last_resize: (0, 0) };
+    let mut app = App::<u64> {
+        frames: 0,
+        last_size: (0, 0),
+        cache: HashMap::new(),
+    };
+    app.push("seed", 42);
     Program::new(&mut app).run()
 }
-"#,
+"###,
     },
     CodeSample {
         label: "TypeScript",
         lang: "ts",
-        code: r#"// api.ts
+        code: r###"// api.ts
 type Mode = "inline" | "alt";
+type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
 interface Session {
   id: string;
   mode: Mode;
-  caps: string[];
+  caps: ReadonlyArray<string>;
 }
 
-export async function startSession(mode: Mode): Promise<Session> {
+interface Cache<K, V> {
+  get(key: K): V | undefined;
+  set(key: K, value: V): void;
+}
+
+class LruCache<K, V> implements Cache<K, V> {
+  private store = new Map<K, V>();
+  constructor(private limit = 128) {}
+
+  get(key: K): V | undefined {
+    const value = this.store.get(key);
+    if (value !== undefined) {
+      this.store.delete(key);
+      this.store.set(key, value);
+    }
+    return value;
+  }
+
+  set(key: K, value: V): void {
+    if (this.store.size >= this.limit) {
+      const oldest = this.store.keys().next().value;
+      this.store.delete(oldest);
+    }
+    this.store.set(key, value);
+  }
+}
+
+const CAPS = ["mouse", "paste", "focus"] as const;
+type Cap = typeof CAPS[number];
+
+export async function boot(mode: Mode): Promise<Result<Session>> {
   const res = await fetch("/api/session", {
     method: "POST",
     body: JSON.stringify({ mode }),
   });
-  if (!res.ok) throw new Error("boot failed");
-  return res.json();
+  if (!res.ok) return { ok: false, error: "boot failed" };
+  const data = (await res.json()) as Session;
+  return { ok: true, value: data };
 }
 
-export function diff(a: string[], b: string[]) {
-  return a.filter((x) => !b.includes(x));
+export function diff<T>(a: readonly T[], b: readonly T[]): T[] {
+  const set = new Set(b);
+  return a.filter((x) => !set.has(x));
 }
-"#,
+"###,
     },
     CodeSample {
         label: "Python",
         lang: "py",
-        code: r#"# pipeline.py
-from dataclasses import dataclass
-from typing import Iterable
+        code: r###"# pipeline.py
+from __future__ import annotations
 
-@dataclass
+from dataclasses import dataclass, field
+from typing import Iterable, AsyncIterator, Protocol
+
+class Sink(Protocol):
+    async def write(self, payload: str) -> None: ...
+
+@dataclass(slots=True)
 class Frame:
     id: int
     dirty: bool
+    tags: dict[str, str] = field(default_factory=dict)
 
-async def render(frames: Iterable[Frame]) -> int:
+async def render(frames: AsyncIterator[Frame], sink: Sink) -> int:
     count = 0
     async for f in frames:
         if f.dirty:
+            await sink.write(f"frame={f.id} tags={len(f.tags)}")
             count += 1
     return count
 
-def diff(prev: list[str], nxt: list[str]) -> list[str]:
-    return [x for x in nxt if x not in prev]
-"#,
+def diff(prev: Iterable[str], nxt: Iterable[str]) -> list[str]:
+    seen = set(prev)
+    return [x for x in nxt if x not in seen]
+
+def bucket(frames: Iterable[Frame]) -> dict[bool, list[Frame]]:
+    out: dict[bool, list[Frame]] = {True: [], False: []}
+    for f in frames:
+        out[f.dirty].append(f)
+    return out
+"###,
     },
     CodeSample {
         label: "Go",
         lang: "go",
-        code: r#"// diff.go
-package diff
+        code: r###"// runtime.go
+package runtime
 
-import "context"
+import (
+    "context"
+    "errors"
+    "fmt"
+    "time"
+)
 
-type Cell struct{ ch rune }
+type Frame struct {
+    ID    int
+    Dirty bool
+    Tags  map[string]string
+}
 
-func Compute(ctx context.Context, a, b []Cell) (int, error) {
+type Result[T any] struct {
+    Val T
+    Err error
+}
+
+func (r Result[T]) Ok() bool { return r.Err == nil }
+
+func Map[T any, U any](in []T, fn func(T) U) []U {
+    out := make([]U, 0, len(in))
+    for _, v := range in {
+        out = append(out, fn(v))
+    }
+    return out
+}
+
+func Stream(ctx context.Context, in <-chan Frame) <-chan Result[Frame] {
+    out := make(chan Result[Frame])
+    go func() {
+        defer close(out)
+        for {
+            select {
+            case <-ctx.Done():
+                out <- Result[Frame]{Err: ctx.Err()}
+                return
+            case f, ok := <-in:
+                if !ok {
+                    return
+                }
+                if f.Dirty {
+                    out <- Result[Frame]{Val: f}
+                }
+            }
+        }
+    }()
+    return out
+}
+
+func Compute(ctx context.Context, a, b []Frame) (int, error) {
+    if len(a) != len(b) {
+        return 0, errors.New("size mismatch")
+    }
     changed := 0
     for i := range a {
         select {
         case <-ctx.Done():
             return changed, ctx.Err()
         default:
-            if a[i] != b[i] {
+            if a[i].Dirty != b[i].Dirty {
                 changed++
             }
         }
     }
+    fmt.Println("done in", 5*time.Millisecond)
     return changed, nil
 }
-"#,
+"###,
     },
     CodeSample {
         label: "SQL",
         lang: "sql",
-        code: r#"WITH dirty AS (
-  SELECT frame_id, count(*) AS cells
-  FROM buffer_diff
-  WHERE changed = true
-  GROUP BY frame_id
+        code: r###"WITH recent AS (
+  SELECT frame_id, ts, changed_cells, total_cells
+  FROM frame_metrics
+  WHERE ts >= now() - interval '7 days'
+),
+ratio AS (
+  SELECT frame_id,
+         changed_cells::numeric / NULLIF(total_cells, 0) AS change_ratio,
+         ts
+  FROM recent
 ),
 ranked AS (
-  SELECT frame_id, cells,
-         dense_rank() OVER (ORDER BY cells DESC) AS r
-  FROM dirty
+  SELECT frame_id,
+         avg(change_ratio) AS avg_ratio,
+         percentile_disc(0.95) WITHIN GROUP (ORDER BY change_ratio) AS p95_ratio,
+         row_number() OVER (ORDER BY avg(change_ratio) DESC) AS rn
+  FROM ratio
+  GROUP BY frame_id
+),
+joined AS (
+  SELECT r.frame_id, r.avg_ratio, r.p95_ratio, m.mode, m.theme
+  FROM ranked r
+  JOIN frame_meta m ON m.frame_id = r.frame_id
+  WHERE r.rn <= 10
 )
-SELECT frame_id, cells
-FROM ranked
-WHERE r <= 3
-ORDER BY cells DESC;"#,
+SELECT j.frame_id, j.mode, j.theme,
+       j.avg_ratio, j.p95_ratio,
+       COALESCE(t.tag, 'none') AS top_tag
+FROM joined j
+LEFT JOIN LATERAL (
+  SELECT tag
+  FROM frame_tags t
+  WHERE t.frame_id = j.frame_id
+  ORDER BY t.count DESC
+  LIMIT 1
+) t ON true
+ORDER BY j.avg_ratio DESC;"###,
     },
     CodeSample {
         label: "JSON",
         lang: "json",
-        code: r#"{
+        code: r###"{
   "mode": "inline",
   "uiHeight": 12,
   "renderer": {
     "diff": "row-major",
-    "cellBytes": 16
+    "strategy": "bayes",
+    "cellBytes": 16,
+    "budgets": {
+      "renderMs": 8.0,
+      "presentMs": 4.0,
+      "degradation": "auto"
+    }
   },
-  "features": ["mouse", "paste", "focus"],
-  "theme": "NordicFrost"
-}"#,
+  "features": ["mouse", "paste", "focus", "synchronized-output"],
+  "theme": {
+    "name": "NordicFrost",
+    "accent": "#6AD1E3",
+    "bg": "#0E141B",
+    "fg": "#E6EEF5"
+  },
+  "telemetry": {
+    "enabled": true,
+    "sampleRate": 0.25,
+    "exporter": "otlp",
+    "endpoint": "http://localhost:4317"
+  }
+}"###,
     },
     CodeSample {
         label: "YAML",
         lang: "yaml",
-        code: r#"pipeline:
+        code: r###"defaults: &defaults
+  retries: 3
+  timeout_ms: 250
+  features: [mouse, paste, focus]
+
+pipeline:
   - name: render
+    <<: *defaults
     budget_ms: 12
     steps:
       - sanitize
       - diff
       - present
-  - name: snapshot
-    sizes: [80x24, 120x40]"#,
+  - name: snapshots
+    <<: *defaults
+    sizes:
+      - { w: 80, h: 24 }
+      - { w: 120, h: 40 }
+      - { w: 160, h: 50 }
+
+theme:
+  name: NordicFrost
+  accent: "#6AD1E3"
+  background: "#0E141B"
+"###,
+    },
+    CodeSample {
+        label: "Bash",
+        lang: "sh",
+        code: r###"#!/usr/bin/env bash
+set -euo pipefail
+IFS=$'\n\t'
+
+ROOT="${ROOT:-/var/lib/ftui}"
+LOG="${ROOT}/run.log"
+
+mkdir -p "${ROOT}"/{cache,tmp,frames}
+trap 'echo "[ERR] failed at line $LINENO" >> "$LOG"' ERR
+
+function checkpoint() {
+  local name="$1"
+  printf "[%(%H:%M:%S)T] %s\n" -1 "$name" >> "$LOG"
+}
+
+checksum() {
+  local input="$1"
+  echo -n "$input" | sha256sum | cut -d' ' -f1
+}
+
+frames=("boot" "diff" "present" "idle")
+for f in "${frames[@]}"; do
+  case "$f" in
+    boot) checkpoint "booting" ;;
+    diff) checkpoint "diffing" ;;
+    present) checkpoint "presenting" ;;
+    *) checkpoint "idle" ;;
+  esac
+done
+
+payload="$(jq -nc '{mode:"inline",uiHeight:12,features:["mouse","paste","focus"]}')"
+curl -sS -H "Content-Type: application/json" -d "$payload" http://localhost:8080/session \
+  | tee "${ROOT}/session.json" \
+  | jq -r '.id' \
+  | while read -r id; do
+      printf "session=%s checksum=%s\n" "$id" "$(checksum "$id")"
+    done
+"###,
+    },
+    CodeSample {
+        label: "C++",
+        lang: "cpp",
+        code: r###"// pipeline.cpp
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+template <typename T>
+struct Frame {
+  std::uint64_t id;
+  bool dirty;
+  T payload;
+};
+
+template <typename T>
+auto diff(const std::vector<Frame<T>>& a, const std::vector<Frame<T>>& b)
+    -> std::vector<std::uint64_t> {
+  std::vector<std::uint64_t> out;
+  out.reserve(a.size());
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (a[i].dirty != b[i].dirty) {
+      out.push_back(a[i].id);
+    }
+  }
+  return out;
+}
+
+struct Budget {
+  std::chrono::microseconds render;
+  std::chrono::microseconds present;
+};
+
+int main() {
+  Budget budget{std::chrono::microseconds{8000}, std::chrono::microseconds{4000}};
+  std::vector<Frame<std::string>> frames;
+  frames.push_back({1, true, "hello"});
+
+  std::unordered_map<std::string, std::optional<int>> stats;
+  stats["fps"] = 60;
+
+  auto ids = diff(frames, frames);
+  std::sort(ids.begin(), ids.end());
+  return static_cast<int>(budget.render.count() + budget.present.count() + ids.size());
+}
+"###,
+    },
+    CodeSample {
+        label: "Kotlin",
+        lang: "kt",
+        code: r###"// pipeline.kt
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.flow
+
+sealed interface Event {
+  data class Tick(val n: Long) : Event
+  data class Resize(val w: Int, val h: Int) : Event
+  data class Log(val line: String) : Event
+}
+
+data class Frame(val id: Long, val dirty: Boolean, val tags: Map<String, String>)
+
+class Budget(private val renderMs: Double, private val presentMs: Double) {
+  fun overBudget(elapsedMs: Double) = elapsedMs > (renderMs + presentMs)
+}
+
+fun stream(frames: List<Frame>): Flow<Frame> = flow {
+  for (f in frames) {
+    emit(f)
+    delay(4)
+  }
+}
+
+suspend fun pipeline(frames: List<Frame>, budget: Budget): Int {
+  var count = 0
+  stream(frames)
+    .filter { it.dirty }
+    .collect { count += it.tags.size }
+  return if (budget.overBudget(5.0)) -1 else count
+}
+"###,
+    },
+    CodeSample {
+        label: "PowerShell",
+        lang: "ps1",
+        code: r###"#requires -Version 7.0
+$ErrorActionPreference = "Stop"
+
+class Frame {
+  [long]$Id
+  [bool]$Dirty
+  [hashtable]$Tags
+  Frame([long]$id, [bool]$dirty, [hashtable]$tags) {
+    $this.Id = $id
+    $this.Dirty = $dirty
+    $this.Tags = $tags
+  }
+}
+
+function Invoke-Pipeline {
+  param(
+    [Parameter(Mandatory)][Frame[]]$Frames,
+    [int]$BudgetMs = 12
+  )
+
+  $start = Get-Date
+  $dirty = $Frames | Where-Object { $_.Dirty }
+  $count = 0
+
+  foreach ($f in $dirty) {
+    $count += $f.Tags.Count
+  }
+
+  $elapsed = (Get-Date) - $start
+  if ($elapsed.TotalMilliseconds -gt $BudgetMs) {
+    throw "over budget: $($elapsed.TotalMilliseconds)"
+  }
+
+  return $count
+}
+
+$frames = 1..5 | ForEach-Object {
+  [Frame]::new($_, ($_ % 2 -eq 0), @{ idx = $_; ts = (Get-Date) })
+}
+Invoke-Pipeline -Frames $frames
+"###,
+    },
+    CodeSample {
+        label: "C#",
+        lang: "cs",
+        code: r###"// Pipeline.cs
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+record Frame(long Id, bool Dirty, IReadOnlyDictionary<string, string> Tags);
+
+static class Pipeline
+{
+    public static async Task<int> RunAsync(IEnumerable<Frame> frames, TimeSpan budget, CancellationToken ct)
+    {
+        var start = DateTime.UtcNow;
+        var total = 0;
+
+        foreach (var frame in frames.Where(f => f.Dirty))
+        {
+            ct.ThrowIfCancellationRequested();
+            total += frame.Tags.Count;
+            await Task.Delay(1, ct);
+        }
+
+        if (DateTime.UtcNow - start > budget)
+            throw new TimeoutException("over budget");
+
+        return total;
+    }
+}
+"###,
+    },
+    CodeSample {
+        label: "Ruby",
+        lang: "rb",
+        code: r###"# pipeline.rb
+require "set"
+
+Frame = Struct.new(:id, :dirty, :tags, keyword_init: true)
+
+module Pipeline
+  def self.run(frames, budget_ms: 12)
+    start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    count = frames.select(&:dirty).sum { |f| f.tags.size }
+    elapsed = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start) * 1000.0
+    raise "over budget" if elapsed > budget_ms
+    count
+  end
+
+  def self.diff(prev, nxt)
+    seen = prev.to_set
+    nxt.reject { |x| seen.include?(x) }
+  end
+end
+
+frames = (1..5).map { |i| Frame.new(id: i, dirty: i.even?, tags: { idx: i.to_s }) }
+Pipeline.run(frames)
+"###,
+    },
+    CodeSample {
+        label: "Java",
+        lang: "java",
+        code: r###"// Pipeline.java
+package ftui.runtime;
+
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
+
+sealed interface Event permits Tick, Resize, Log, Quit {}
+record Tick(long n) implements Event {}
+record Resize(int w, int h) implements Event {}
+record Log(String line) implements Event {}
+record Quit() implements Event {}
+
+record Frame(long id, boolean dirty, Map<String, String> tags) {}
+
+final class Budget {
+    private final Duration render;
+    private final Duration present;
+
+    Budget(Duration render, Duration present) {
+        this.render = render;
+        this.present = present;
+    }
+
+    boolean overBudget(Duration elapsed) {
+        return elapsed.compareTo(render.plus(present)) > 0;
+    }
+}
+
+final class Pipeline {
+    private final Executor io = Executors.newFixedThreadPool(2);
+
+    List<Long> diff(List<Frame> a, List<Frame> b) {
+        var out = new ArrayList<Long>(a.size());
+        for (int i = 0; i < a.size(); i++) {
+            if (a.get(i).dirty() != b.get(i).dirty()) {
+                out.add(a.get(i).id());
+            }
+        }
+        return out;
+    }
+
+    CompletableFuture<Integer> renderAsync(List<Frame> frames, Budget budget) {
+        var start = System.nanoTime();
+        return CompletableFuture.supplyAsync(() -> {
+            int count = frames.stream()
+                .filter(Frame::dirty)
+                .mapToInt(f -> f.tags().size())
+                .sum();
+            var elapsed = Duration.ofNanos(System.nanoTime() - start);
+            if (budget.overBudget(elapsed)) {
+                throw new IllegalStateException("over budget");
+            }
+            return count;
+        }, io);
+    }
+}
+
+class Main {
+    public static void main(String[] args) {
+        var frames = List.of(
+            new Frame(1, true, Map.of("mode", "inline")),
+            new Frame(2, false, Map.of("mode", "alt"))
+        );
+        var budget = new Budget(Duration.ofMillis(8), Duration.ofMillis(4));
+        var pipeline = new Pipeline();
+        var dirty = frames.stream().filter(Frame::dirty).collect(Collectors.toList());
+        var result = pipeline.renderAsync(dirty, budget).join();
+        System.out.println("count=" + result + " diff=" + pipeline.diff(frames, frames).size());
+    }
+}
+"###,
+    },
+    CodeSample {
+        label: "C",
+        lang: "c",
+        code: r###"// pipeline.c
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#define MAX_TAGS 16u
+#define CLAMP(x, lo, hi) ((x) < (lo) ? (lo) : ((x) > (hi) ? (hi) : (x)))
+
+typedef struct {
+    const char *key;
+    const char *value;
+} tag_t;
+
+typedef struct {
+    uint64_t id;
+    bool dirty;
+    tag_t tags[MAX_TAGS];
+    uint8_t tag_count;
+} frame_t;
+
+typedef struct {
+    uint32_t render_ms;
+    uint32_t present_ms;
+} budget_t;
+
+static inline uint32_t hash_u32(uint32_t x) {
+    x ^= x >> 16;
+    x *= 0x7feb352d;
+    x ^= x >> 15;
+    x *= 0x846ca68b;
+    x ^= x >> 16;
+    return x;
+}
+
+static uint32_t diff_ids(const frame_t *a, const frame_t *b, size_t n, uint64_t *out) {
+    uint32_t count = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (a[i].dirty != b[i].dirty) {
+            out[count++] = a[i].id;
+        }
+    }
+    return count;
+}
+
+static uint32_t render(const frame_t *frames, size_t n) {
+    uint32_t total = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (frames[i].dirty) {
+            total += frames[i].tag_count;
+        }
+    }
+    return total;
+}
+
+int main(void) {
+    frame_t frames[2] = {
+        { .id = 1, .dirty = true, .tags = {{"mode", "inline"}}, .tag_count = 1 },
+        { .id = 2, .dirty = false, .tags = {{"mode", "alt"}}, .tag_count = 1 },
+    };
+    budget_t budget = { .render_ms = 8, .present_ms = 4 };
+    uint64_t ids[8] = {0};
+
+    uint32_t count = render(frames, 2);
+    uint32_t changed = diff_ids(frames, frames, 2, ids);
+    uint32_t score = hash_u32((uint32_t)count + changed + CLAMP(budget.render_ms, 1, 16));
+    printf("count=%u changed=%u score=%u\n", count, changed, score);
+    return 0;
+}
+"###,
+    },
+    CodeSample {
+        label: "Swift",
+        lang: "swift",
+        code: r###"// Pipeline.swift
+import Foundation
+
+protocol Event {}
+struct Tick: Event { let n: Int }
+struct Resize: Event { let w: Int; let h: Int }
+struct Log: Event { let line: String }
+
+@propertyWrapper
+struct Clamped<Value: Comparable> {
+    private var value: Value
+    private let range: ClosedRange<Value>
+    init(wrappedValue: Value, _ range: ClosedRange<Value>) {
+        self.range = range
+        self.value = min(max(wrappedValue, range.lowerBound), range.upperBound)
+    }
+    var wrappedValue: Value {
+        get { value }
+        set { value = min(max(newValue, range.lowerBound), range.upperBound) }
+    }
+}
+
+struct Frame: Sendable {
+    let id: UUID
+    let dirty: Bool
+    let tags: [String: String]
+}
+
+actor Budget {
+    @Clamped(0...32) var renderMs: Int
+    @Clamped(0...32) var presentMs: Int
+    init(renderMs: Int, presentMs: Int) {
+        self.renderMs = renderMs
+        self.presentMs = presentMs
+    }
+    func overBudget(_ elapsedMs: Int) -> Bool {
+        elapsedMs > (renderMs + presentMs)
+    }
+}
+
+func diff(_ a: [Frame], _ b: [Frame]) -> [UUID] {
+    zip(a, b).compactMap { $0.dirty != $1.dirty ? $0.id : nil }
+}
+
+func render(frames: [Frame]) async throws -> Int {
+    try await Task.sleep(nanoseconds: 1_000_000)
+    return frames.filter { $0.dirty }.map { $0.tags.count }.reduce(0, +)
+}
+
+@main
+struct Main {
+    static func main() async {
+        let frames = [
+            Frame(id: UUID(), dirty: true, tags: ["mode": "inline"]),
+            Frame(id: UUID(), dirty: false, tags: ["mode": "alt"]),
+        ]
+        let budget = Budget(renderMs: 8, presentMs: 4)
+        let count = try? await render(frames: frames)
+        let elapsed = 7
+        print("count=\(count ?? -1) diff=\(diff(frames, frames).count) over=\(await budget.overBudget(elapsed))")
+    }
+}
+"###,
+    },
+    CodeSample {
+        label: "PHP",
+        lang: "php",
+        code: r###"<?php
+declare(strict_types=1);
+
+namespace Ftui\Runtime;
+
+use DateTimeImmutable;
+use Generator;
+
+#[\Attribute(\Attribute::TARGET_CLASS)]
+final class Trace {}
+
+enum Mode: string { case Inline = "inline"; case Alt = "alt"; }
+
+final readonly class Frame {
+    public function __construct(
+        public int $id,
+        public bool $dirty,
+        public array $tags,
+    ) {}
+}
+
+trait Budgeted {
+    public function overBudget(float $elapsedMs): bool;
+}
+
+#[Trace]
+final class Pipeline implements Budgeted {
+    public function __construct(
+        private float $renderMs,
+        private float $presentMs,
+    ) {}
+
+    public function overBudget(float $elapsedMs): bool {
+        return $elapsedMs > ($this->renderMs + $this->presentMs);
+    }
+
+    public function diff(array $a, array $b): array {
+        $out = [];
+        foreach ($a as $i => $frame) {
+            if ($frame->dirty !== $b[$i]->dirty) {
+                $out[] = $frame->id;
+            }
+        }
+        return $out;
+    }
+
+    public function stream(array $frames): Generator {
+        foreach ($frames as $frame) {
+            if ($frame->dirty) {
+                yield $frame;
+            }
+        }
+    }
+}
+
+$frames = [
+    new Frame(1, true, ["mode" => Mode::Inline->value]),
+    new Frame(2, false, ["mode" => Mode::Alt->value]),
+];
+$pipeline = new Pipeline(8.0, 4.0);
+$count = 0;
+foreach ($pipeline->stream($frames) as $frame) {
+    $count += count($frame->tags);
+}
+$elapsed = (float) (new DateTimeImmutable())->format("v");
+echo "count={$count} diff=" . count($pipeline->diff($frames, $frames)) . " over=" . ($pipeline->overBudget($elapsed) ? "yes" : "no");
+"###,
+    },
+    CodeSample {
+        label: "HTML",
+        lang: "html",
+        code: r###"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FrankenTUI</title>
+    <link rel="preconnect" href="https://fonts.example">
+    <style>
+      :root { color-scheme: dark; }
+      main { display: grid; gap: 16px; }
+    </style>
+    <script type="module">
+      const $ = (sel) => document.querySelector(sel);
+      const bus = new EventTarget();
+      bus.addEventListener("tick", (e) => $("#fps").textContent = e.detail);
+      setInterval(() => bus.dispatchEvent(new CustomEvent("tick", { detail: 60 })), 1000);
+    </script>
+  </head>
+  <body>
+    <header>
+      <h1>FrankenTUI</h1>
+      <p data-mode="inline">Deterministic output</p>
+    </header>
+    <main>
+      <section>
+        <button type="button" aria-pressed="false">Toggle Mode</button>
+        <span id="fps">60</span>
+      </section>
+      <template id="card">
+        <article><slot></slot></article>
+      </template>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 12h16M12 4v16" />
+      </svg>
+    </main>
+  </body>
+</html>
+"###,
+    },
+    CodeSample {
+        label: "CSS",
+        lang: "css",
+        code: r###":root {
+  --bg: #0e141b;
+  --accent: #6ad1e3;
+  --text: #e6eef5;
+  --radius: 14px;
+}
+
+@layer base, components, utilities;
+
+@layer base {
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    color: var(--text);
+    background: radial-gradient(1200px circle at 20% 10%, #1b2a3a, var(--bg));
+  }
+}
+
+@layer components {
+  .card {
+    border-radius: var(--radius);
+    padding: clamp(16px, 3vw, 28px);
+    background: color-mix(in oklab, var(--bg), var(--accent) 12%);
+    box-shadow: 0 20px 60px rgb(0 0 0 / 0.35);
+  }
+}
+
+@supports (backdrop-filter: blur(12px)) {
+  .glass { backdrop-filter: blur(12px); }
+}
+
+@keyframes pulse {
+  0% { transform: translateY(0); opacity: 0.7; }
+  50% { transform: translateY(-6px); opacity: 1; }
+  100% { transform: translateY(0); opacity: 0.7; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse { animation: none; }
+}
+"###,
+    },
+    CodeSample {
+        label: "Fish",
+        lang: "fish",
+        code: r###"# pipeline.fish
+function checksum --argument value
+  echo -n $value | sha256sum | string split ' ' | head -n 1
+end
+
+function render --argument budget
+  set -l frames boot diff present idle
+  set -l count 0
+
+  for f in $frames
+    switch $f
+      case boot diff present
+        set count (math $count + 1)
+      case '*'
+        continue
+    end
+  end
+
+  if test $count -gt $budget
+    echo "over budget"
+    return 1
+  end
+
+  echo "count=$count checksum="(checksum $count)
+end
+
+set -l budget 3
+render $budget
+"###,
+    },
+    CodeSample {
+        label: "Lua",
+        lang: "lua",
+        code: r###"-- pipeline.lua
+local Frame = {}
+Frame.__index = Frame
+
+function Frame.new(id, dirty, tags)
+  return setmetatable({ id = id, dirty = dirty, tags = tags or {} }, Frame)
+end
+
+local function diff(a, b)
+  local out = {}
+  for i, f in ipairs(a) do
+    if f.dirty ~= b[i].dirty then
+      out[#out + 1] = f.id
+    end
+  end
+  return out
+end
+
+local function render(frames)
+  local total = 0
+  for _, f in ipairs(frames) do
+    if f.dirty then
+      total = total + #f.tags
+    end
+  end
+  return total
+end
+
+local frames = {
+  Frame.new(1, true, { "inline", "focus" }),
+  Frame.new(2, false, { "alt" }),
+}
+
+local result = render(frames)
+local changed = diff(frames, frames)
+print(("count=%d diff=%d"):format(result, #changed))
+"###,
+    },
+    CodeSample {
+        label: "R",
+        lang: "r",
+        code: r###"# pipeline.R
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(purrr)
+})
+
+set.seed(42)
+frames <- tibble(
+  id = 1:6,
+  dirty = c(TRUE, FALSE, TRUE, FALSE, TRUE, FALSE),
+  tags = map(id, ~ list(mode = ifelse(.x %% 2 == 0, "alt", "inline")))
+)
+
+diff_ids <- function(prev, next) {
+  prev %>%
+    left_join(next, by = "id", suffix = c("_prev", "_next")) %>%
+    filter(dirty_prev != dirty_next) %>%
+    pull(id)
+}
+
+render <- function(frames) {
+  frames %>%
+    filter(dirty) %>%
+    mutate(tag_count = map_int(tags, length)) %>%
+    summarise(total = sum(tag_count)) %>%
+    pull(total)
+}
+
+count <- render(frames)
+changed <- diff_ids(frames, frames)
+message(glue::glue("count={count} diff={length(changed)}"))
+"###,
     },
 ];
 
 const DASH_MARKDOWN_SAMPLES: &[&str] = &[
-    r#"# FrankenTUI Field Notes
+    r###"# FrankenTUI Field Notes
 
 > **Goal:** deterministic output, no surprises.
 
@@ -245,8 +1162,8 @@ fn render(frame: &mut Frame) {
 Footnote[^1] and **links**: https://ftui.dev
 
 [^1]: Determinism beats magic.
-"#,
-    r#"# Rendering Playbook
+"###,
+    r###"# Rendering Playbook
 
 1. **Build** the frame
 2. **Diff** buffers
@@ -268,7 +1185,7 @@ FTUI_HARNESS_SCREEN_MODE=inline cargo run -p ftui-harness
 
 > [!TIP]
 > Use `Cmd::batch` for side effects.
-"#,
+"###,
 ];
 
 const EFFECT_GFM_SAMPLES: &[&str] = &[
@@ -466,6 +1383,43 @@ const EFFECT_DEMOS: &[EffectDemo] = &[
     },
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChartMode {
+    Pulse,
+    Lines,
+    Bars,
+    Heatmap,
+}
+
+impl ChartMode {
+    fn next(self) -> Self {
+        match self {
+            Self::Pulse => Self::Lines,
+            Self::Lines => Self::Bars,
+            Self::Bars => Self::Heatmap,
+            Self::Heatmap => Self::Pulse,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Pulse => "Pulse",
+            Self::Lines => "Lines",
+            Self::Bars => "Bars",
+            Self::Heatmap => "Heatmap",
+        }
+    }
+
+    fn subtitle(self) -> &'static str {
+        match self {
+            Self::Pulse => "sparklines + mini bars",
+            Self::Lines => "braille line chart + legend",
+            Self::Bars => "grouped or stacked volumes",
+            Self::Heatmap => "animated intensity grid",
+        }
+    }
+}
+
 /// Dashboard state.
 pub struct Dashboard {
     // Animation
@@ -495,6 +1449,9 @@ pub struct Dashboard {
 
     // Text effects showcase state
     effect_index: usize,
+
+    // Chart showcase state
+    chart_mode: ChartMode,
 }
 
 impl Default for Dashboard {
@@ -527,6 +1484,7 @@ impl Dashboard {
             md_sample_index: 0,
             md_stream_pos: 0,
             effect_index: 0,
+            chart_mode: ChartMode::Pulse,
         }
     }
 
@@ -792,107 +1750,465 @@ impl Dashboard {
             .render(inner, frame);
     }
 
-    /// Render sparklines panel.
-    fn render_sparklines(&self, frame: &mut Frame, area: Rect) {
+    /// Render the charts showcase panel.
+    fn render_charts(&self, frame: &mut Frame, area: Rect) {
         if area.is_empty() || area.height < 3 {
             return;
         }
 
+        let title = format!("Charts · {}", self.chart_mode.label());
         let block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title("Charts")
+            .title(title.as_str())
             .title_alignment(Alignment::Center)
             .style(Style::new().fg(theme::screen_accent::DATA_VIZ));
 
         let inner = block.inner(area);
         block.render(area, frame);
 
-        if inner.is_empty() || inner.height < 2 {
+        if inner.is_empty() {
             return;
         }
 
-        // Split into rows for each sparkline
+        let (header, content) = if inner.height >= 4 {
+            let rows = Flex::vertical()
+                .constraints([Constraint::Fixed(1), Constraint::Min(1)])
+                .split(inner);
+            (Some(rows[0]), rows[1])
+        } else {
+            (None, inner)
+        };
+
+        if let Some(header_area) = header {
+            let hint = format!("g:cycle · {}", self.chart_mode.subtitle());
+            Paragraph::new(hint)
+                .style(Style::new().fg(theme::fg::MUTED))
+                .render(header_area, frame);
+        }
+
+        match self.chart_mode {
+            ChartMode::Pulse => self.render_pulse_charts(frame, content),
+            ChartMode::Lines => self.render_line_charts(frame, content),
+            ChartMode::Bars => self.render_bar_charts(frame, content),
+            ChartMode::Heatmap => self.render_heatmap_charts(frame, content),
+        }
+    }
+
+    fn render_pulse_charts(&self, frame: &mut Frame, area: Rect) {
+        if area.is_empty() {
+            return;
+        }
+
+        if area.height < 3 {
+            self.render_minimal_sparkline(frame, area);
+            return;
+        }
+
+        let cpu_data: Vec<f64> = self.simulated_data.cpu_history.iter().copied().collect();
+        let mem_data: Vec<f64> = self.simulated_data.memory_history.iter().copied().collect();
+        let net_in_data: Vec<f64> = self.simulated_data.network_in.iter().copied().collect();
+        let net_out_data: Vec<f64> = self.simulated_data.network_out.iter().copied().collect();
+
+        let cpu_last = cpu_data.last().copied().unwrap_or(0.0);
+        let mem_last = mem_data.last().copied().unwrap_or(0.0);
+        let net_in_last = net_in_data.last().copied().unwrap_or(0.0);
+        let net_out_last = net_out_data.last().copied().unwrap_or(0.0);
+
+        if area.height < 5 {
+            let rows = Flex::vertical()
+                .constraints([
+                    Constraint::Fixed(1),
+                    Constraint::Fixed(1),
+                    Constraint::Fixed(1),
+                ])
+                .split(area);
+            self.render_labeled_sparkline(
+                frame,
+                rows[0],
+                "CPU",
+                Self::format_percent(cpu_last),
+                &cpu_data,
+                theme::accent::PRIMARY.into(),
+                (
+                    theme::accent::PRIMARY.into(),
+                    theme::accent::ACCENT_7.into(),
+                ),
+            );
+            self.render_labeled_sparkline(
+                frame,
+                rows[1],
+                "MEM",
+                Self::format_percent(mem_last),
+                &mem_data,
+                theme::accent::SUCCESS.into(),
+                (
+                    theme::accent::SUCCESS.into(),
+                    theme::accent::ACCENT_9.into(),
+                ),
+            );
+            self.render_labeled_sparkline(
+                frame,
+                rows[2],
+                "NET",
+                Self::format_rate((net_in_last + net_out_last) * 0.5),
+                &net_in_data,
+                theme::accent::WARNING.into(),
+                (
+                    theme::accent::WARNING.into(),
+                    theme::accent::ACCENT_10.into(),
+                ),
+            );
+            return;
+        }
+
         let rows = Flex::vertical()
             .constraints([
                 Constraint::Fixed(1),
                 Constraint::Fixed(1),
                 Constraint::Fixed(1),
+                Constraint::Fixed(1),
+                Constraint::Fixed(1),
             ])
-            .split(inner);
+            .split(area);
 
-        let cpu_data: Vec<f64> = self.simulated_data.cpu_history.iter().copied().collect();
-        let mem_data: Vec<f64> = self.simulated_data.memory_history.iter().copied().collect();
-        let net_data: Vec<f64> = self.simulated_data.network_in.iter().copied().collect();
+        self.render_labeled_sparkline(
+            frame,
+            rows[0],
+            "CPU",
+            Self::format_percent(cpu_last),
+            &cpu_data,
+            theme::accent::PRIMARY.into(),
+            (
+                theme::accent::PRIMARY.into(),
+                theme::accent::ACCENT_7.into(),
+            ),
+        );
+        self.render_labeled_sparkline(
+            frame,
+            rows[1],
+            "MEM",
+            Self::format_percent(mem_last),
+            &mem_data,
+            theme::accent::SUCCESS.into(),
+            (
+                theme::accent::SUCCESS.into(),
+                theme::accent::ACCENT_9.into(),
+            ),
+        );
+        self.render_labeled_sparkline(
+            frame,
+            rows[2],
+            "NET",
+            Self::format_rate(net_in_last),
+            &net_in_data,
+            theme::accent::WARNING.into(),
+            (
+                theme::accent::WARNING.into(),
+                theme::accent::ACCENT_10.into(),
+            ),
+        );
+        self.render_labeled_sparkline(
+            frame,
+            rows[3],
+            "OUT",
+            Self::format_rate(net_out_last),
+            &net_out_data,
+            theme::accent::SECONDARY.into(),
+            (
+                theme::accent::SECONDARY.into(),
+                theme::accent::ACCENT_6.into(),
+            ),
+        );
 
-        // CPU sparkline
-        if !rows[0].is_empty() && !cpu_data.is_empty() {
-            let label_area = Rect::new(rows[0].x, rows[0].y, 4.min(rows[0].width), 1);
-            let spark_area = Rect::new(
-                rows[0].x + 4.min(rows[0].width),
-                rows[0].y,
-                rows[0].width.saturating_sub(4),
-                1,
-            );
-            Paragraph::new("CPU ")
-                .style(Style::new().fg(theme::fg::SECONDARY))
-                .render(label_area, frame);
-            if !spark_area.is_empty() {
-                Sparkline::new(&cpu_data)
-                    .style(Style::new().fg(theme::accent::PRIMARY))
-                    .gradient(
-                        theme::accent::PRIMARY.into(),
-                        theme::accent::ACCENT_7.into(),
-                    )
-                    .render(spark_area, frame);
+        let mini_cols = Flex::horizontal()
+            .gap(theme::spacing::XS)
+            .constraints([
+                Constraint::Percentage(34.0),
+                Constraint::Percentage(33.0),
+                Constraint::Percentage(33.0),
+            ])
+            .split(rows[4]);
+
+        let eps_value = (self.simulated_data.events_per_second / 1500.0).clamp(0.0, 1.0);
+        let disk_value = self
+            .simulated_data
+            .disk_usage
+            .first()
+            .map(|(_, v)| *v / 100.0)
+            .unwrap_or(0.0);
+        let net_value = ((net_in_last + net_out_last) / 2400.0).clamp(0.0, 1.0);
+        let colors = MiniBarColors::new(
+            theme::accent::PRIMARY.into(),
+            theme::accent::SUCCESS.into(),
+            theme::accent::WARNING.into(),
+            theme::accent::ACCENT_10.into(),
+        );
+
+        self.render_mini_bar_row(frame, mini_cols[0], "EPS", eps_value, colors);
+        self.render_mini_bar_row(frame, mini_cols[1], "DSK", disk_value, colors);
+        self.render_mini_bar_row(frame, mini_cols[2], "IO", net_value, colors);
+    }
+
+    fn render_line_charts(&self, frame: &mut Frame, area: Rect) {
+        if area.is_empty() {
+            return;
+        }
+
+        if area.width < 16 || area.height < 6 {
+            self.render_minimal_sparkline(frame, area);
+            return;
+        }
+
+        let cpu_points: Vec<(f64, f64)> = self
+            .simulated_data
+            .cpu_history
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as f64, *v))
+            .collect();
+        let mem_points: Vec<(f64, f64)> = self
+            .simulated_data
+            .memory_history
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as f64, *v))
+            .collect();
+
+        let net_max = self
+            .simulated_data
+            .network_in
+            .iter()
+            .chain(self.simulated_data.network_out.iter())
+            .copied()
+            .fold(1.0, f64::max);
+        let net_points: Vec<(f64, f64)> = self
+            .simulated_data
+            .network_in
+            .iter()
+            .zip(self.simulated_data.network_out.iter())
+            .enumerate()
+            .map(|(i, (net_in, net_out))| {
+                let avg = (*net_in + *net_out) * 0.5;
+                let scaled = (avg / net_max * 100.0).clamp(0.0, 100.0);
+                (i as f64, scaled)
+            })
+            .collect();
+
+        let palette = Self::chart_palette_extended();
+        let series = vec![
+            Series::new("CPU", &cpu_points, palette[0]).markers(true),
+            Series::new("MEM", &mem_points, palette[1]),
+            Series::new("NET", &net_points, palette[2]),
+        ];
+
+        let chart = LineChart::new(series)
+            .style(Style::new().fg(theme::fg::PRIMARY))
+            .x_labels(vec!["-30", "-15", "now"])
+            .y_labels(vec!["0", "50", "100"])
+            .legend(true)
+            .y_bounds(0.0, 100.0);
+
+        chart.render(area, frame);
+    }
+
+    fn render_bar_charts(&self, frame: &mut Frame, area: Rect) {
+        if area.is_empty() {
+            return;
+        }
+
+        if area.width < 12 || area.height < 4 {
+            self.render_minimal_sparkline(frame, area);
+            return;
+        }
+
+        let palette = Self::chart_palette_extended();
+
+        let (legend_area, chart_area) = if area.height >= 6 {
+            let rows = Flex::vertical()
+                .constraints([Constraint::Fixed(1), Constraint::Min(1)])
+                .split(area);
+            (Some(rows[0]), rows[1])
+        } else {
+            (None, area)
+        };
+
+        if chart_area.is_empty() {
+            return;
+        }
+
+        let use_stacked = chart_area.width < 26;
+
+        if let Some(legend_area) = legend_area {
+            if use_stacked {
+                let legend_items = [
+                    ("SYS", palette[0]),
+                    ("APPS", palette[1]),
+                    ("DOCS", palette[2]),
+                    ("MEDIA", palette[3]),
+                    ("CACHE", palette[4]),
+                ];
+                self.render_color_legend(frame, legend_area, &legend_items);
+            } else {
+                let legend_items = [("USED", palette[0]), ("FREE", palette[3])];
+                self.render_color_legend(frame, legend_area, &legend_items);
             }
         }
 
-        // Memory sparkline
-        if rows.len() > 1 && !rows[1].is_empty() && !mem_data.is_empty() {
-            let label_area = Rect::new(rows[1].x, rows[1].y, 4.min(rows[1].width), 1);
-            let spark_area = Rect::new(
-                rows[1].x + 4.min(rows[1].width),
-                rows[1].y,
-                rows[1].width.saturating_sub(4),
-                1,
-            );
-            Paragraph::new("MEM ")
-                .style(Style::new().fg(theme::fg::SECONDARY))
-                .render(label_area, frame);
-            if !spark_area.is_empty() {
-                Sparkline::new(&mem_data)
-                    .style(Style::new().fg(theme::accent::SUCCESS))
-                    .gradient(
-                        theme::accent::SUCCESS.into(),
-                        theme::accent::ACCENT_9.into(),
-                    )
-                    .render(spark_area, frame);
+        if use_stacked {
+            let values: Vec<f64> = self
+                .simulated_data
+                .disk_usage
+                .iter()
+                .map(|(_, v)| *v)
+                .collect();
+            let groups = vec![BarGroup::new("DISK", values)];
+            BarChart::new(groups)
+                .mode(BarMode::Stacked)
+                .bar_width(2)
+                .colors(palette.to_vec())
+                .style(Style::new().fg(theme::fg::PRIMARY))
+                .max(100.0)
+                .render(chart_area, frame);
+        } else {
+            let groups: Vec<BarGroup<'_>> = self
+                .simulated_data
+                .disk_usage
+                .iter()
+                .map(|(name, usage)| BarGroup::new(name.as_str(), vec![*usage, 100.0 - *usage]))
+                .collect();
+            BarChart::new(groups)
+                .direction(BarDirection::Vertical)
+                .mode(BarMode::Grouped)
+                .bar_width(1)
+                .bar_gap(theme::spacing::XS)
+                .group_gap(theme::spacing::SM)
+                .colors(vec![palette[0], palette[3]])
+                .style(Style::new().fg(theme::fg::PRIMARY))
+                .max(100.0)
+                .render(chart_area, frame);
+        }
+    }
+
+    fn render_heatmap_charts(&self, frame: &mut Frame, area: Rect) {
+        if area.is_empty() {
+            return;
+        }
+
+        if area.width < 8 || area.height < 4 {
+            self.render_minimal_sparkline(frame, area);
+            return;
+        }
+
+        let w = area.width.max(1) as f64;
+        let h = area.height.max(1) as f64;
+        let phase = self.time * 0.35;
+        let mut max_value = -1.0;
+        let mut max_pos = (area.x, area.y);
+
+        for dy in 0..area.height {
+            let ny = dy as f64 / (h - 1.0).max(1.0);
+            for dx in 0..area.width {
+                let nx = dx as f64 / (w - 1.0).max(1.0);
+                let wave_x = (nx * std::f64::consts::TAU * 1.3 + phase).sin() * 0.5 + 0.5;
+                let wave_y = (ny * std::f64::consts::TAU * 0.8 - phase * 1.2).cos() * 0.5 + 0.5;
+                let wave_z = ((nx + ny) * 3.0 + phase * 0.6).sin() * 0.5 + 0.5;
+                let value = (0.45 * wave_x + 0.35 * wave_y + 0.2 * wave_z).clamp(0.0, 1.0);
+
+                if value > max_value {
+                    max_value = value;
+                    max_pos = (area.x + dx, area.y + dy);
+                }
+
+                let color = heatmap_gradient(value);
+                let mut cell = Cell::from_char(' ');
+                cell.bg = color;
+                if let Some(slot) = frame.buffer.get_mut(area.x + dx, area.y + dy) {
+                    *slot = cell;
+                }
             }
         }
 
-        // Network sparkline
-        if rows.len() > 2 && !rows[2].is_empty() && !net_data.is_empty() {
-            let label_area = Rect::new(rows[2].x, rows[2].y, 4.min(rows[2].width), 1);
-            let spark_area = Rect::new(
-                rows[2].x + 4.min(rows[2].width),
-                rows[2].y,
-                rows[2].width.saturating_sub(4),
-                1,
-            );
-            Paragraph::new("NET ")
-                .style(Style::new().fg(theme::fg::SECONDARY))
-                .render(label_area, frame);
-            if !spark_area.is_empty() {
-                Sparkline::new(&net_data)
-                    .style(Style::new().fg(theme::accent::WARNING))
-                    .gradient(
-                        theme::accent::WARNING.into(),
-                        theme::accent::ACCENT_10.into(),
-                    )
-                    .render(spark_area, frame);
-            }
+        if let Some(cell) = frame.buffer.get_mut(max_pos.0, max_pos.1) {
+            cell.content = ftui_render::cell::CellContent::from_char('●');
+            cell.fg = theme::fg::PRIMARY.into();
         }
+    }
+
+    fn render_minimal_sparkline(&self, frame: &mut Frame, area: Rect) {
+        let data: Vec<f64> = self.simulated_data.cpu_history.iter().copied().collect();
+        if data.is_empty() {
+            return;
+        }
+        Sparkline::new(&data)
+            .style(Style::new().fg(theme::accent::PRIMARY))
+            .gradient(
+                theme::accent::PRIMARY.into(),
+                theme::accent::ACCENT_7.into(),
+            )
+            .render(area, frame);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_labeled_sparkline(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        label: &str,
+        value_label: String,
+        data: &[f64],
+        color: PackedRgba,
+        gradient: (PackedRgba, PackedRgba),
+    ) {
+        if area.is_empty() {
+            return;
+        }
+
+        let label_width = label.chars().count().max(3) as u16 + 1;
+        let label_width = label_width.min(area.width);
+        let value_width = value_label.chars().count().min(area.width as usize) as u16;
+        let value_x = area.x + area.width.saturating_sub(value_width);
+        let label_area = Rect::new(area.x, area.y, label_width, 1);
+        let value_area = Rect::new(value_x, area.y, value_width, 1);
+        let spark_x = area.x + label_width;
+        let spark_area = Rect::new(spark_x, area.y, value_x.saturating_sub(spark_x), 1);
+
+        Paragraph::new(format!("{label} "))
+            .style(Style::new().fg(theme::fg::SECONDARY))
+            .render(label_area, frame);
+
+        if !spark_area.is_empty() && !data.is_empty() {
+            Sparkline::new(data)
+                .style(Style::new().fg(color))
+                .gradient(gradient.0, gradient.1)
+                .render(spark_area, frame);
+        }
+
+        if !value_area.is_empty() {
+            Paragraph::new(value_label)
+                .style(Style::new().fg(theme::fg::PRIMARY))
+                .render(value_area, frame);
+        }
+    }
+
+    fn render_color_legend(&self, frame: &mut Frame, area: Rect, entries: &[(&str, PackedRgba)]) {
+        if area.is_empty() || entries.is_empty() {
+            return;
+        }
+
+        let mut spans = Vec::new();
+        for (idx, (label, color)) in entries.iter().enumerate() {
+            if idx > 0 {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::styled("■", Style::new().fg(*color)));
+            spans.push(Span::styled(
+                format!(" {label}"),
+                Style::new().fg(theme::fg::SECONDARY),
+            ));
+        }
+
+        Paragraph::new(Text::from_lines([Line::from_spans(spans)])).render(area, frame);
     }
 
     /// Render syntax-highlighted code preview.
@@ -952,27 +2268,318 @@ impl Dashboard {
         }
 
         let theme_name = theme::current_theme_name();
-        let info = format!(
-            "FPS: {:.0}\n{}x{}\n{}\nTick: {}",
-            self.fps, dashboard_size.0, dashboard_size.1, theme_name, self.tick_count
-        );
+        let events_per_sec = self.simulated_data.events_per_second;
+        let cpu = self
+            .simulated_data
+            .cpu_history
+            .back()
+            .copied()
+            .unwrap_or(0.0);
+        let mem = self
+            .simulated_data
+            .memory_history
+            .back()
+            .copied()
+            .unwrap_or(0.0);
+        let (status, status_color) = if cpu > 85.0 || mem > 85.0 {
+            ("HOT", theme::intent::error_text())
+        } else if cpu > 70.0 || mem > 70.0 {
+            ("BUSY", theme::intent::warning_text())
+        } else {
+            ("NOMINAL", theme::intent::success_text())
+        };
 
-        if inner.height < 6 {
+        if inner.height < 5 {
+            let info = format!(
+                "Status:{status} FPS:{:.0}\nEPS:{:.0}  {}x{}\n{}",
+                self.fps, events_per_sec, dashboard_size.0, dashboard_size.1, theme_name
+            );
             Paragraph::new(info)
                 .style(Style::new().fg(theme::fg::SECONDARY))
                 .render(inner, frame);
             return;
         }
 
-        let rows = Flex::vertical()
-            .constraints([Constraint::Min(2), Constraint::Fixed(3)])
-            .split(inner);
+        let header_text = format!(
+            "FrankenTUI Kernel · LIVE · {}x{} · {:.0} FPS",
+            dashboard_size.0, dashboard_size.1, self.fps
+        );
+        let header = truncate_to_width(&header_text, inner.width);
+        let header_gradient = ColorGradient::new(vec![
+            (0.0, theme::accent::ACCENT_2.into()),
+            (0.5, theme::accent::ACCENT_1.into()),
+            (1.0, theme::accent::ACCENT_3.into()),
+        ]);
+        let header_effect = TextEffect::AnimatedGradient {
+            gradient: header_gradient,
+            speed: 0.35,
+        };
+        StyledText::new(header)
+            .effect(header_effect)
+            .bold()
+            .time(self.time)
+            .render(Rect::new(inner.x, inner.y, inner.width, 1), frame);
 
-        Paragraph::new(info)
-            .style(Style::new().fg(theme::fg::SECONDARY))
-            .render(rows[0], frame);
+        let mut cursor_y = inner.y + 1;
+        if inner.height >= 6 {
+            let badges_area = Rect::new(inner.x, cursor_y, inner.width, 1);
+            self.render_info_badges(frame, badges_area);
+            cursor_y += 1;
+        }
 
-        self.render_mini_bars(frame, rows[1]);
+        if inner.height >= 7 {
+            let signal_area = Rect::new(inner.x, cursor_y, inner.width, 1);
+            self.render_info_signal(frame, signal_area, status, status_color, events_per_sec);
+            cursor_y += 1;
+        }
+
+        let remaining = inner.height.saturating_sub(cursor_y - inner.y);
+        let bars_height = if remaining >= 4 { 3 } else { 0 };
+        let stats_height = remaining.saturating_sub(bars_height).max(1);
+        let stats_area = Rect::new(inner.x, cursor_y, inner.width, stats_height);
+        self.render_info_stats(
+            frame,
+            stats_area,
+            dashboard_size,
+            theme_name,
+            events_per_sec,
+        );
+        cursor_y = cursor_y.saturating_add(stats_height);
+
+        if bars_height > 0 {
+            let bars_area = Rect::new(inner.x, cursor_y, inner.width, bars_height);
+            self.render_mini_bars(frame, bars_area);
+        }
+    }
+
+    fn render_info_badges(&self, frame: &mut Frame, area: Rect) {
+        if area.is_empty() {
+            return;
+        }
+
+        let badges = [
+            ("INLINE", theme::accent::PRIMARY),
+            ("BRAILLE FX", theme::accent::ACCENT_4),
+            ("STREAMING GFM", theme::accent::INFO),
+            ("ZERO-TEAR", theme::accent::ACCENT_7),
+            ("ONE-WRITER", theme::accent::SUCCESS),
+            ("16B CELL", theme::accent::ACCENT_2),
+        ];
+
+        let mut x = area.x;
+        for (label, color) in badges {
+            let style = Style::new().fg(theme::bg::BASE).bg(color).bold();
+            let badge = Badge::new(label).with_style(style).with_padding(1, 1);
+            let width = badge.width().min(area.width);
+            if x + width > area.right() {
+                break;
+            }
+            badge.render(Rect::new(x, area.y, width, 1), frame);
+            x = x.saturating_add(width + 1);
+        }
+    }
+
+    fn render_info_signal(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        status: &str,
+        status_color: PackedRgba,
+        events_per_sec: f64,
+    ) {
+        if area.is_empty() {
+            return;
+        }
+
+        let line = format!(
+            "Status: {status} │ Events: {:.0}/s │ Tick: {}",
+            events_per_sec, self.tick_count
+        );
+        let line = truncate_to_width(&line, area.width);
+        let styled = StyledText::new(line)
+            .bold()
+            .effect(TextEffect::ColorWave {
+                color1: theme::accent::PRIMARY.into(),
+                color2: theme::accent::ACCENT_8.into(),
+                speed: 1.2,
+                wavelength: 8.0,
+            })
+            .base_color(status_color)
+            .time(self.time);
+        styled.render(area, frame);
+    }
+
+    fn render_info_stats(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        dashboard_size: (u16, u16),
+        theme_name: &str,
+        events_per_sec: f64,
+    ) {
+        if area.is_empty() {
+            return;
+        }
+
+        let cpu = self
+            .simulated_data
+            .cpu_history
+            .back()
+            .copied()
+            .unwrap_or(0.0);
+        let mem = self
+            .simulated_data
+            .memory_history
+            .back()
+            .copied()
+            .unwrap_or(0.0);
+        let status_color = if cpu > 85.0 || mem > 85.0 {
+            theme::intent::error_text()
+        } else if cpu > 70.0 || mem > 70.0 {
+            theme::intent::warning_text()
+        } else {
+            theme::intent::success_text()
+        };
+        let net_in = self
+            .simulated_data
+            .network_in
+            .back()
+            .copied()
+            .unwrap_or(0.0);
+        let net_out = self
+            .simulated_data
+            .network_out
+            .back()
+            .copied()
+            .unwrap_or(0.0);
+        let alerts = self.simulated_data.alerts.len();
+        let cells = dashboard_size.0 as u32 * dashboard_size.1 as u32;
+
+        let cols = Flex::horizontal()
+            .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+            .split(area);
+
+        let left_lines = [
+            format!("FPS: {:.0}  Tick: {}", self.fps, self.tick_count),
+            format!("Events/s: {:.0}", events_per_sec),
+            format!("CPU: {:>3.0}%  MEM: {:>3.0}%", cpu, mem),
+            format!("NET: {:>4.0}↓ / {:>4.0}↑", net_in, net_out),
+        ];
+        let right_lines = [
+            format!(
+                "Size: {}x{}  Cells: {}",
+                dashboard_size.0, dashboard_size.1, cells
+            ),
+            format!("Theme: {theme_name}"),
+            format!("Alerts: {alerts}"),
+            "Pipeline: BUF→DIFF→ANSI".to_string(),
+        ];
+
+        let left_count = left_lines
+            .len()
+            .min(cols[0].height as usize)
+            .min(area.height as usize);
+        let right_count = right_lines
+            .len()
+            .min(cols[1].height as usize)
+            .min(area.height as usize);
+
+        let left_rows = Flex::vertical()
+            .constraints(vec![Constraint::Fixed(1); left_count])
+            .split(cols[0]);
+        let right_rows = Flex::vertical()
+            .constraints(vec![Constraint::Fixed(1); right_count])
+            .split(cols[1]);
+
+        for (idx, (row, line)) in left_rows.iter().zip(left_lines.iter()).enumerate() {
+            if row.is_empty() {
+                continue;
+            }
+            let text = truncate_to_width(line, row.width);
+            match idx {
+                0 => {
+                    StyledText::new(text)
+                        .bold()
+                        .effect(TextEffect::Pulse {
+                            speed: 1.6,
+                            min_alpha: 0.35,
+                        })
+                        .base_color(status_color)
+                        .time(self.time)
+                        .render(*row, frame);
+                }
+                1 => {
+                    StyledText::new(text)
+                        .bold()
+                        .effect(TextEffect::ColorWave {
+                            color1: theme::accent::PRIMARY.into(),
+                            color2: theme::accent::ACCENT_8.into(),
+                            speed: 1.2,
+                            wavelength: 6.0,
+                        })
+                        .base_color(theme::fg::PRIMARY.into())
+                        .time(self.time)
+                        .render(*row, frame);
+                }
+                2 => {
+                    Paragraph::new(text)
+                        .style(
+                            Style::new()
+                                .fg(theme::fg::PRIMARY)
+                                .bg(theme::alpha::SURFACE),
+                        )
+                        .render(*row, frame);
+                }
+                _ => {
+                    Paragraph::new(text)
+                        .style(
+                            Style::new()
+                                .fg(theme::fg::SECONDARY)
+                                .bg(theme::alpha::OVERLAY),
+                        )
+                        .render(*row, frame);
+                }
+            }
+        }
+
+        for (idx, (row, line)) in right_rows.iter().zip(right_lines.iter()).enumerate() {
+            if row.is_empty() {
+                continue;
+            }
+            let text = truncate_to_width(line, row.width);
+            match idx {
+                2 => {
+                    StyledText::new(text)
+                        .bold()
+                        .effect(TextEffect::PulsingGlow {
+                            color: theme::accent::WARNING.into(),
+                            speed: 1.1,
+                        })
+                        .base_color(theme::intent::warning_text())
+                        .time(self.time)
+                        .render(*row, frame);
+                }
+                3 => {
+                    StyledText::new(text)
+                        .effect(TextEffect::AnimatedGradient {
+                            gradient: ColorGradient::lavender(),
+                            speed: 0.45,
+                        })
+                        .base_color(theme::fg::PRIMARY.into())
+                        .time(self.time)
+                        .render(*row, frame);
+                }
+                _ => {
+                    Paragraph::new(text)
+                        .style(
+                            Style::new()
+                                .fg(theme::fg::SECONDARY)
+                                .bg(theme::alpha::SURFACE),
+                        )
+                        .render(*row, frame);
+                }
+            }
+        }
     }
 
     /// Render compact mini-bars for CPU/MEM/Disk usage.
@@ -980,14 +2587,6 @@ impl Dashboard {
         if area.is_empty() || area.height < 1 {
             return;
         }
-
-        let rows = Flex::vertical()
-            .constraints([
-                Constraint::Fixed(1),
-                Constraint::Fixed(1),
-                Constraint::Fixed(1),
-            ])
-            .split(area);
 
         let cpu = self
             .simulated_data
@@ -1003,6 +2602,19 @@ impl Dashboard {
             .copied()
             .unwrap_or(0.0)
             / 100.0;
+        let net_in = self
+            .simulated_data
+            .network_in
+            .back()
+            .copied()
+            .unwrap_or(0.0);
+        let net_out = self
+            .simulated_data
+            .network_out
+            .back()
+            .copied()
+            .unwrap_or(0.0);
+        let net = ((net_in + net_out) / 2000.0).clamp(0.0, 1.0);
         let disk = self
             .simulated_data
             .disk_usage
@@ -1017,9 +2629,16 @@ impl Dashboard {
             theme::intent::error_text(),
         );
 
-        self.render_mini_bar_row(frame, rows[0], "CPU", cpu, colors);
-        self.render_mini_bar_row(frame, rows[1], "MEM", mem, colors);
-        self.render_mini_bar_row(frame, rows[2], "DSK", disk, colors);
+        let mut constraints = Vec::new();
+        let bar_count = area.height.min(4) as usize;
+        for _ in 0..bar_count {
+            constraints.push(Constraint::Fixed(1));
+        }
+        let rows = Flex::vertical().constraints(constraints).split(area);
+        let bars = [("CPU", cpu), ("MEM", mem), ("NET", net), ("DSK", disk)];
+        for (row, (label, value)) in rows.iter().zip(bars.iter()) {
+            self.render_mini_bar_row(frame, *row, label, *value, colors);
+        }
     }
 
     fn render_mini_bar_row(
@@ -1109,10 +2728,17 @@ impl Dashboard {
             return;
         }
 
-        let demo = self.current_effect_demo();
+        let preview_area = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2));
+        let effect_slots = if preview_area.height >= 9 {
+            3
+        } else if preview_area.height >= 6 {
+            2
+        } else {
+            1
+        };
         let title = format!(
-            "Text FX · {} ({}/{})",
-            demo.name,
+            "Text FX · {}-Up ({}/{})",
+            effect_slots,
             self.effect_index + 1,
             EFFECT_DEMOS.len()
         );
@@ -1139,38 +2765,61 @@ impl Dashboard {
             ])
             .split(inner);
 
-        let sample = EFFECT_GFM_SAMPLES[self.effect_index % EFFECT_GFM_SAMPLES.len()];
+        let sample_index = self.effect_index % EFFECT_GFM_SAMPLES.len();
         let header = format!(
-            "Sample {} of {}",
-            (self.effect_index % EFFECT_GFM_SAMPLES.len()) + 1,
-            EFFECT_GFM_SAMPLES.len()
+            "Sample {} of {} · {}-Up stack",
+            sample_index + 1,
+            EFFECT_GFM_SAMPLES.len(),
+            effect_slots
         );
-        Paragraph::new(header)
+        Paragraph::new(truncate_to_width(&header, rows[0].width))
             .style(theme::muted())
             .render(rows[0], frame);
 
         if !rows[1].is_empty() {
-            let max_width = rows[1].width;
-            let max_lines = rows[1].height;
-            let mut lines = Vec::new();
-            for raw in sample.lines() {
-                if lines.len() as u16 >= max_lines {
-                    break;
-                }
-                let clipped = truncate_to_width(raw, max_width);
-                lines.push(clipped);
+            let mut constraints = Vec::new();
+            for _ in 0..effect_slots {
+                constraints.push(Constraint::Ratio(1, effect_slots as u32));
             }
-            let text_len: usize = lines.iter().map(|l| l.chars().count()).sum();
-            let effect = self.build_effect(demo.kind, text_len);
-            let styled = StyledMultiLine::new(lines)
-                .effect(effect)
-                .base_color(theme::fg::PRIMARY.into())
-                .time(self.time)
-                .seed(self.tick_count);
-            styled.render(rows[1], frame);
+            let slots = Flex::vertical().constraints(constraints).split(rows[1]);
+            for (idx, slot) in slots.iter().enumerate() {
+                if slot.is_empty() {
+                    continue;
+                }
+                let effect_idx = (self.effect_index + idx) % EFFECT_DEMOS.len();
+                let demo = &EFFECT_DEMOS[effect_idx];
+                let sample_idx = (self.effect_index + idx) % EFFECT_GFM_SAMPLES.len();
+                let sample = EFFECT_GFM_SAMPLES[sample_idx];
+                let sub_rows = Flex::vertical()
+                    .constraints([Constraint::Fixed(1), Constraint::Min(1)])
+                    .split(*slot);
+                let label = format!("{} · {} · S{}", idx + 1, demo.name, sample_idx + 1);
+                Paragraph::new(truncate_to_width(&label, sub_rows[0].width))
+                    .style(theme::muted())
+                    .render(sub_rows[0], frame);
+
+                let max_width = sub_rows[1].width;
+                let max_lines = sub_rows[1].height;
+                let mut lines = Vec::new();
+                for raw in sample.lines() {
+                    if lines.len() as u16 >= max_lines {
+                        break;
+                    }
+                    let clipped = truncate_to_width(raw, max_width);
+                    lines.push(clipped);
+                }
+                let text_len: usize = lines.iter().map(|l| l.chars().count()).sum();
+                let effect = self.build_effect(demo.kind, text_len);
+                let styled = StyledMultiLine::new(lines)
+                    .effect(effect)
+                    .base_color(theme::fg::PRIMARY.into())
+                    .time(self.time + idx as f64 * 0.35)
+                    .seed(self.tick_count + idx as u64 * 17);
+                styled.render(sub_rows[1], frame);
+            }
         }
 
-        Paragraph::new("e: next effect")
+        Paragraph::new("e: next set · stacked multi-preview")
             .style(theme::muted())
             .render(rows[2], frame);
     }
@@ -1300,7 +2949,7 @@ impl Dashboard {
             return;
         }
 
-        let hint = "c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit";
+        let hint = "g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit";
         Paragraph::new(hint)
             .style(Style::new().fg(theme::fg::MUTED).bg(theme::alpha::SURFACE))
             .render(area, frame);
@@ -1340,7 +2989,7 @@ impl Dashboard {
             .split(content_rows[0]);
 
         self.render_plasma(frame, top_cols[0]);
-        self.render_sparklines(frame, top_cols[1]);
+        self.render_charts(frame, top_cols[1]);
         self.render_code(frame, top_cols[2]);
         self.render_info(frame, top_cols[3], (area.width, area.height));
 
@@ -1386,7 +3035,7 @@ impl Dashboard {
             .split(content_rows[0]);
 
         self.render_plasma(frame, top_cols[0]);
-        self.render_sparklines(frame, top_cols[1]);
+        self.render_charts(frame, top_cols[1]);
 
         // Combined code + info in the third column
         let right_split = Flex::vertical()
@@ -1501,6 +3150,36 @@ impl Dashboard {
                 .render(right_rows[1], frame);
         }
     }
+
+    fn format_percent(value: f64) -> String {
+        let clamped = if value.is_finite() {
+            value.clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
+        format!("{:>3.0}%", clamped)
+    }
+
+    fn format_rate(value: f64) -> String {
+        if !value.is_finite() {
+            return "---".to_string();
+        }
+        if value >= 1000.0 {
+            format!("{:>3.0}k", value / 1000.0)
+        } else {
+            format!("{:>3.0}", value)
+        }
+    }
+
+    fn chart_palette_extended() -> [PackedRgba; 5] {
+        [
+            theme::accent::PRIMARY.into(),
+            theme::accent::SUCCESS.into(),
+            theme::accent::WARNING.into(),
+            theme::accent::ACCENT_8.into(),
+            theme::accent::ACCENT_10.into(),
+        ]
+    }
 }
 
 /// Helper to render Text widget line by line.
@@ -1585,6 +3264,10 @@ impl Screen for Dashboard {
                     self.md_sample_index = (self.md_sample_index + 1) % DASH_MARKDOWN_SAMPLES.len();
                     self.reset_markdown_stream();
                 }
+                // Cycle chart modes
+                KeyCode::Char('g') => {
+                    self.chart_mode = self.chart_mode.next();
+                }
                 _ => {}
             }
         }
@@ -1646,6 +3329,10 @@ impl Screen for Dashboard {
             HelpEntry {
                 key: "m",
                 action: "Cycle markdown sample",
+            },
+            HelpEntry {
+                key: "g",
+                action: "Cycle chart mode",
             },
             HelpEntry {
                 key: "t",

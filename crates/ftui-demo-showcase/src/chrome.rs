@@ -16,11 +16,13 @@ use crate::app::ScreenId;
 use crate::theme;
 
 // ---------------------------------------------------------------------------
-// Hit IDs for tab bar clicks (one per screen)
+// Hit IDs for tab bar clicks + pane routing
 // ---------------------------------------------------------------------------
 
 /// Base hit ID for tab bar entries.  Tab i has HitId(TAB_HIT_BASE + i).
 pub const TAB_HIT_BASE: u32 = 1000;
+/// Base hit ID for clickable panes (one per screen).
+pub const PANE_HIT_BASE: u32 = 4000;
 const TAB_ACCENT_ALPHA: u8 = 220;
 
 /// Convert a hit ID back to a ScreenId if it falls in the tab range.
@@ -31,6 +33,29 @@ pub fn screen_from_hit_id(id: HitId) -> Option<ScreenId> {
         ScreenId::ALL.get(idx).copied()
     } else {
         None
+    }
+}
+
+/// Convert a pane hit ID back to a ScreenId.
+pub fn screen_from_pane_hit_id(id: HitId) -> Option<ScreenId> {
+    let raw = id.id();
+    if raw >= PANE_HIT_BASE && raw < PANE_HIT_BASE + ScreenId::ALL.len() as u32 {
+        let idx = (raw - PANE_HIT_BASE) as usize;
+        ScreenId::ALL.get(idx).copied()
+    } else {
+        None
+    }
+}
+
+/// Convert any demo hit ID to its target screen.
+pub fn screen_from_any_hit_id(id: HitId) -> Option<ScreenId> {
+    screen_from_hit_id(id).or_else(|| screen_from_pane_hit_id(id))
+}
+
+/// Register a pane-sized hit region to route clicks to a screen.
+pub fn register_pane_hit(frame: &mut Frame, rect: Rect, screen: ScreenId) {
+    if !rect.is_empty() {
+        frame.register_hit_region(rect, HitId::new(PANE_HIT_BASE + screen.index() as u32));
     }
 }
 
@@ -547,6 +572,7 @@ pub fn accent_for(id: ScreenId) -> theme::ColorToken {
         ScreenId::SnapshotPlayer => theme::screen_accent::PERFORMANCE,
         ScreenId::PerformanceHud => theme::screen_accent::PERFORMANCE,
         ScreenId::I18nDemo => theme::screen_accent::ADVANCED,
+        ScreenId::VoiOverlay => theme::screen_accent::PERFORMANCE,
     }
 }
 

@@ -7,7 +7,7 @@
 //! handles global keybindings, and renders the chrome (tab bar, status bar,
 //! help/debug overlays).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::env;
 use std::io::Write;
@@ -15,14 +15,17 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::Cell as RenderCell;
-use ftui_render::frame::Frame;
+use ftui_render::frame::{Frame, HitGrid};
 use ftui_runtime::undo::HistoryManager;
 use ftui_runtime::{
     Cmd, Every, InlineAutoRemeasureConfig, Model, Subscription, VoiLogEntry, VoiSampler,
+    VoiSamplerSnapshot, inline_auto_voi_snapshot,
 };
 use ftui_style::Style;
 use ftui_widgets::Widget;
@@ -31,6 +34,10 @@ use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::command_palette::{CommandPalette, PaletteAction};
 use ftui_widgets::error_boundary::FallbackWidget;
 use ftui_widgets::paragraph::Paragraph;
+use ftui_widgets::voi_debug_overlay::{
+    VoiDebugOverlay, VoiDecisionSummary, VoiLedgerEntry, VoiObservationSummary, VoiOverlayData,
+    VoiOverlayStyle, VoiPosteriorSummary,
+};
 
 use crate::screens;
 use crate::theme;
@@ -316,6 +323,8 @@ pub enum ScreenId {
     PerformanceHud,
     /// Internationalization demo (bd-ic6i.5).
     I18nDemo,
+    /// VOI overlay widget demo (Galaxy-Brain).
+    VoiOverlay,
 }
 
 impl ScreenId {
@@ -349,6 +358,7 @@ impl ScreenId {
         Self::SnapshotPlayer,
         Self::PerformanceHud,
         Self::I18nDemo,
+        Self::VoiOverlay,
     ];
 
     /// 0-based index in the ALL array.
@@ -399,6 +409,7 @@ impl ScreenId {
             Self::SnapshotPlayer => "Snapshot Player",
             Self::PerformanceHud => "Performance HUD",
             Self::I18nDemo => "i18n Demo",
+            Self::VoiOverlay => "VOI Overlay",
         }
     }
 
@@ -433,6 +444,7 @@ impl ScreenId {
             Self::SnapshotPlayer => "Snapshot",
             Self::PerformanceHud => "PerfHUD",
             Self::I18nDemo => "i18n",
+            Self::VoiOverlay => "VOI",
         }
     }
 
@@ -467,6 +479,7 @@ impl ScreenId {
             Self::SnapshotPlayer => "SnapshotPlayer",
             Self::PerformanceHud => "PerformanceHud",
             Self::I18nDemo => "I18nDemo",
+            Self::VoiOverlay => "VoiOverlay",
         }
     }
 
@@ -544,9 +557,11 @@ pub struct ScreenStates {
     pub performance_hud: screens::performance_hud::PerformanceHud,
     /// Internationalization demo screen state (bd-ic6i.5).
     pub i18n_demo: screens::i18n_demo::I18nDemo,
+    /// VOI overlay widget demo screen state.
+    pub voi_overlay: screens::voi_overlay::VoiOverlayScreen,
     /// Tracks whether each screen has errored during rendering.
     /// Indexed by `ScreenId::index()`.
-    screen_errors: [Option<String>; 28],
+    screen_errors: [Option<String>; 29],
 }
 
 impl ScreenStates {
@@ -638,6 +653,9 @@ impl ScreenStates {
             ScreenId::I18nDemo => {
                 self.i18n_demo.update(event);
             }
+            ScreenId::VoiOverlay => {
+                self.voi_overlay.update(event);
+            }
         }
     }
 
@@ -686,6 +704,7 @@ impl ScreenStates {
             ScreenId::SnapshotPlayer => self.snapshot_player.tick(tick_count),
             ScreenId::PerformanceHud => {} // Already ticked above
             ScreenId::I18nDemo => self.i18n_demo.tick(tick_count),
+            ScreenId::VoiOverlay => self.voi_overlay.tick(tick_count),
         }
     }
 
@@ -744,6 +763,7 @@ impl ScreenStates {
                 ScreenId::SnapshotPlayer => self.snapshot_player.view(frame, area),
                 ScreenId::PerformanceHud => self.performance_hud.view(frame, area),
                 ScreenId::I18nDemo => self.i18n_demo.view(frame, area),
+                ScreenId::VoiOverlay => self.voi_overlay.view(frame, area),
             }
         }));
 
@@ -885,6 +905,8 @@ pub struct AppModel {
     perf_views_per_tick: f64,
     /// Performance HUD: previous view count snapshot (for computing views per tick).
     perf_prev_view_count: u64,
+    /// Last rendered hit grid (for mouse hit testing).
+    last_hit_grid: RefCell<Option<HitGrid>>,
     /// Timestamp of last tick received (for stall detection).
     tick_last_seen: Option<Instant>,
     /// Last time a tick stall was logged (rate limiting).
@@ -941,6 +963,7 @@ impl AppModel {
             perf_view_counter: Cell::new(0),
             perf_views_per_tick: 0.0,
             perf_prev_view_count: 0,
+            last_hit_grid: RefCell::new(None),
             tick_last_seen: None,
             tick_stall_last_log: Cell::new(None),
             history: HistoryManager::default(),
@@ -1299,6 +1322,12 @@ impl AppModel {
                     screen_title,
                 );
 
+                if let Event::Mouse(mouse) = &event {
+                    if self.handle_mouse_tab_click(mouse) {
+                        return Cmd::None;
+                    }
+                }
+
                 // When the command palette is visible, route events to it first.
                 if self.command_palette.is_visible() {
                     if let Some(action) = self.command_palette.handle_event(&event) {
@@ -1465,6 +1494,7 @@ impl Model for AppModel {
         self.maybe_log_tick_stall();
 
         let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        frame.enable_hit_testing();
 
         frame
             .buffer
@@ -1553,6 +1583,8 @@ impl Model for AppModel {
             undo_description,
         };
         crate::chrome::render_status_bar(&status_state, frame, chunks[2]);
+
+        self.cache_hit_grid(frame);
     }
 
     fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
@@ -1601,6 +1633,7 @@ impl AppModel {
             ScreenId::SnapshotPlayer => self.screens.snapshot_player.keybindings(),
             ScreenId::PerformanceHud => self.screens.performance_hud.keybindings(),
             ScreenId::I18nDemo => self.screens.i18n_demo.keybindings(),
+            ScreenId::VoiOverlay => self.screens.voi_overlay.keybindings(),
         };
         // Convert screens::HelpEntry to chrome::HelpEntry (same struct, different module).
         entries
@@ -1630,6 +1663,47 @@ impl AppModel {
                 self.history.can_redo(),
                 self.history.next_undo_description(),
             ),
+        }
+    }
+
+    fn handle_mouse_tab_click(&mut self, mouse: &MouseEvent) -> bool {
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return false;
+        }
+
+        let Some(target) = self.hit_test_screen(mouse) else {
+            return false;
+        };
+
+        if target == self.current_screen {
+            return false;
+        }
+
+        let from = self.current_screen.title();
+        self.current_screen = target;
+        self.screens.action_timeline.record_command_event(
+            self.tick_count,
+            "Switch screen (mouse)",
+            vec![
+                ("from".to_string(), from.to_string()),
+                ("to".to_string(), target.title().to_string()),
+            ],
+        );
+        true
+    }
+
+    fn hit_test_screen(&self, mouse: &MouseEvent) -> Option<ScreenId> {
+        let grid = self.last_hit_grid.borrow();
+        let hit = grid
+            .as_ref()
+            .and_then(|grid| grid.hit_test(mouse.x, mouse.y));
+        let (id, _region, _data) = hit?;
+        crate::chrome::screen_from_any_hit_id(id)
+    }
+
+    fn cache_hit_grid(&self, frame: &Frame) {
+        if let Some(ref grid) = frame.hit_grid {
+            self.last_hit_grid.replace(Some(grid.clone()));
         }
     }
 
@@ -2148,129 +2222,141 @@ impl AppModel {
         let y = area.y + area.height.saturating_sub(overlay_height).saturating_sub(2);
         let overlay_area = Rect::new(x, y, overlay_width, overlay_height);
 
-        let ledger_block = Block::new()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title("🧠 Evidence Ledger")
-            .title_alignment(Alignment::Center)
-            .style(Style::new().fg(theme::accent::SUCCESS).bg(theme::bg::DEEP));
+        let (data, source) = if let Some(snapshot) = inline_auto_voi_snapshot() {
+            (
+                self.voi_overlay_data_from_snapshot(&snapshot, "runtime:inline-auto"),
+                "runtime:inline-auto",
+            )
+        } else {
+            (self.voi_overlay_data_from_sampler("demo:voi"), "demo:voi")
+        };
 
-        let inner = ledger_block.inner(overlay_area);
-        // Fill background to ensure overlay occludes content behind it
-        frame.buffer.fill(
-            overlay_area,
-            RenderCell::default().with_bg(theme::bg::DEEP.into()),
+        let overlay_style = VoiOverlayStyle {
+            border: Style::new().fg(theme::accent::SUCCESS).bg(theme::bg::DEEP),
+            text: Style::new().fg(theme::fg::PRIMARY),
+            background: Some(theme::bg::DEEP.into()),
+            border_type: BorderType::Rounded,
+        };
+
+        let overlay = VoiDebugOverlay::new(data).with_style(overlay_style);
+        tracing::trace!(
+            target: "ftui.evidence_ledger",
+            source,
+            "Rendering VOI overlay"
         );
-        ledger_block.render(overlay_area, frame);
+        overlay.render(overlay_area, frame);
+    }
 
-        if inner.is_empty() {
-            return;
+    fn voi_overlay_data_from_snapshot(
+        &self,
+        snapshot: &VoiSamplerSnapshot,
+        source: &str,
+    ) -> VoiOverlayData {
+        VoiOverlayData {
+            title: "VOI Evidence Ledger".to_string(),
+            tick: Some(self.tick_count),
+            source: Some(source.to_string()),
+            posterior: VoiPosteriorSummary {
+                alpha: snapshot.alpha,
+                beta: snapshot.beta,
+                mean: snapshot.posterior_mean,
+                variance: snapshot.posterior_variance,
+                expected_variance_after: snapshot.expected_variance_after,
+                voi_gain: snapshot.voi_gain,
+            },
+            decision: snapshot
+                .last_decision
+                .as_ref()
+                .map(|decision| VoiDecisionSummary {
+                    event_idx: decision.event_idx,
+                    should_sample: decision.should_sample,
+                    reason: decision.reason.to_string(),
+                    score: decision.score,
+                    cost: decision.cost,
+                    log_bayes_factor: decision.log_bayes_factor,
+                    e_value: decision.e_value,
+                    e_threshold: decision.e_threshold,
+                    boundary_score: decision.boundary_score,
+                }),
+            observation: snapshot
+                .last_observation
+                .as_ref()
+                .map(|obs| VoiObservationSummary {
+                    sample_idx: obs.sample_idx,
+                    violated: obs.violated,
+                    posterior_mean: obs.posterior_mean,
+                    alpha: obs.alpha,
+                    beta: obs.beta,
+                }),
+            ledger: Self::ledger_entries_from_logs(snapshot.recent_logs.iter().rev().take(6).rev()),
         }
+    }
 
-        // Build VOI evidence ledger content (posterior + decision ledger).
-        let mut lines = Vec::with_capacity(20);
-        let line_width = inner.width.saturating_sub(2) as usize;
-
-        lines.push(format!("VOI Sampling (tick {})", self.tick_count));
-        lines.push("─".repeat(line_width));
-
+    fn voi_overlay_data_from_sampler(&self, source: &str) -> VoiOverlayData {
         let (alpha, beta) = self.voi_sampler.posterior_params();
-        let mean = self.voi_sampler.posterior_mean();
         let variance = self.voi_sampler.posterior_variance();
         let expected_after = self.voi_sampler.expected_variance_after();
-        let voi_gain = (variance - expected_after).max(0.0);
-
-        if let Some(decision) = self.voi_sampler.last_decision() {
-            let verdict = if decision.should_sample {
-                "SAMPLE"
-            } else {
-                "SKIP"
-            };
-            lines.push(format!(
-                "Decision: {:<6}  reason: {}",
-                verdict, decision.reason
-            ));
-            lines.push(format!(
-                "log10 BF: {:+.3}  score/cost",
-                decision.log_bayes_factor
-            ));
-            lines.push(format!(
-                "E: {:.3} / {:.2}  boundary: {:.3}",
-                decision.e_value, decision.e_threshold, decision.boundary_score
-            ));
-        } else {
-            lines.push("Decision: —".to_string());
+        VoiOverlayData {
+            title: "VOI Evidence Ledger".to_string(),
+            tick: Some(self.tick_count),
+            source: Some(source.to_string()),
+            posterior: VoiPosteriorSummary {
+                alpha,
+                beta,
+                mean: self.voi_sampler.posterior_mean(),
+                variance,
+                expected_variance_after: expected_after,
+                voi_gain: (variance - expected_after).max(0.0),
+            },
+            decision: self
+                .voi_sampler
+                .last_decision()
+                .map(|decision| VoiDecisionSummary {
+                    event_idx: decision.event_idx,
+                    should_sample: decision.should_sample,
+                    reason: decision.reason.to_string(),
+                    score: decision.score,
+                    cost: decision.cost,
+                    log_bayes_factor: decision.log_bayes_factor,
+                    e_value: decision.e_value,
+                    e_threshold: decision.e_threshold,
+                    boundary_score: decision.boundary_score,
+                }),
+            observation: self
+                .voi_sampler
+                .last_observation()
+                .map(|obs| VoiObservationSummary {
+                    sample_idx: obs.sample_idx,
+                    violated: obs.violated,
+                    posterior_mean: obs.posterior_mean,
+                    alpha: obs.alpha,
+                    beta: obs.beta,
+                }),
+            ledger: Self::ledger_entries_from_logs(
+                self.voi_sampler.logs().iter().rev().take(6).rev(),
+            ),
         }
+    }
 
-        lines.push(String::new());
-        lines.push("Posterior Core".to_string());
-        lines.push("─".repeat(line_width));
-        lines.push(format!("p ~ Beta(α,β)  α={:.2}  β={:.2}", alpha, beta));
-        lines.push(format!("μ={:.4}  Var={:.6}", mean, variance));
-        lines.push("VOI = Var[p] − E[Var|1]".to_string());
-        lines.push(format!(
-            "VOI = {:.6} − {:.6} = {:.6}",
-            variance, expected_after, voi_gain
-        ));
-
-        if let Some(decision) = self.voi_sampler.last_decision() {
-            let cfg = self.voi_sampler.config();
-            lines.push(String::new());
-            lines.push("Decision Equation".to_string());
-            lines.push("─".repeat(line_width));
-            lines.push(format!(
-                "score = VOI × {:.2} × (1 + {:.2}·b)",
-                cfg.value_scale, cfg.boundary_weight
-            ));
-            lines.push(format!(
-                "score={:.6}  cost={:.6}",
-                decision.score, decision.cost
-            ));
-            lines.push(format!(
-                "log10 BF = log10({:.6}/{:.6}) = {:+.3}",
-                decision.score, decision.cost, decision.log_bayes_factor
-            ));
-        }
-
-        if let Some(observation) = self.voi_sampler.last_observation() {
-            lines.push(String::new());
-            lines.push("Last Sample".to_string());
-            lines.push("─".repeat(line_width));
-            lines.push(format!(
-                "violated: {}  α={:.1}  β={:.1}",
-                observation.violated, observation.alpha, observation.beta
-            ));
-        }
-
-        let recent = self.voi_sampler.logs();
-        if !recent.is_empty() {
-            lines.push(String::new());
-            lines.push("Evidence Ledger (Recent)".to_string());
-            lines.push("─".repeat(line_width));
-            for entry in recent.iter().rev().take(4).rev() {
-                match entry {
-                    VoiLogEntry::Decision(decision) => {
-                        let verdict = if decision.should_sample { "S" } else { "-" };
-                        lines.push(format!(
-                            "D#{:>3} {verdict} VOI={:.5} logBF={:+.2}",
-                            decision.event_idx, decision.voi_gain, decision.log_bayes_factor
-                        ));
-                    }
-                    VoiLogEntry::Observation(obs) => {
-                        lines.push(format!(
-                            "O#{:>3} viol={} μ={:.3}",
-                            obs.sample_idx, obs.violated, obs.posterior_mean
-                        ));
-                    }
-                }
-            }
-        }
-
-        // Render the text
-        let text = lines.join("\n");
-        Paragraph::new(text)
-            .style(Style::new().fg(theme::fg::PRIMARY))
-            .render(inner, frame);
+    fn ledger_entries_from_logs<'a, I>(logs: I) -> Vec<VoiLedgerEntry>
+    where
+        I: IntoIterator<Item = &'a VoiLogEntry>,
+    {
+        logs.into_iter()
+            .map(|entry| match entry {
+                VoiLogEntry::Decision(decision) => VoiLedgerEntry::Decision {
+                    event_idx: decision.event_idx,
+                    should_sample: decision.should_sample,
+                    voi_gain: decision.voi_gain,
+                    log_bayes_factor: decision.log_bayes_factor,
+                },
+                VoiLogEntry::Observation(obs) => VoiLedgerEntry::Observation {
+                    sample_idx: obs.sample_idx,
+                    violated: obs.violated,
+                    posterior_mean: obs.posterior_mean,
+                },
+            })
+            .collect()
     }
 }
 
@@ -2598,7 +2684,7 @@ mod tests {
     /// Verify all screens have the expected count.
     #[test]
     fn all_screens_count() {
-        assert_eq!(ScreenId::ALL.len(), 28);
+        assert_eq!(ScreenId::ALL.len(), 29);
     }
 
     // -----------------------------------------------------------------------

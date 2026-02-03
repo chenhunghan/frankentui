@@ -17,12 +17,13 @@ use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
+use ftui_text::graphemes;
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::tree::{Tree, TreeGuides, TreeNode};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthChar;
 
 use super::{HelpEntry, Screen};
 use crate::theme;
@@ -505,8 +506,8 @@ fn format_entry_line(entry: &FileEntry, width: u16) -> String {
         .map(filesize::decimal)
         .unwrap_or_else(|| "--".into());
 
-    let icon_width = UnicodeWidthStr::width(icon);
-    let perms_width = UnicodeWidthStr::width(perms);
+    let icon_width = text_width(icon);
+    let perms_width = text_width(perms);
     let size_width = size_str.len();
     let reserved = icon_width + 1 + perms_width + 2 + size_width;
     let name_width = width.saturating_sub(reserved as u16).saturating_sub(1) as usize;
@@ -515,19 +516,34 @@ fn format_entry_line(entry: &FileEntry, width: u16) -> String {
     fit_to_width(&line, width)
 }
 
+fn grapheme_width(grapheme: &str) -> usize {
+    grapheme
+        .chars()
+        .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+        .max()
+        .unwrap_or(0)
+}
+
+fn text_width(text: &str) -> usize {
+    if text.is_ascii() {
+        return text.len();
+    }
+    graphemes(text).map(grapheme_width).sum()
+}
+
 fn pad_to_width(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
     let mut out = String::new();
     let mut used = 0;
-    for ch in text.chars() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + ch_width > width {
+    for grapheme in graphemes(text) {
+        let g_width = grapheme_width(grapheme);
+        if used + g_width > width {
             break;
         }
-        out.push(ch);
-        used += ch_width;
+        out.push_str(grapheme);
+        used += g_width;
     }
     if used < width {
         out.push_str(&" ".repeat(width - used));
@@ -538,13 +554,13 @@ fn pad_to_width(text: &str, width: usize) -> String {
 fn fit_to_width(text: &str, width: u16) -> String {
     let mut out = String::new();
     let mut used = 0usize;
-    for ch in text.chars() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + ch_width > width as usize {
+    for grapheme in graphemes(text) {
+        let g_width = grapheme_width(grapheme);
+        if used + g_width > width as usize {
             break;
         }
-        out.push(ch);
-        used += ch_width;
+        out.push_str(grapheme);
+        used += g_width;
     }
     if used < width as usize {
         out.push_str(&" ".repeat(width as usize - used));

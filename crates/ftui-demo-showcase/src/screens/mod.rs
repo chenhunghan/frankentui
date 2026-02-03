@@ -33,6 +33,7 @@ pub mod terminal_capabilities;
 pub mod theme_studio;
 pub mod virtualized_search;
 pub mod visual_effects;
+pub mod voi_overlay;
 pub mod widget_gallery;
 
 use ftui_core::event::Event;

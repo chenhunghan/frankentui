@@ -55,6 +55,7 @@ SCREENS:
    26  Snapshot Player    Time-travel playback of recorded UI snapshots
    27  Performance HUD    Real-time render budget and frame diagnostics
    28  i18n Demo          Internationalization with locale switching
+   29  VOI Overlay        Galaxy-Brain VOI debug overlay
 
 KEYBINDINGS:
     1-9, 0          Switch to screens 1-10 by number
