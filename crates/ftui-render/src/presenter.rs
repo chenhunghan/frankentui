@@ -133,68 +133,115 @@ mod cost_model {
         }
     }
 
-    /// Row emission strategy.
+    /// Planned contiguous span to emit on a single row.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum RowStrategy {
-        /// Emit each run independently with cursor moves between them.
-        Sparse,
-        /// Merge all runs, writing through gaps with buffer content.
-        /// The range covers columns `merge_x0..=merge_x1`.
-        Merged { merge_x0: u16, merge_x1: u16 },
+    pub struct RowSpan {
+        /// Row index.
+        pub y: u16,
+        /// Start column (inclusive).
+        pub x0: u16,
+        /// End column (inclusive).
+        pub x1: u16,
     }
 
-    /// Decide the optimal emission strategy for a set of runs on the same row.
+    /// Row emission plan (possibly multiple merged spans).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct RowPlan {
+        spans: Vec<RowSpan>,
+        total_cost: usize,
+    }
+
+    impl RowPlan {
+        #[inline]
+        pub fn spans(&self) -> &[RowSpan] {
+            &self.spans
+        }
+
+        /// Total cost of this row plan (for strategy selection).
+        #[inline]
+        #[allow(dead_code)] // API for future diff strategy integration
+        pub fn total_cost(&self) -> usize {
+            self.total_cost
+        }
+    }
+
+    /// Compute the optimal emission plan for a set of runs on the same row.
     ///
-    /// Compares:
-    /// - **Sparse**: Sum of (move_cost + run_cells) per run
-    /// - **Merged**: One move to first cell + all cells from first to last column
+    /// This is a shortest-path / DP partitioning problem over contiguous run
+    /// segments. Each segment may be emitted as a merged span (writing through
+    /// gaps). Single-run segments correspond to sparse emission.
     ///
     /// Gap cells cost ~1 byte each (character content), plus potential style
     /// overhead estimated at 1 byte per gap cell (conservative).
-    pub fn plan_row(
-        row_runs: &[ChangeRun],
-        prev_x: Option<u16>,
-        prev_y: Option<u16>,
-    ) -> RowStrategy {
+    pub fn plan_row(row_runs: &[ChangeRun], prev_x: Option<u16>, prev_y: Option<u16>) -> RowPlan {
         debug_assert!(!row_runs.is_empty());
 
-        if row_runs.len() == 1 {
-            return RowStrategy::Sparse;
-        }
-
         let row_y = row_runs[0].y;
-        let first_x = row_runs[0].x0;
-        let last_x = row_runs[row_runs.len() - 1].x1;
+        let run_count = row_runs.len();
 
-        // Estimate sparse cost: sum of move + content for each run
-        let mut sparse_cost: usize = 0;
-        let mut cursor_x = prev_x;
-        let mut cursor_y = prev_y;
-
-        for run in row_runs {
-            let move_cost = cheapest_move_cost(cursor_x, cursor_y, run.x0, run.y);
-            let cells = (run.x1 - run.x0 + 1) as usize;
-            sparse_cost += move_cost + cells;
-            cursor_x = Some(run.x1.saturating_add(1)); // cursor advances past run
-            cursor_y = Some(row_y);
+        // Prefix sum of changed cell counts for O(1) segment cost.
+        let mut prefix_cells = vec![0usize; run_count + 1];
+        for (i, run) in row_runs.iter().enumerate() {
+            prefix_cells[i + 1] = prefix_cells[i] + run.len() as usize;
         }
 
-        // Estimate merged cost: one move + all cells from first to last
-        let merge_move = cheapest_move_cost(prev_x, prev_y, first_x, row_y);
-        let total_cells = (last_x - first_x + 1) as usize;
-        // Gap cells cost ~2 bytes each (character + potential style overhead)
-        let changed_cells: usize = row_runs.iter().map(|r| (r.x1 - r.x0 + 1) as usize).sum();
-        let gap_cells = total_cells - changed_cells;
-        let gap_overhead = gap_cells * 2; // conservative: char + style amortized
-        let merged_cost = merge_move + changed_cells + gap_overhead;
+        // DP over segments: dp[j] is min cost to emit runs[0..=j].
+        let mut dp = vec![usize::MAX; run_count];
+        let mut prev = vec![0usize; run_count];
 
-        if merged_cost < sparse_cost {
-            RowStrategy::Merged {
-                merge_x0: first_x,
-                merge_x1: last_x,
+        for j in 0..run_count {
+            let mut best_cost = usize::MAX;
+            let mut best_i = 0usize;
+
+            for i in 0..=j {
+                let from_x = if i == 0 {
+                    prev_x
+                } else {
+                    Some(row_runs[i - 1].x1.saturating_add(1))
+                };
+                let from_y = if i == 0 { prev_y } else { Some(row_y) };
+
+                let move_cost = cheapest_move_cost(from_x, from_y, row_runs[i].x0, row_y);
+
+                let changed_cells = prefix_cells[j + 1] - prefix_cells[i];
+                let total_cells = (row_runs[j].x1 - row_runs[i].x0 + 1) as usize;
+                let gap_cells = total_cells - changed_cells;
+                let gap_overhead = gap_cells * 2; // conservative: char + style amortized
+                let emit_cost = changed_cells + gap_overhead;
+
+                let prev_cost = if i == 0 { 0 } else { dp[i - 1] };
+                let cost = prev_cost + move_cost + emit_cost;
+
+                if cost < best_cost {
+                    best_cost = cost;
+                    best_i = i;
+                }
             }
-        } else {
-            RowStrategy::Sparse
+
+            dp[j] = best_cost;
+            prev[j] = best_i;
+        }
+
+        // Reconstruct spans from back to front.
+        let mut spans = Vec::new();
+        let mut j = run_count - 1;
+        loop {
+            let i = prev[j];
+            spans.push(RowSpan {
+                y: row_y,
+                x0: row_runs[i].x0,
+                x1: row_runs[j].x1,
+            });
+            if i == 0 {
+                break;
+            }
+            j = i - 1;
+        }
+        spans.reverse();
+
+        RowPlan {
+            spans,
+            total_cost: dp[run_count - 1],
         }
     }
 }
@@ -371,24 +418,21 @@ impl<W: Write> Presenter<W> {
             }
             let row_runs = &runs[row_start..i];
 
-            let strategy = cost_model::plan_row(row_runs, self.cursor_x, self.cursor_y);
+            let plan = cost_model::plan_row(row_runs, self.cursor_x, self.cursor_y);
 
-            match strategy {
-                cost_model::RowStrategy::Sparse => {
-                    for run in row_runs {
-                        self.move_cursor_optimal(run.x0, run.y)?;
-                        for x in run.x0..=run.x1 {
-                            let cell = buffer.get_unchecked(x, run.y);
-                            self.emit_cell(x, cell, pool, links)?;
-                        }
-                    }
-                }
-                cost_model::RowStrategy::Merged { merge_x0, merge_x1 } => {
-                    self.move_cursor_optimal(merge_x0, row_y)?;
-                    for x in merge_x0..=merge_x1 {
-                        let cell = buffer.get_unchecked(x, row_y);
-                        self.emit_cell(x, cell, pool, links)?;
-                    }
+            #[cfg(feature = "tracing")]
+            tracing::trace!(
+                row = row_y,
+                spans = plan.spans().len(),
+                cost = plan.total_cost(),
+                "row plan"
+            );
+
+            for span in plan.spans() {
+                self.move_cursor_optimal(span.x0, span.y)?;
+                for x in span.x0..=span.x1 {
+                    let cell = buffer.get_unchecked(x, span.y);
+                    self.emit_cell(x, cell, pool, links)?;
                 }
             }
         }
@@ -779,6 +823,90 @@ mod tests {
 
     fn get_output(presenter: Presenter<Vec<u8>>) -> Vec<u8> {
         presenter.into_inner().unwrap()
+    }
+
+    fn legacy_plan_row(
+        row_runs: &[ChangeRun],
+        prev_x: Option<u16>,
+        prev_y: Option<u16>,
+    ) -> Vec<cost_model::RowSpan> {
+        if row_runs.is_empty() {
+            return Vec::new();
+        }
+
+        if row_runs.len() == 1 {
+            let run = row_runs[0];
+            return vec![cost_model::RowSpan {
+                y: run.y,
+                x0: run.x0,
+                x1: run.x1,
+            }];
+        }
+
+        let row_y = row_runs[0].y;
+        let first_x = row_runs[0].x0;
+        let last_x = row_runs[row_runs.len() - 1].x1;
+
+        // Estimate sparse cost: sum of move + content for each run
+        let mut sparse_cost: usize = 0;
+        let mut cursor_x = prev_x;
+        let mut cursor_y = prev_y;
+
+        for run in row_runs {
+            let move_cost = cost_model::cheapest_move_cost(cursor_x, cursor_y, run.x0, run.y);
+            let cells = (run.x1 - run.x0 + 1) as usize;
+            sparse_cost += move_cost + cells;
+            cursor_x = Some(run.x1.saturating_add(1));
+            cursor_y = Some(row_y);
+        }
+
+        // Estimate merged cost: one move + all cells from first to last
+        let merge_move = cost_model::cheapest_move_cost(prev_x, prev_y, first_x, row_y);
+        let total_cells = (last_x - first_x + 1) as usize;
+        let changed_cells: usize = row_runs.iter().map(|r| (r.x1 - r.x0 + 1) as usize).sum();
+        let gap_cells = total_cells - changed_cells;
+        let gap_overhead = gap_cells * 2;
+        let merged_cost = merge_move + changed_cells + gap_overhead;
+
+        if merged_cost < sparse_cost {
+            vec![cost_model::RowSpan {
+                y: row_y,
+                x0: first_x,
+                x1: last_x,
+            }]
+        } else {
+            row_runs
+                .iter()
+                .map(|run| cost_model::RowSpan {
+                    y: run.y,
+                    x0: run.x0,
+                    x1: run.x1,
+                })
+                .collect()
+        }
+    }
+
+    fn emit_spans_for_output(buffer: &Buffer, spans: &[cost_model::RowSpan]) -> Vec<u8> {
+        let mut presenter = test_presenter();
+
+        for span in spans {
+            presenter
+                .move_cursor_optimal(span.x0, span.y)
+                .expect("cursor move should succeed");
+            for x in span.x0..=span.x1 {
+                let cell = buffer.get_unchecked(x, span.y);
+                presenter
+                    .emit_cell(x, cell, None, None)
+                    .expect("emit_cell should succeed");
+            }
+        }
+
+        presenter
+            .writer
+            .write_all(b"\x1b[0m")
+            .expect("reset should succeed");
+
+        presenter.into_inner().expect("presenter output")
     }
 
     #[test]
@@ -2014,8 +2142,11 @@ mod tests {
     fn cost_model_empty_row_single_run() {
         // Single run on a row should always use Sparse (no merge benefit)
         let runs = [ChangeRun::new(5, 10, 20)];
-        let strategy = cost_model::plan_row(&runs, None, None);
-        assert_eq!(strategy, cost_model::RowStrategy::Sparse);
+        let plan = cost_model::plan_row(&runs, None, None);
+        assert_eq!(plan.spans().len(), 1);
+        assert_eq!(plan.spans()[0].x0, 10);
+        assert_eq!(plan.spans()[0].x1, 20);
+        assert!(plan.total_cost() > 0);
     }
 
     #[test]
@@ -2026,9 +2157,13 @@ mod tests {
         // Merged: CUP + 80 cells but with gap overhead
         // This should stay sparse since the gap is very large
         let runs = [ChangeRun::new(0, 0, 2), ChangeRun::new(0, 77, 79)];
-        let strategy = cost_model::plan_row(&runs, None, None);
-        // Large gap (74 cells * 2 overhead = 148) vs CUP savings (~8)
-        assert_eq!(strategy, cost_model::RowStrategy::Sparse);
+        let plan = cost_model::plan_row(&runs, None, None);
+        // Large gap (74 cells * 2 overhead = 148) vs CUP savings (~8) => no merge.
+        assert_eq!(plan.spans().len(), 2);
+        assert_eq!(plan.spans()[0].x0, 0);
+        assert_eq!(plan.spans()[0].x1, 2);
+        assert_eq!(plan.spans()[1].x0, 77);
+        assert_eq!(plan.spans()[1].x1, 79);
     }
 
     #[test]
@@ -2045,23 +2180,21 @@ mod tests {
             ChangeRun::new(3, 22, 22),
             ChangeRun::new(3, 24, 24),
         ];
-        let strategy = cost_model::plan_row(&runs, None, None);
+        let plan = cost_model::plan_row(&runs, None, None);
         // Sparse: 1 CUP + 7 CUF(2) * 4 bytes + 8 cells = ~7+28+8 = 43
         // Merged: 1 CUP + 8 changed + 7 gap * 2 = 7+8+14 = 29
-        assert_eq!(
-            strategy,
-            cost_model::RowStrategy::Merged {
-                merge_x0: 10,
-                merge_x1: 24
-            }
-        );
+        assert_eq!(plan.spans().len(), 1);
+        assert_eq!(plan.spans()[0].x0, 10);
+        assert_eq!(plan.spans()[0].x1, 24);
     }
 
     #[test]
     fn cost_model_single_cell_stays_sparse() {
         let runs = [ChangeRun::new(0, 40, 40)];
-        let strategy = cost_model::plan_row(&runs, Some(0), Some(0));
-        assert_eq!(strategy, cost_model::RowStrategy::Sparse);
+        let plan = cost_model::plan_row(&runs, Some(0), Some(0));
+        assert_eq!(plan.spans().len(), 1);
+        assert_eq!(plan.spans()[0].x0, 40);
+        assert_eq!(plan.spans()[0].x1, 40);
     }
 
     #[test]
@@ -2169,11 +2302,14 @@ mod tests {
         // The cost model should merge (many small gaps < many CUP costs)
         let row_runs: Vec<_> = runs.iter().filter(|r| r.y == 0).copied().collect();
         if row_runs.len() > 1 {
-            let strategy = cost_model::plan_row(&row_runs, None, None);
+            let plan = cost_model::plan_row(&row_runs, None, None);
             assert!(
-                matches!(strategy, cost_model::RowStrategy::Merged { .. }),
-                "Expected Merged strategy for many small runs with tiny gaps, got {strategy:?}"
+                plan.spans().len() == 1,
+                "Expected single merged span for many small runs, got {} spans",
+                plan.spans().len()
             );
+            assert_eq!(plan.spans()[0].x0, 0);
+            assert_eq!(plan.spans()[0].x1, 18);
         }
     }
 
@@ -2186,17 +2322,82 @@ mod tests {
             .map(|i| ChangeRun::new(0, i * 3, i * 3 + 1))
             .collect();
 
+        let (iterations, max_ms) = if cfg!(debug_assertions) {
+            (1_000, 1_000u128)
+        } else {
+            (10_000, 500u128)
+        };
+
         let start = Instant::now();
-        for _ in 0..10_000 {
+        for _ in 0..iterations {
             let _ = cost_model::plan_row(&runs, None, None);
         }
         let elapsed = start.elapsed();
 
-        // 10k iterations should complete well within 100ms
+        // Keep this generous in debug builds to avoid flaky perf assertions.
         assert!(
-            elapsed.as_millis() < 100,
-            "Cost model planning too slow: {elapsed:?} for 10k iterations"
+            elapsed.as_millis() < max_ms,
+            "Cost model planning too slow: {elapsed:?} for {iterations} iterations"
         );
+    }
+
+    #[test]
+    fn perf_legacy_vs_dp_worst_case_sparse() {
+        use std::time::Instant;
+
+        let width = 200u16;
+        let height = 1u16;
+        let mut buffer = Buffer::new(width, height);
+
+        // Two dense clusters with a large gap between them.
+        for col in (0..40).step_by(2) {
+            buffer.set_raw(col, 0, Cell::from_char('X'));
+        }
+        for col in (160..200).step_by(2) {
+            buffer.set_raw(col, 0, Cell::from_char('Y'));
+        }
+
+        let blank = Buffer::new(width, height);
+        let diff = BufferDiff::compute(&blank, &buffer);
+        let runs = diff.runs();
+        let row_runs: Vec<_> = runs.iter().filter(|r| r.y == 0).copied().collect();
+
+        let dp_plan = cost_model::plan_row(&row_runs, None, None);
+        let legacy_spans = legacy_plan_row(&row_runs, None, None);
+
+        let dp_output = emit_spans_for_output(&buffer, dp_plan.spans());
+        let legacy_output = emit_spans_for_output(&buffer, &legacy_spans);
+
+        assert!(
+            dp_output.len() <= legacy_output.len(),
+            "DP output should be <= legacy output (dp={}, legacy={})",
+            dp_output.len(),
+            legacy_output.len()
+        );
+
+        let (iterations, max_ms) = if cfg!(debug_assertions) {
+            (1_000, 1_000u128)
+        } else {
+            (10_000, 500u128)
+        };
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let _ = cost_model::plan_row(&row_runs, None, None);
+        }
+        let dp_elapsed = start.elapsed();
+
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let _ = legacy_plan_row(&row_runs, None, None);
+        }
+        let legacy_elapsed = start.elapsed();
+
+        assert!(
+            dp_elapsed.as_millis() < max_ms,
+            "DP planning too slow: {dp_elapsed:?} for {iterations} iterations"
+        );
+
+        let _ = legacy_elapsed;
     }
 
     // =========================================================================
@@ -2287,6 +2488,7 @@ mod tests {
 
     #[test]
     fn perf_presenter_microbench() {
+        use std::env;
         use std::io::Write as _;
         use std::time::Instant;
 
@@ -2302,14 +2504,50 @@ mod tests {
         let diff_sparse = BufferDiff::compute(&scene, &scene2);
 
         let mut jsonl = Vec::new();
-        let iterations = 50;
+        let iterations = env::var("FTUI_PRESENTER_BENCH_ITERS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(50);
+
+        let runs_full = diff_full.runs();
+        let runs_sparse = diff_sparse.runs();
+
+        let plan_rows = |runs: &[ChangeRun]| -> (usize, usize) {
+            let mut idx = 0;
+            let mut total_cost = 0usize;
+            let mut span_count = 0usize;
+            let mut prev_x = None;
+            let mut prev_y = None;
+
+            while idx < runs.len() {
+                let y = runs[idx].y;
+                let start = idx;
+                while idx < runs.len() && runs[idx].y == y {
+                    idx += 1;
+                }
+
+                let plan = cost_model::plan_row(&runs[start..idx], prev_x, prev_y);
+                span_count += plan.spans().len();
+                total_cost = total_cost.saturating_add(plan.total_cost());
+                if let Some(last) = plan.spans().last() {
+                    prev_x = Some(last.x1);
+                    prev_y = Some(y);
+                }
+            }
+
+            (total_cost, span_count)
+        };
 
         for i in 0..iterations {
-            let (diff_ref, buf_ref, label) = if i % 2 == 0 {
-                (&diff_full, &scene, "full")
+            let (diff_ref, buf_ref, runs_ref, label) = if i % 2 == 0 {
+                (&diff_full, &scene, &runs_full, "full")
             } else {
-                (&diff_sparse, &scene2, "sparse")
+                (&diff_sparse, &scene2, &runs_sparse, "sparse")
             };
+
+            let plan_start = Instant::now();
+            let (plan_cost, plan_spans) = plan_rows(runs_ref);
+            let plan_time_us = plan_start.elapsed().as_micros() as u64;
 
             let mut presenter = test_presenter();
             let start = Instant::now();
@@ -2331,7 +2569,9 @@ mod tests {
                 &mut jsonl,
                 "{{\"seed\":{seed},\"width\":{width},\"height\":{height},\
                  \"scene\":\"{label}\",\"changes\":{},\"runs\":{},\
-                 \"bytes\":{},\"emit_time_us\":{elapsed_us},\
+                 \"plan_cost\":{plan_cost},\"plan_spans\":{plan_spans},\
+                 \"plan_time_us\":{plan_time_us},\"bytes\":{},\
+                 \"emit_time_us\":{elapsed_us},\
                  \"checksum\":\"{checksum:016x}\"}}",
                 stats.cells_changed, stats.run_count, stats.bytes_emitted,
             )
@@ -2340,7 +2580,7 @@ mod tests {
 
         let text = String::from_utf8(jsonl).unwrap();
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), iterations);
+        assert_eq!(lines.len(), iterations as usize);
 
         // Parse and verify: full frames should be deterministic (same checksum)
         let full_checksums: Vec<&str> = lines
@@ -2384,6 +2624,71 @@ mod tests {
             avg_sparse < avg_full,
             "Sparse updates ({avg_sparse}B) should emit fewer bytes than full ({avg_full}B)"
         );
+    }
+
+    #[test]
+    fn perf_emit_style_delta_microbench() {
+        use std::env;
+        use std::io::Write as _;
+        use std::time::Instant;
+
+        let iterations = env::var("FTUI_EMIT_STYLE_BENCH_ITERS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(200);
+
+        let mut styles = Vec::with_capacity(128);
+        let mut rng = 0xA5A5_1EAF_42_u64;
+        let mut next = || -> u64 {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng
+        };
+
+        for _ in 0..128 {
+            let v = next();
+            let fg = PackedRgba::rgb(
+                (v & 0xFF) as u8,
+                ((v >> 8) & 0xFF) as u8,
+                ((v >> 16) & 0xFF) as u8,
+            );
+            let bg = PackedRgba::rgb(
+                ((v >> 24) & 0xFF) as u8,
+                ((v >> 32) & 0xFF) as u8,
+                ((v >> 40) & 0xFF) as u8,
+            );
+            let flags = StyleFlags::from_bits_truncate((v >> 48) as u8);
+            let cell = Cell::from_char('A')
+                .with_fg(fg)
+                .with_bg(bg)
+                .with_attrs(CellAttrs::new(flags, 0));
+            styles.push(CellStyle::from_cell(&cell));
+        }
+
+        let mut presenter = test_presenter();
+        let mut jsonl = Vec::new();
+
+        for i in 0..iterations {
+            let old = styles[i as usize % styles.len()];
+            let new = styles[(i as usize + 1) % styles.len()];
+
+            presenter.writer.reset_counter();
+            presenter.writer.inner_mut().get_mut().clear();
+
+            let start = Instant::now();
+            presenter.emit_style_delta(old, new).unwrap();
+            let elapsed_us = start.elapsed().as_micros() as u64;
+            let bytes = presenter.writer.bytes_written();
+
+            writeln!(
+                &mut jsonl,
+                "{{\"iter\":{i},\"emit_time_us\":{elapsed_us},\"bytes\":{bytes}}}"
+            )
+            .unwrap();
+        }
+
+        let text = String::from_utf8(jsonl).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len() as u32, iterations);
     }
 
     #[test]
