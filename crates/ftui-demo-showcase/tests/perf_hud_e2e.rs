@@ -412,14 +412,14 @@ fn e2e_perf_hud_ring_buffer_capacity() {
 #[test]
 fn perf_hud_snapshot_120x40() {
     let mut app = AppModel::new();
+    app.terminal_width = 120;
+    app.terminal_height = 40;
 
     // Enable HUD
     let _ = app.update(AppMsg::ScreenEvent(ctrl_press('p')));
 
-    // A few ticks for metrics
-    for _ in 0..3 {
-        let _ = app.update(AppMsg::Tick);
-    }
+    // No ticks - timing values will be 0.0 which is deterministic
+    // (Tick uses Instant::now() internally which is non-deterministic)
 
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(120, 40, &mut pool);

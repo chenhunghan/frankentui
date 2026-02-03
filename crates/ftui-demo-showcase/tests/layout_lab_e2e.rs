@@ -636,7 +636,7 @@ fn e2e_constraint_selection() {
     let mut lab = LayoutLab::new();
 
     // Enable debug overlay to see constraint selection
-    lab.update(&shift_press(KeyCode::Char('D')));
+    lab.update(&char_press('D'));
 
     // Preset 0 has 5 constraints
     for i in 0..5 {
@@ -676,8 +676,8 @@ fn e2e_debug_overlay_toggle() {
         &[("debug", "off"), ("hash", &format!("{initial_hash:016x}"))],
     );
 
-    // Toggle debug on with Shift+D
-    lab.update(&shift_press(KeyCode::Char('D')));
+    // Toggle debug on with 'D' (uppercase D, no modifiers)
+    lab.update(&char_press('D'));
     let debug_on_hash = capture_frame_hash(&lab, 120, 40);
     log_jsonl(
         "debug_toggled",
@@ -689,7 +689,7 @@ fn e2e_debug_overlay_toggle() {
     );
 
     // Toggle debug off
-    lab.update(&shift_press(KeyCode::Char('D')));
+    lab.update(&char_press('D'));
     let debug_off_hash = capture_frame_hash(&lab, 120, 40);
     log_jsonl(
         "debug_toggled_back",
@@ -709,7 +709,7 @@ fn e2e_debug_overlay_toggle() {
 #[test]
 fn layout_lab_debug_overlay_120x40() {
     let mut lab = LayoutLab::new();
-    lab.update(&shift_press(KeyCode::Char('D'))); // Toggle debug on
+    lab.update(&char_press('D')); // Toggle debug on
 
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(120, 40, &mut pool);
@@ -994,7 +994,7 @@ fn e2e_combined_state_changes() {
     lab.update(&char_press('a')); // Cycle alignment again
     lab.update(&char_press('+')); // Increase gap
     lab.update(&char_press('m')); // Increase margin
-    lab.update(&shift_press(KeyCode::Char('D'))); // Toggle debug
+    lab.update(&char_press('D')); // Toggle debug
 
     let final_hash = capture_frame_hash(&lab, 120, 40);
     log_jsonl(
