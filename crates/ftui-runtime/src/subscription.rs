@@ -221,10 +221,7 @@ impl<M: Send + 'static> SubscriptionManager<M> {
         }
 
         let active_count_after = self.active.len();
-        crate::debug_trace!(
-            "reconcile complete: active_after={}",
-            active_count_after
-        );
+        crate::debug_trace!("reconcile complete: active_after={}", active_count_after);
         tracing::trace!(
             active_before = active_count_before,
             active_after = active_count_after,

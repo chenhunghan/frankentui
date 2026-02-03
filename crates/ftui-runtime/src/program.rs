@@ -59,6 +59,7 @@ use crate::resize_coalescer::{CoalesceAction, CoalescerConfig, ResizeCoalescer};
 use crate::state_persistence::StateRegistry;
 use crate::subscription::SubscriptionManager;
 use crate::terminal_writer::{ScreenMode, TerminalWriter, UiAnchor};
+use crate::voi_sampling::{VoiConfig, VoiSampler};
 use ftui_core::event::Event;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_core::terminal_session::{SessionOptions, TerminalSession};
@@ -407,6 +408,8 @@ pub struct ProgramConfig {
     pub kitty_keyboard: bool,
     /// State persistence configuration.
     pub persistence: PersistenceConfig,
+    /// Inline auto UI height remeasurement policy.
+    pub inline_auto_remeasure: Option<InlineAutoRemeasureConfig>,
 }
 
 impl Default for ProgramConfig {
@@ -424,6 +427,7 @@ impl Default for ProgramConfig {
             focus_reporting: false,
             kitty_keyboard: false,
             persistence: PersistenceConfig::default(),
+            inline_auto_remeasure: None,
         }
     }
 }
@@ -452,6 +456,7 @@ impl ProgramConfig {
                 min_height,
                 max_height,
             },
+            inline_auto_remeasure: Some(InlineAutoRemeasureConfig::default()),
             ..Default::default()
         }
     }
@@ -511,9 +516,74 @@ impl ProgramConfig {
         self.persistence = PersistenceConfig::with_registry(registry);
         self
     }
+
+    /// Enable inline auto UI height remeasurement with the given policy.
+    pub fn with_inline_auto_remeasure(mut self, config: InlineAutoRemeasureConfig) -> Self {
+        self.inline_auto_remeasure = Some(config);
+        self
+    }
+
+    /// Disable inline auto UI height remeasurement.
+    pub fn without_inline_auto_remeasure(mut self) -> Self {
+        self.inline_auto_remeasure = None;
+        self
+    }
 }
 
 // removed: legacy ResizeDebouncer (superseded by ResizeCoalescer)
+
+/// Policy for remeasuring inline auto UI height.
+///
+/// Uses VOI (value-of-information) sampling to decide when to perform
+/// a costly full-height measurement, with any-time valid guarantees via
+/// the embedded e-process in `VoiSampler`.
+#[derive(Debug, Clone)]
+pub struct InlineAutoRemeasureConfig {
+    /// VOI sampling configuration.
+    pub voi: VoiConfig,
+    /// Minimum row delta to count as a "violation".
+    pub change_threshold_rows: u16,
+}
+
+impl Default for InlineAutoRemeasureConfig {
+    fn default() -> Self {
+        Self {
+            voi: VoiConfig {
+                // Height changes are expected to be rare; bias toward fewer samples.
+                prior_alpha: 1.0,
+                prior_beta: 9.0,
+                // Allow ~1s max latency to adapt to growth/shrink.
+                max_interval_ms: 1000,
+                // Avoid over-sampling in high-FPS loops.
+                min_interval_ms: 100,
+                // Disable event forcing; use time-based gating.
+                max_interval_events: 0,
+                min_interval_events: 0,
+                // Treat sampling as moderately expensive.
+                sample_cost: 0.08,
+                ..VoiConfig::default()
+            },
+            change_threshold_rows: 1,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct InlineAutoRemeasureState {
+    config: InlineAutoRemeasureConfig,
+    sampler: VoiSampler,
+}
+
+impl InlineAutoRemeasureState {
+    fn new(config: InlineAutoRemeasureConfig) -> Self {
+        let sampler = VoiSampler::new(config.voi.clone());
+        Self { config, sampler }
+    }
+
+    fn reset(&mut self) {
+        self.sampler = VoiSampler::new(self.config.voi.clone());
+    }
+}
 
 /// The program runtime that manages the update/view loop.
 pub struct Program<M: Model, W: Write + Send = Stdout> {
@@ -565,6 +635,8 @@ pub struct Program<M: Model, W: Write + Send = Stdout> {
     persistence_config: PersistenceConfig,
     /// Last checkpoint save time.
     last_checkpoint: Instant,
+    /// Inline auto UI height remeasurement state.
+    inline_auto_remeasure: Option<InlineAutoRemeasureState>,
 }
 
 impl<M: Model> Program<M, Stdout> {
@@ -604,6 +676,10 @@ impl<M: Model> Program<M, Stdout> {
             ResizeCoalescer::new(config.resize_coalescer.clone(), (width, height));
         let subscriptions = SubscriptionManager::new();
         let (task_sender, task_receiver) = std::sync::mpsc::channel();
+        let inline_auto_remeasure = config
+            .inline_auto_remeasure
+            .clone()
+            .map(InlineAutoRemeasureState::new);
 
         Ok(Self {
             model,
@@ -630,6 +706,7 @@ impl<M: Model> Program<M, Stdout> {
             state_registry: config.persistence.registry.clone(),
             persistence_config: config.persistence,
             last_checkpoint: Instant::now(),
+            inline_auto_remeasure,
         })
     }
 }
@@ -1090,15 +1167,36 @@ impl<M: Model, W: Write + Send> Program<M, W> {
 
         let auto_bounds = self.writer.inline_auto_bounds();
         let needs_measure = auto_bounds.is_some() && self.writer.auto_ui_height().is_none();
+        let mut should_measure = needs_measure;
+        if auto_bounds.is_some()
+            && let Some(state) = self.inline_auto_remeasure.as_mut()
+        {
+            let decision = state.sampler.decide(Instant::now());
+            if decision.should_sample {
+                should_measure = true;
+            }
+        }
 
         // --- Render phase ---
         let render_start = Instant::now();
-        if let (Some((min_height, max_height)), true) = (auto_bounds, needs_measure) {
-            let hint_height = self.writer.render_height_hint().max(1);
-            let (measure_buffer, _) = self.render_measure_buffer(hint_height);
+        if let (Some((min_height, max_height)), true) = (auto_bounds, should_measure) {
+            let measure_height = if needs_measure {
+                self.writer.render_height_hint().max(1)
+            } else {
+                max_height.max(1)
+            };
+            let (measure_buffer, _) = self.render_measure_buffer(measure_height);
             let measured_height = measure_buffer.content_height();
             let clamped = measured_height.clamp(min_height, max_height);
+            let previous_height = self.writer.auto_ui_height();
             self.writer.set_auto_ui_height(clamped);
+            if let Some(state) = self.inline_auto_remeasure.as_mut() {
+                let threshold = state.config.change_threshold_rows;
+                let violated = previous_height
+                    .map(|prev| prev.abs_diff(clamped) >= threshold)
+                    .unwrap_or(false);
+                state.sampler.observe(violated);
+            }
         }
 
         let frame_height = self.writer.render_height_hint().max(1);
@@ -1366,6 +1464,9 @@ impl<M: Model, W: Write + Send> Program<M, W> {
     pub fn request_ui_height_remeasure(&mut self) {
         if self.writer.inline_auto_bounds().is_some() {
             self.writer.clear_auto_ui_height();
+            if let Some(state) = self.inline_auto_remeasure.as_mut() {
+                state.reset();
+            }
             self.mark_dirty();
         }
     }
@@ -1474,6 +1575,18 @@ impl<M: Model> AppBuilder<M> {
     /// Set the frame budget configuration.
     pub fn with_budget(mut self, budget: FrameBudgetConfig) -> Self {
         self.config.budget = budget;
+        self
+    }
+
+    /// Enable inline auto UI height remeasurement.
+    pub fn with_inline_auto_remeasure(mut self, config: InlineAutoRemeasureConfig) -> Self {
+        self.config.inline_auto_remeasure = Some(config);
+        self
+    }
+
+    /// Disable inline auto UI height remeasurement.
+    pub fn without_inline_auto_remeasure(mut self) -> Self {
+        self.config.inline_auto_remeasure = None;
         self
     }
 
@@ -1821,6 +1934,7 @@ mod tests {
         assert!(!config.mouse);
         assert!(config.bracketed_paste);
         assert_eq!(config.resize_behavior, ResizeBehavior::Throttled);
+        assert!(config.inline_auto_remeasure.is_none());
         assert_eq!(
             config.resize_coalescer.steady_delay_ms,
             CoalescerConfig::default().steady_delay_ms
@@ -1852,6 +1966,7 @@ mod tests {
                 max_height: 9
             }
         ));
+        assert!(config.inline_auto_remeasure.is_some());
     }
 
     #[test]
