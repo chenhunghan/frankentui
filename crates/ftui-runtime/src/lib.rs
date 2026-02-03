@@ -15,6 +15,7 @@
 //! - [`Subscription`] - Trait for continuous event sources
 //! - [`Every`] - Built-in tick subscription
 
+pub mod allocation_budget;
 pub mod asciicast;
 pub mod eprocess_throttle;
 pub mod input_macro;
@@ -30,6 +31,7 @@ pub mod string_model;
 pub mod subscription;
 pub mod terminal_writer;
 pub mod undo;
+pub mod validation_pipeline;
 
 pub mod reactive;
 
@@ -39,7 +41,10 @@ pub use input_macro::{
     RecordingFilter, RecordingState, TimedEvent,
 };
 pub use log_sink::LogSink;
-pub use program::{App, AppBuilder, Cmd, Model, Program, ProgramConfig, ResizeBehavior};
+pub use program::{
+    App, AppBuilder, BatchController, BatchTelemetry, Cmd, Model, Program, ProgramConfig,
+    ResizeBehavior,
+};
 pub use simulator::ProgramSimulator;
 pub use string_model::{StringModel, StringModelAdapter};
 pub use subscription::{Every, MockSubscription, StopSignal, SubId, Subscription};
@@ -51,6 +56,9 @@ pub use render_thread::{OutMsg, RenderThread};
 #[cfg(feature = "stdio-capture")]
 pub use stdio_capture::{CapturedWriter, StdioCapture, StdioCaptureError};
 
+pub use allocation_budget::{
+    AllocationBudget, BudgetAlert, BudgetConfig, BudgetEvidence, BudgetSummary,
+};
 pub use eprocess_throttle::{
     EProcessThrottle, ThrottleConfig, ThrottleDecision, ThrottleLog, ThrottleStats,
 };
@@ -62,4 +70,8 @@ pub use undo::{
     CommandBatch, CommandError, CommandMetadata, CommandResult, CommandSource, HistoryConfig,
     HistoryManager, MergeConfig, TextDeleteCmd, TextInsertCmd, TextReplaceCmd, Transaction,
     TransactionScope, UndoableCmd, WidgetId,
+};
+pub use validation_pipeline::{
+    LedgerEntry, PipelineConfig, PipelineResult, PipelineSummary, ValidationOutcome,
+    ValidationPipeline, ValidatorStats,
 };

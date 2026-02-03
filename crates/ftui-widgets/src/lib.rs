@@ -129,9 +129,15 @@ pub mod constraint_overlay;
 pub mod debug_overlay;
 pub mod emoji;
 pub mod error_boundary;
+/// Fenwick tree (Binary Indexed Tree) for O(log n) prefix sum queries.
+pub mod fenwick;
 pub mod file_picker;
 pub mod group;
 pub mod help;
+/// Bayesian height prediction with conformal bounds for virtualized lists.
+pub mod height_predictor;
+/// Utility-based keybinding hint ranking with Bayesian posteriors.
+pub mod hint_ranker;
 pub mod input;
 /// UI Inspector overlay for debugging widget trees and hit-test regions.
 pub mod inspector;
@@ -145,6 +151,7 @@ pub mod log_viewer;
 pub mod measurable;
 /// Measure cache for memoizing widget measure results.
 pub mod measure_cache;
+pub mod modal;
 /// Notification queue for managing multiple toast notifications.
 pub mod notification_queue;
 pub mod padding;
@@ -211,6 +218,10 @@ pub use measurable::{MeasurableWidget, SizeConstraints};
 
 // Measure cache for memoizing measure() results
 pub use measure_cache::{CacheStats, MeasureCache, WidgetId};
+pub use modal::{
+    BackdropConfig, MODAL_HIT_BACKDROP, MODAL_HIT_CONTENT, Modal, ModalAction, ModalConfig,
+    ModalPosition, ModalSizeConstraints, ModalState,
+};
 
 // UI Inspector for debugging
 pub use inspector::{
