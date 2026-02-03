@@ -6,6 +6,7 @@
 
 use crate::block::Block;
 use crate::measurable::{MeasurableWidget, SizeConstraints};
+use crate::undo_support::{ListUndoExt, UndoSupport, UndoWidgetId};
 use crate::{StatefulWidget, Widget, draw_text_span, draw_text_span_with_link, set_style_area};
 use ftui_core::geometry::{Rect, Size};
 use ftui_render::frame::{Frame, HitId, HitRegion};
@@ -114,6 +115,8 @@ impl<'a> List<'a> {
 /// Mutable state for a [`List`] widget tracking selection and scroll offset.
 #[derive(Debug, Clone, Default)]
 pub struct ListState {
+    /// Unique ID for undo tracking.
+    undo_id: UndoWidgetId,
     /// Index of the currently selected item, if any.
     pub selected: Option<usize>,
     /// Scroll offset (first visible item index).
@@ -353,6 +356,63 @@ impl MeasurableWidget for List<'_> {
 
     fn has_intrinsic_size(&self) -> bool {
         !self.items.is_empty()
+    }
+}
+
+// ============================================================================
+// Undo Support Implementation
+// ============================================================================
+
+/// Snapshot of ListState for undo.
+#[derive(Debug, Clone)]
+pub struct ListStateSnapshot {
+    selected: Option<usize>,
+    offset: usize,
+}
+
+impl UndoSupport for ListState {
+    fn undo_widget_id(&self) -> UndoWidgetId {
+        self.undo_id
+    }
+
+    fn create_snapshot(&self) -> Box<dyn std::any::Any + Send> {
+        Box::new(ListStateSnapshot {
+            selected: self.selected,
+            offset: self.offset,
+        })
+    }
+
+    fn restore_snapshot(&mut self, snapshot: &dyn std::any::Any) -> bool {
+        if let Some(snap) = snapshot.downcast_ref::<ListStateSnapshot>() {
+            self.selected = snap.selected;
+            self.offset = snap.offset;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl ListUndoExt for ListState {
+    fn selected_index(&self) -> Option<usize> {
+        self.selected
+    }
+
+    fn set_selected_index(&mut self, index: Option<usize>) {
+        self.selected = index;
+        if index.is_none() {
+            self.offset = 0;
+        }
+    }
+}
+
+impl ListState {
+    /// Get the undo widget ID.
+    ///
+    /// This can be used to associate undo commands with this state instance.
+    #[must_use]
+    pub fn undo_id(&self) -> UndoWidgetId {
+        self.undo_id
     }
 }
 
@@ -716,5 +776,55 @@ mod tests {
         let a = list.measure(Size::new(100, 50));
         let b = list.measure(Size::new(100, 50));
         assert_eq!(a, b);
+    }
+
+    // --- Undo Support tests ---
+
+    #[test]
+    fn list_state_undo_id_is_stable() {
+        let state = ListState::default();
+        let id1 = state.undo_id();
+        let id2 = state.undo_id();
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn list_state_undo_id_unique_per_instance() {
+        let state1 = ListState::default();
+        let state2 = ListState::default();
+        assert_ne!(state1.undo_id(), state2.undo_id());
+    }
+
+    #[test]
+    fn list_state_snapshot_and_restore() {
+        let mut state = ListState::default();
+        state.select(Some(5));
+        state.offset = 3;
+
+        let snapshot = state.create_snapshot();
+
+        // Modify state
+        state.select(Some(10));
+        state.offset = 8;
+        assert_eq!(state.selected(), Some(10));
+        assert_eq!(state.offset, 8);
+
+        // Restore
+        assert!(state.restore_snapshot(snapshot.as_ref()));
+        assert_eq!(state.selected(), Some(5));
+        assert_eq!(state.offset, 3);
+    }
+
+    #[test]
+    fn list_state_undo_ext_methods() {
+        let mut state = ListState::default();
+        assert_eq!(state.selected_index(), None);
+
+        state.set_selected_index(Some(3));
+        assert_eq!(state.selected_index(), Some(3));
+
+        state.set_selected_index(None);
+        assert_eq!(state.selected_index(), None);
+        assert_eq!(state.offset, 0); // reset on deselect
     }
 }

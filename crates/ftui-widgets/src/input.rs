@@ -14,10 +14,13 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::Widget;
+use crate::undo_support::{TextEditOperation, TextInputUndoExt, UndoSupport, UndoWidgetId};
 
 /// A single-line text input widget.
 #[derive(Debug, Clone, Default)]
 pub struct TextInput {
+    /// Unique ID for undo tracking.
+    undo_id: UndoWidgetId,
     /// Text value.
     value: String,
     /// Cursor position (grapheme index).
@@ -701,6 +704,135 @@ impl Widget for TextInput {
     }
 }
 
+// ============================================================================
+// Undo Support Implementation
+// ============================================================================
+
+/// Snapshot of TextInput state for undo.
+#[derive(Debug, Clone)]
+pub struct TextInputSnapshot {
+    value: String,
+    cursor: usize,
+    selection_anchor: Option<usize>,
+}
+
+impl UndoSupport for TextInput {
+    fn undo_widget_id(&self) -> UndoWidgetId {
+        self.undo_id
+    }
+
+    fn create_snapshot(&self) -> Box<dyn std::any::Any + Send> {
+        Box::new(TextInputSnapshot {
+            value: self.value.clone(),
+            cursor: self.cursor,
+            selection_anchor: self.selection_anchor,
+        })
+    }
+
+    fn restore_snapshot(&mut self, snapshot: &dyn std::any::Any) -> bool {
+        if let Some(snap) = snapshot.downcast_ref::<TextInputSnapshot>() {
+            self.value = snap.value.clone();
+            self.cursor = snap.cursor;
+            self.selection_anchor = snap.selection_anchor;
+            self.scroll_cells = 0; // Reset scroll on restore
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl TextInputUndoExt for TextInput {
+    fn text_value(&self) -> &str {
+        &self.value
+    }
+
+    fn set_text_value(&mut self, value: &str) {
+        self.value = value.to_string();
+        let max = self.grapheme_count();
+        self.cursor = self.cursor.min(max);
+        self.selection_anchor = None;
+    }
+
+    fn cursor_position(&self) -> usize {
+        self.cursor
+    }
+
+    fn set_cursor_position(&mut self, pos: usize) {
+        let max = self.grapheme_count();
+        self.cursor = pos.min(max);
+    }
+
+    fn insert_text_at(&mut self, position: usize, text: &str) {
+        let byte_offset = self.grapheme_byte_offset(position);
+        self.value.insert_str(byte_offset, text);
+        let inserted_graphemes = text.graphemes(true).count();
+        if self.cursor >= position {
+            self.cursor += inserted_graphemes;
+        }
+    }
+
+    fn delete_text_range(&mut self, start: usize, end: usize) {
+        if start >= end {
+            return;
+        }
+        let byte_start = self.grapheme_byte_offset(start);
+        let byte_end = self.grapheme_byte_offset(end);
+        self.value.drain(byte_start..byte_end);
+        let deleted_count = end - start;
+        if self.cursor > end {
+            self.cursor -= deleted_count;
+        } else if self.cursor > start {
+            self.cursor = start;
+        }
+    }
+}
+
+impl TextInput {
+    /// Create an undo command for the given text edit operation.
+    ///
+    /// This creates a command that can be added to a [`HistoryManager`] for undo/redo support.
+    /// The command includes callbacks that will be called when the operation is undone or redone.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut input = TextInput::new();
+    /// let old_value = input.value().to_string();
+    ///
+    /// // Perform the edit
+    /// input.set_value("new text");
+    ///
+    /// // Create undo command
+    /// if let Some(cmd) = input.create_text_edit_command(TextEditOperation::SetValue {
+    ///     old_value,
+    ///     new_value: "new text".to_string(),
+    /// }) {
+    ///     history.push(cmd);
+    /// }
+    /// ```
+    ///
+    /// [`HistoryManager`]: ftui_runtime::undo::HistoryManager
+    #[must_use]
+    pub fn create_text_edit_command(
+        &self,
+        operation: TextEditOperation,
+    ) -> Option<crate::undo_support::WidgetTextEditCmd> {
+        Some(crate::undo_support::WidgetTextEditCmd::new(
+            self.undo_id,
+            operation,
+        ))
+    }
+
+    /// Get the undo widget ID.
+    ///
+    /// This can be used to associate undo commands with this widget instance.
+    #[must_use]
+    pub fn undo_id(&self) -> UndoWidgetId {
+        self.undo_id
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1126,5 +1258,81 @@ mod tests {
 
         // Cursor after "he" = visual position 2
         assert_eq!(frame.cursor_position, Some((2, 0)));
+    }
+
+    // ========================================================================
+    // Undo Support Tests
+    // ========================================================================
+
+    #[test]
+    fn test_undo_widget_id_is_stable() {
+        let input = TextInput::new();
+        let id1 = input.undo_id();
+        let id2 = input.undo_id();
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_undo_widget_id_unique_per_instance() {
+        let input1 = TextInput::new();
+        let input2 = TextInput::new();
+        assert_ne!(input1.undo_id(), input2.undo_id());
+    }
+
+    #[test]
+    fn test_snapshot_and_restore() {
+        let mut input = TextInput::new().with_value("hello");
+        input.cursor = 3;
+        input.selection_anchor = Some(1);
+
+        let snapshot = input.create_snapshot();
+
+        // Modify the input
+        input.set_value("world");
+        input.cursor = 5;
+        input.selection_anchor = None;
+
+        assert_eq!(input.value(), "world");
+        assert_eq!(input.cursor(), 5);
+
+        // Restore from snapshot
+        assert!(input.restore_snapshot(snapshot.as_ref()));
+        assert_eq!(input.value(), "hello");
+        assert_eq!(input.cursor(), 3);
+        assert_eq!(input.selection_anchor, Some(1));
+    }
+
+    #[test]
+    fn test_text_input_undo_ext_insert() {
+        let mut input = TextInput::new().with_value("hello");
+        input.cursor = 2;
+
+        input.insert_text_at(2, " world");
+        // "hello" with " world" inserted at position 2 = "he" + " world" + "llo"
+        assert_eq!(input.value(), "he worldllo");
+        assert_eq!(input.cursor(), 8); // cursor moved by inserted text length (6 graphemes)
+    }
+
+    #[test]
+    fn test_text_input_undo_ext_delete() {
+        let mut input = TextInput::new().with_value("hello world");
+        input.cursor = 8;
+
+        input.delete_text_range(5, 11); // Delete " world"
+        assert_eq!(input.value(), "hello");
+        assert_eq!(input.cursor(), 5); // cursor clamped to end of remaining text
+    }
+
+    #[test]
+    fn test_create_text_edit_command() {
+        let input = TextInput::new().with_value("hello");
+        let cmd = input.create_text_edit_command(TextEditOperation::Insert {
+            position: 0,
+            text: "hi".to_string(),
+        });
+        assert!(cmd.is_some());
+        let cmd = cmd.unwrap();
+        assert_eq!(cmd.widget_id(), input.undo_id());
+        assert_eq!(cmd.description(), "Insert text");
     }
 }

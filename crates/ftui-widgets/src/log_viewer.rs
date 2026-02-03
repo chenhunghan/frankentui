@@ -38,6 +38,7 @@
 use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
+use ftui_text::search::{SearchResult, search_ascii_case_insensitive, search_exact};
 use ftui_text::{Text, WrapMode, WrapOptions, display_width, wrap_with_options};
 
 use crate::virtualized::Virtualized;
@@ -65,15 +66,56 @@ impl From<LogWrapMode> for WrapMode {
     }
 }
 
+/// Search mode for log search.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchMode {
+    /// Plain substring matching.
+    #[default]
+    Literal,
+    /// Regular expression matching (requires `regex-search` feature).
+    Regex,
+}
+
+/// Search configuration.
+#[derive(Clone, Debug)]
+pub struct SearchConfig {
+    /// Search mode (literal or regex).
+    pub mode: SearchMode,
+    /// Whether the search is case-sensitive.
+    pub case_sensitive: bool,
+    /// Number of context lines around matches (0 = only matching lines).
+    pub context_lines: usize,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            mode: SearchMode::Literal,
+            case_sensitive: true,
+            context_lines: 0,
+        }
+    }
+}
+
 /// Search state for text search within the log.
 #[derive(Debug, Clone)]
 struct SearchState {
     /// The search query string (retained for re-search after eviction).
     query: String,
+    /// Current search configuration.
+    config: SearchConfig,
     /// Indices of matching lines.
     matches: Vec<usize>,
     /// Current match index within the matches vector.
     current: usize,
+    /// Per-match-line byte ranges for highlighting. Indexed by position in `matches`.
+    highlight_ranges: Vec<Vec<(usize, usize)>>,
+    /// Compiled regex pattern (behind feature gate).
+    #[cfg(feature = "regex-search")]
+    compiled_regex: Option<regex::Regex>,
+    /// Indices including context lines around matches (sorted, deduped).
+    /// `None` when `config.context_lines == 0`.
+    context_expanded: Option<Vec<usize>>,
 }
 
 /// Statistics tracking incremental vs full-rescan filter/search operations.
@@ -125,6 +167,8 @@ pub struct LogViewer {
     style: Style,
     /// Highlight style for selected/focused line.
     highlight_style: Option<Style>,
+    /// Highlight style for search matches within a line.
+    search_highlight_style: Option<Style>,
     /// Active filter pattern (plain substring match).
     filter: Option<String>,
     /// Indices of lines matching the filter (None = show all).
@@ -162,6 +206,7 @@ impl LogViewer {
             wrap_mode: LogWrapMode::NoWrap,
             style: Style::default(),
             highlight_style: None,
+            search_highlight_style: None,
             filter: None,
             filtered_indices: None,
             filtered_scroll_offset: 0,
@@ -188,6 +233,13 @@ impl LogViewer {
     #[must_use]
     pub fn highlight_style(mut self, style: Style) -> Self {
         self.highlight_style = Some(style);
+        self
+    }
+
+    /// Set the highlight style for search matches within lines.
+    #[must_use]
+    pub fn search_highlight_style(mut self, style: Style) -> Self {
+        self.search_highlight_style = Some(style);
         self
     }
 
@@ -231,10 +283,20 @@ impl LogViewer {
             // line passed the filter, because search results respect the filter.
             if let Some(ref mut search) = self.search {
                 let should_check = self.filter.is_none() || filter_matched;
-                if should_check && plain.contains(search.query.as_str()) {
-                    let idx = self.virt.len();
-                    search.matches.push(idx);
-                    self.filter_stats.incremental_search_matches += 1;
+                if should_check {
+                    let ranges = find_match_ranges(
+                        &plain,
+                        &search.query,
+                        &search.config,
+                        #[cfg(feature = "regex-search")]
+                        search.compiled_regex.as_ref(),
+                    );
+                    if !ranges.is_empty() {
+                        let idx = self.virt.len();
+                        search.matches.push(idx);
+                        search.highlight_ranges.push(ranges);
+                        self.filter_stats.incremental_search_matches += 1;
+                    }
                 }
             }
 
@@ -265,19 +327,35 @@ impl LogViewer {
                     }
                 }
 
-                // Adjust search match indices
+                // Adjust search match indices and corresponding highlight_ranges
                 if let Some(ref mut search) = self.search {
-                    search.matches.retain_mut(|idx| {
+                    let mut keep = Vec::with_capacity(search.matches.len());
+                    let mut new_highlights = Vec::with_capacity(search.highlight_ranges.len());
+                    for (i, idx) in search.matches.iter_mut().enumerate() {
                         if *idx < removed {
-                            false
+                            // evicted
                         } else {
                             *idx -= removed;
-                            true
+                            keep.push(*idx);
+                            if i < search.highlight_ranges.len() {
+                                new_highlights
+                                    .push(std::mem::take(&mut search.highlight_ranges[i]));
+                            }
                         }
-                    });
+                    }
+                    search.matches = keep;
+                    search.highlight_ranges = new_highlights;
                     // Clamp current to valid range
                     if !search.matches.is_empty() {
                         search.current = search.current.min(search.matches.len() - 1);
+                    }
+                    // Recompute context expansion if needed
+                    if search.config.context_lines > 0 {
+                        search.context_expanded = Some(expand_context(
+                            &search.matches,
+                            search.config.context_lines,
+                            self.max_lines.min(self.virt.len() + 1),
+                        ));
                     }
                 }
             }
@@ -489,41 +567,88 @@ impl LogViewer {
 
     /// Search for text and return match count.
     ///
+    /// Convenience wrapper using default config (literal, case-sensitive, no context).
     /// Sets up search state for navigation with `next_match` / `prev_match`.
     pub fn search(&mut self, query: &str) -> usize {
+        self.search_with_config(query, SearchConfig::default())
+    }
+
+    /// Search with full configuration (mode, case sensitivity, context lines).
+    ///
+    /// Returns match count. Sets up state for `next_match` / `prev_match`.
+    pub fn search_with_config(&mut self, query: &str, config: SearchConfig) -> usize {
         if query.is_empty() {
             self.search = None;
             return 0;
         }
 
-        // Full rescan for search matches.
-        self.filter_stats.full_rescans += 1;
-        let mut matches = Vec::new();
-        if let Some(indices) = self.filtered_indices.as_ref() {
-            self.filter_stats.full_rescan_lines += indices.len() as u64;
-            for &idx in indices {
-                if let Some(item) = self.virt.get(idx)
-                    && item.to_plain_text().contains(query)
-                {
-                    matches.push(idx);
+        // Compile regex if needed
+        #[cfg(feature = "regex-search")]
+        let compiled_regex = if config.mode == SearchMode::Regex {
+            match compile_regex(query, &config) {
+                Some(re) => Some(re),
+                None => {
+                    // Invalid regex — clear search and return 0
+                    self.search = None;
+                    return 0;
                 }
             }
         } else {
-            self.filter_stats.full_rescan_lines += self.virt.len() as u64;
-            for idx in 0..self.virt.len() {
-                if let Some(item) = self.virt.get(idx)
-                    && item.to_plain_text().contains(query)
-                {
+            None
+        };
+
+        // Full rescan for search matches.
+        self.filter_stats.full_rescans += 1;
+        let mut matches = Vec::new();
+        let mut highlight_ranges = Vec::new();
+
+        let iter: Box<dyn Iterator<Item = usize>> =
+            if let Some(indices) = self.filtered_indices.as_ref() {
+                self.filter_stats.full_rescan_lines += indices.len() as u64;
+                Box::new(indices.iter().copied())
+            } else {
+                self.filter_stats.full_rescan_lines += self.virt.len() as u64;
+                Box::new(0..self.virt.len())
+            };
+
+        for idx in iter {
+            if let Some(item) = self.virt.get(idx) {
+                let plain = item.to_plain_text();
+                let ranges = find_match_ranges(
+                    &plain,
+                    query,
+                    &config,
+                    #[cfg(feature = "regex-search")]
+                    compiled_regex.as_ref(),
+                );
+                if !ranges.is_empty() {
                     matches.push(idx);
+                    highlight_ranges.push(ranges);
                 }
             }
         }
 
         let count = matches.len();
+
+        let context_expanded = if config.context_lines > 0 {
+            Some(expand_context(
+                &matches,
+                config.context_lines,
+                self.virt.len(),
+            ))
+        } else {
+            None
+        };
+
         self.search = Some(SearchState {
             query: query.to_string(),
+            config,
             matches,
             current: 0,
+            highlight_ranges,
+            #[cfg(feature = "regex-search")]
+            compiled_regex,
+            context_expanded,
         });
 
         // Jump to first match
@@ -579,11 +704,46 @@ impl LogViewer {
         })
     }
 
-    /// Render a single line with optional wrapping.
+    /// Get the highlight byte ranges for a given line index, if any.
+    ///
+    /// Returns `Some(&[(start, end)])` when the line is a search match.
+    #[must_use]
+    pub fn highlight_ranges_for_line(&self, line_idx: usize) -> Option<&[(usize, usize)]> {
+        let search = self.search.as_ref()?;
+        let pos = search.matches.iter().position(|&m| m == line_idx)?;
+        search.highlight_ranges.get(pos).map(|v| v.as_slice())
+    }
+
+    /// Get the context-expanded line indices, if context lines are configured.
+    ///
+    /// Returns `None` when no search is active or `context_lines == 0`.
+    #[must_use]
+    pub fn context_line_indices(&self) -> Option<&[usize]> {
+        self.search
+            .as_ref()
+            .and_then(|s| s.context_expanded.as_deref())
+    }
+
+    /// Returns the fraction of recent pushes that matched the active search.
+    ///
+    /// Useful for callers integrating with an `EProcessThrottle` to decide
+    /// when to trigger a full UI refresh vs. deferring.
+    /// Returns 0.0 when no search is active or no incremental checks occurred.
+    #[must_use]
+    pub fn search_match_rate_hint(&self) -> f64 {
+        let stats = &self.filter_stats;
+        if stats.incremental_checks == 0 {
+            return 0.0;
+        }
+        stats.incremental_search_matches as f64 / stats.incremental_checks as f64
+    }
+
+    /// Render a single line with optional wrapping and search highlighting.
     #[allow(clippy::too_many_arguments)]
     fn render_line(
         &self,
         text: &Text,
+        line_idx: usize,
         x: u16,
         y: u16,
         width: u16,
@@ -600,28 +760,23 @@ impl LogViewer {
         let line = text.lines().first();
         let content = text.to_plain_text();
         let content_width = display_width(&content);
+        let hl_ranges = self.highlight_ranges_for_line(line_idx);
 
         // Handle wrapping
         match self.wrap_mode {
             LogWrapMode::NoWrap => {
-                // Truncate if needed
                 if y < max_y {
-                    self.draw_text_line(
-                        line,
-                        &content,
-                        x,
-                        y,
-                        x.saturating_add(width),
-                        frame,
-                        effective_style,
-                    );
-                }
-                1
-            }
-            LogWrapMode::CharWrap | LogWrapMode::WordWrap => {
-                if content_width <= width as usize {
-                    // No wrap needed
-                    if y < max_y {
+                    if hl_ranges.is_some_and(|r| !r.is_empty()) {
+                        self.draw_highlighted_line(
+                            &content,
+                            hl_ranges.unwrap(),
+                            x,
+                            y,
+                            x.saturating_add(width),
+                            frame,
+                            effective_style,
+                        );
+                    } else {
                         self.draw_text_line(
                             line,
                             &content,
@@ -632,9 +787,36 @@ impl LogViewer {
                             effective_style,
                         );
                     }
+                }
+                1
+            }
+            LogWrapMode::CharWrap | LogWrapMode::WordWrap => {
+                if content_width <= width as usize {
+                    if y < max_y {
+                        if hl_ranges.is_some_and(|r| !r.is_empty()) {
+                            self.draw_highlighted_line(
+                                &content,
+                                hl_ranges.unwrap(),
+                                x,
+                                y,
+                                x.saturating_add(width),
+                                frame,
+                                effective_style,
+                            );
+                        } else {
+                            self.draw_text_line(
+                                line,
+                                &content,
+                                x,
+                                y,
+                                x.saturating_add(width),
+                                frame,
+                                effective_style,
+                            );
+                        }
+                    }
                     1
                 } else {
-                    // Wrap the line
                     let options = WrapOptions::new(width as usize).mode(self.wrap_mode.into());
                     let wrapped = wrap_with_options(&content, &options);
                     let mut lines_rendered = 0u16;
@@ -658,6 +840,45 @@ impl LogViewer {
                     lines_rendered.max(1)
                 }
             }
+        }
+    }
+
+    /// Draw a line with search match highlights.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_highlighted_line(
+        &self,
+        content: &str,
+        ranges: &[(usize, usize)],
+        x: u16,
+        y: u16,
+        max_x: u16,
+        frame: &mut Frame,
+        base_style: Style,
+    ) {
+        let hl_style = self
+            .search_highlight_style
+            .unwrap_or_else(|| Style::new().bold().reverse());
+        let mut cursor_x = x;
+        let mut pos = 0;
+
+        for &(start, end) in ranges {
+            let start = start.min(content.len());
+            let end = end.min(content.len());
+            if start > pos {
+                // Draw non-highlighted segment
+                cursor_x =
+                    draw_text_span(frame, cursor_x, y, &content[pos..start], base_style, max_x);
+            }
+            if start < end {
+                // Draw highlighted segment
+                cursor_x =
+                    draw_text_span(frame, cursor_x, y, &content[start..end], hl_style, max_x);
+            }
+            pos = end;
+        }
+        // Draw trailing non-highlighted text
+        if pos < content.len() {
+            draw_text_span(frame, cursor_x, y, &content[pos..], base_style, max_x);
         }
     }
 
@@ -780,6 +1001,7 @@ impl StatefulWidget for LogViewer {
 
             let lines_used = self.render_line(
                 line,
+                line_idx,
                 area.x,
                 y,
                 area.width,
@@ -837,6 +1059,69 @@ impl StatefulWidget for LogViewer {
             }
         }
     }
+}
+
+/// Find match byte ranges within a single line using the given config.
+fn find_match_ranges(
+    plain: &str,
+    query: &str,
+    config: &SearchConfig,
+    #[cfg(feature = "regex-search")] compiled_regex: Option<&regex::Regex>,
+) -> Vec<(usize, usize)> {
+    match config.mode {
+        SearchMode::Literal => {
+            let results: Vec<SearchResult> = if config.case_sensitive {
+                search_exact(plain, query)
+            } else {
+                search_ascii_case_insensitive(plain, query)
+            };
+            results
+                .into_iter()
+                .map(|r| (r.range.start, r.range.end))
+                .collect()
+        }
+        SearchMode::Regex => {
+            #[cfg(feature = "regex-search")]
+            {
+                if let Some(re) = compiled_regex {
+                    re.find_iter(plain).map(|m| (m.start(), m.end())).collect()
+                } else {
+                    Vec::new()
+                }
+            }
+            #[cfg(not(feature = "regex-search"))]
+            {
+                // Without the feature, regex mode is a no-op.
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// Compile a regex from the query, respecting case sensitivity.
+#[cfg(feature = "regex-search")]
+fn compile_regex(query: &str, config: &SearchConfig) -> Option<regex::Regex> {
+    let pattern = if config.case_sensitive {
+        query.to_string()
+    } else {
+        format!("(?i){}", query)
+    };
+    regex::Regex::new(&pattern).ok()
+}
+
+/// Expand match indices by ±N context lines, dedup and sort.
+fn expand_context(matches: &[usize], context_lines: usize, total_lines: usize) -> Vec<usize> {
+    let mut expanded = Vec::new();
+    for &idx in matches {
+        let start = idx.saturating_sub(context_lines);
+        let end = (idx + context_lines + 1).min(total_lines);
+        for i in start..end {
+            expanded.push(i);
+        }
+    }
+    expanded.sort_unstable();
+    expanded.dedup();
+    expanded
 }
 
 #[cfg(test)]
@@ -1347,5 +1632,246 @@ mod tests {
         assert_eq!(log.filter_stats().full_rescans, initial_rescans + 1);
         // Search scanned only filtered lines (25 even lines).
         assert_eq!(log.filter_stats().full_rescan_lines, initial_lines + 25);
+    }
+
+    // -----------------------------------------------------------------------
+    // Enhanced search tests (bd-1b5h.2)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_literal_case_sensitive() {
+        let mut log = LogViewer::new(100);
+        log.push("Hello World");
+        log.push("hello world");
+        log.push("HELLO WORLD");
+
+        let config = SearchConfig {
+            mode: SearchMode::Literal,
+            case_sensitive: true,
+            context_lines: 0,
+        };
+        let count = log.search_with_config("Hello", config);
+        assert_eq!(count, 1);
+        assert_eq!(log.search_info(), Some((1, 1)));
+    }
+
+    #[test]
+    fn test_search_literal_case_insensitive() {
+        let mut log = LogViewer::new(100);
+        log.push("Hello World");
+        log.push("hello world");
+        log.push("HELLO WORLD");
+        log.push("no match here");
+
+        let config = SearchConfig {
+            mode: SearchMode::Literal,
+            case_sensitive: false,
+            context_lines: 0,
+        };
+        let count = log.search_with_config("hello", config);
+        assert_eq!(count, 3);
+    }
+
+    #[cfg(feature = "regex-search")]
+    #[test]
+    fn test_search_regex_basic() {
+        let mut log = LogViewer::new(100);
+        log.push("error: code 42");
+        log.push("error: code 99");
+        log.push("info: all good");
+        log.push("error: code 7");
+
+        let config = SearchConfig {
+            mode: SearchMode::Regex,
+            case_sensitive: true,
+            context_lines: 0,
+        };
+        let count = log.search_with_config(r"error: code \d+", config);
+        assert_eq!(count, 3);
+    }
+
+    #[cfg(feature = "regex-search")]
+    #[test]
+    fn test_search_regex_invalid_pattern() {
+        let mut log = LogViewer::new(100);
+        log.push("something");
+
+        let config = SearchConfig {
+            mode: SearchMode::Regex,
+            case_sensitive: true,
+            context_lines: 0,
+        };
+        // Invalid regex (unmatched paren)
+        let count = log.search_with_config(r"(unclosed", config);
+        assert_eq!(count, 0);
+        assert!(log.search_info().is_none());
+    }
+
+    #[test]
+    fn test_search_highlight_ranges() {
+        let mut log = LogViewer::new(100);
+        log.push("foo bar foo baz foo");
+
+        let count = log.search("foo");
+        assert_eq!(count, 1);
+
+        let ranges = log.highlight_ranges_for_line(0);
+        assert!(ranges.is_some());
+        let ranges = ranges.unwrap();
+        assert_eq!(ranges.len(), 3);
+        assert_eq!(ranges[0], (0, 3));
+        assert_eq!(ranges[1], (8, 11));
+        assert_eq!(ranges[2], (16, 19));
+    }
+
+    #[test]
+    fn test_search_context_lines() {
+        let mut log = LogViewer::new(100);
+        for i in 0..10 {
+            log.push(format!("line {}", i));
+        }
+
+        let config = SearchConfig {
+            mode: SearchMode::Literal,
+            case_sensitive: true,
+            context_lines: 1,
+        };
+        // "line 5" is at index 5
+        let count = log.search_with_config("line 5", config);
+        assert_eq!(count, 1);
+
+        let ctx = log.context_line_indices();
+        assert!(ctx.is_some());
+        let ctx = ctx.unwrap();
+        // Should include lines 4, 5, 6
+        assert!(ctx.contains(&4));
+        assert!(ctx.contains(&5));
+        assert!(ctx.contains(&6));
+        assert!(!ctx.contains(&3));
+        assert!(!ctx.contains(&7));
+    }
+
+    #[test]
+    fn test_search_incremental_with_config() {
+        let mut log = LogViewer::new(100);
+        log.push("Hello World");
+
+        let config = SearchConfig {
+            mode: SearchMode::Literal,
+            case_sensitive: false,
+            context_lines: 0,
+        };
+        let count = log.search_with_config("hello", config);
+        assert_eq!(count, 1);
+
+        // Push new line that matches case-insensitively
+        log.push("HELLO again");
+        assert_eq!(log.search_info(), Some((1, 2)));
+
+        // Push line that doesn't match
+        log.push("goodbye");
+        assert_eq!(log.search_info(), Some((1, 2)));
+    }
+
+    #[test]
+    fn test_search_mode_switch() {
+        let mut log = LogViewer::new(100);
+        log.push("error 42");
+        log.push("error 99");
+        log.push("info ok");
+
+        // First search: literal
+        let count = log.search("error");
+        assert_eq!(count, 2);
+
+        // Switch to case-insensitive
+        let config = SearchConfig {
+            mode: SearchMode::Literal,
+            case_sensitive: false,
+            context_lines: 0,
+        };
+        let count = log.search_with_config("ERROR", config);
+        assert_eq!(count, 2);
+
+        // Switch back to case-sensitive — "ERROR" shouldn't match "error"
+        let config = SearchConfig {
+            mode: SearchMode::Literal,
+            case_sensitive: true,
+            context_lines: 0,
+        };
+        let count = log.search_with_config("ERROR", config);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_search_empty_query() {
+        let mut log = LogViewer::new(100);
+        log.push("something");
+
+        let count = log.search("");
+        assert_eq!(count, 0);
+        assert!(log.search_info().is_none());
+
+        let config = SearchConfig::default();
+        let count = log.search_with_config("", config);
+        assert_eq!(count, 0);
+        assert!(log.search_info().is_none());
+    }
+
+    #[test]
+    fn test_highlight_ranges_within_bounds() {
+        let mut log = LogViewer::new(100);
+        let lines = [
+            "short",
+            "hello world hello",
+            "café résumé café",
+            "🌍 emoji 🌍",
+            "",
+        ];
+        for line in &lines {
+            log.push(*line);
+        }
+
+        log.search("hello");
+
+        // Check all highlight ranges are valid byte ranges
+        for match_idx in 0..log.line_count() {
+            if let Some(ranges) = log.highlight_ranges_for_line(match_idx)
+                && let Some(item) = log.virt.get(match_idx)
+            {
+                let plain = item.to_plain_text();
+                for &(start, end) in ranges {
+                    assert!(
+                        start <= end,
+                        "Invalid range: start={} > end={} on line {}",
+                        start,
+                        end,
+                        match_idx
+                    );
+                    assert!(
+                        end <= plain.len(),
+                        "Out of bounds: end={} > len={} on line {}",
+                        end,
+                        plain.len(),
+                        match_idx
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_search_match_rate_hint() {
+        let mut log = LogViewer::new(100);
+        log.set_filter(Some("x"));
+        log.push("x match");
+        log.search("match");
+        log.push("x match again");
+        log.push("x no");
+
+        // 3 incremental checks, 1 search match
+        let rate = log.search_match_rate_hint();
+        assert!(rate > 0.0);
+        assert!(rate <= 1.0);
     }
 }
