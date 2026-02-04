@@ -1,5 +1,94 @@
 # Session TODO List
 
+## Current Session (SapphireStone) — bd-1e3w Showcase Demo Overhaul + Review/Perf (2026-02-04)
+- [x] Re-read `AGENTS.md` + `README.md` (refresh constraints + architecture)
+- [x] Load skills: `beads-bv`, `agent-mail`, `extreme-software-optimization`
+- [x] Run `bv --robot-triage` + `br ready --json` to confirm priorities
+- [x] Register Agent Mail session (SapphireStone)
+- [x] Attempt exclusive reservations for demo showcase files (conflicts with LilacOwl/MistyDune/StormyBay)
+- [x] Send coordination messages to reservation holders
+- [ ] Await reservation clearance for `app.rs`, `chrome.rs`, `screens/*`, `screen_snapshots.rs`, `scripts/demo_showcase_e2e.sh`
+- [ ] Code review sweep (demo showcase + related widgets):
+- [ ] Validate palette logging changes (app.rs) and new tests for regression risks
+- [ ] Validate markdown render width clamps across dashboard + markdown screen
+- [ ] Inspect file browser width guard + mouse focus for correctness
+- [ ] Inspect macro recorder ctrl+arrow handling + usability
+- [ ] Inspect visual effects guards for determinism and crash prevention
+- [ ] Review `command_palette/scorer.rs` test additions for ordering assumptions
+- [ ] Review `scripts/demo_showcase_e2e.sh` palette step for timing/TTY correctness
+- [ ] Implement remaining bd-1e3w improvements (detailed):
+- [ ] Dashboard: code view → ensure every language highlighted; expand any short samples; confirm `c` cycles
+- [ ] Dashboard: markdown → richer GFM, streaming, truncate to width (avoid border bleed)
+- [ ] Dashboard: activity panel → rich formatting + animated emphasis
+- [ ] Dashboard: info panel → more visually rich/usable summary
+- [ ] Dashboard: charts → add more chart types + stronger visuals; `g` cycles all
+- [ ] Dashboard: text effects panel → show 2–3 effects simultaneously (already), confirm cycling
+- [ ] Shakespeare: instant search-as-you-type + jump navigation + animated highlights
+- [ ] Code Explorer (SQLite): more dynamic panels + features
+- [ ] Widgets screen: arrow-key navigation + jam-packed default widgets
+- [ ] Forms screen: arrow-key navigation between fields
+- [ ] Data viz screen: fill blank space with more panes/visualizations
+- [ ] Files screen: verify border alignment for long rows; adjust if needed
+- [ ] Macro recorder: clearer UX + confirm ctrl+arrow navigation
+- [ ] Visual effects: fix crash in effect #14/#15, add guard if needed
+- [ ] Mouse: click-to-focus pane in every multi-pane screen
+- [ ] Global: arrow-key navigation consistent across screens
+- [ ] Performance (extreme optimization loop):
+- [ ] Baseline `hyperfine` for visual effects (TTY run)
+- [ ] Profile with symbols (`cargo flamegraph` or `perf` on unstripped release)
+- [ ] Opportunity matrix + pick score ≥ 2.0 hotspot
+- [ ] Single-lever optimization + isomorphism proof
+- [ ] Verify golden checksums (`sha256sum -c golden_checksums.txt`)
+- [ ] Run quality gates (`cargo fmt --check`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`)
+- [ ] Run UBS on changed files (and fix findings)
+- [ ] Update bead status + post Agent Mail progress in thread `bd-1e3w`
+- [ ] Release file reservations when done
+
+## Current Session (StormyBay) — bd-iuvb.16 Navigation IA (2026-02-04)
+- [x] Re-read `AGENTS.md` (refresh constraints + no-delete rules)
+- [x] Run `bv --robot-triage` to identify top-impact bead(s)
+- [x] Review bead details: `br show bd-iuvb.16 --json`
+- [x] Register Agent Mail session (StormyBay)
+- [x] Attempt file reservations for:
+- [x] `crates/ftui-demo-showcase/src/app.rs`
+- [x] `crates/ftui-demo-showcase/src/chrome.rs`
+- [x] `crates/ftui-demo-showcase/src/screens/mod.rs`
+- [x] `crates/ftui-demo-showcase/tests/screen_snapshots.rs`
+- [x] `scripts/demo_showcase_e2e.sh`
+- [x] `SESSION_TODO.md`
+- [x] Resolve reservation conflicts (LilacOwl, MistyDune, CalmRiver, VioletBarn)
+- [x] Notify reservation holders + coordinate timing
+- [x] Confirm remaining bd-iuvb.16 acceptance gaps:
+- [x] Palette ranking tests (exact/prefix/word-start/substr tie-breaks)
+- [x] Palette snapshot tests (empty/filtered/favorites @ 80x24 + 120x40)
+- [x] Bless/record new palette snapshots (BLESS=1)
+- [x] E2E scenario in `scripts/demo_showcase_e2e.sh` with JSONL logging
+- [x] Add category legend to help overlay (if still missing)
+- [x] Implement palette JSONL logging (`FTUI_PALETTE_REPORT_PATH`, `FTUI_PALETTE_RUN_ID`)
+- [x] Run quality gates (`cargo fmt --check`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`)
+- [x] Post progress update in Agent Mail thread `[bd-iuvb.16]`
+- [x] Release file reservations after completion
+
+## Current Session (CalmRiver) — bd-1e3w Showcase Demo Overhaul (2026-02-04)
+- [x] Re-read `AGENTS.md` + `README.md`
+- [x] Run `bv --robot-triage` + `br ready --json`
+- [x] Register Agent Mail session (CalmRiver)
+- [x] Claim/confirm bead: `br update bd-1e3w --status in_progress`
+- [x] Attempt file reservations for demo showcase paths (conflicts on `app.rs`/`screens/**`/`chrome.rs`)
+- [x] Send coordination message to reservation holders (LilacOwl, MistyDune)
+- [ ] Wait for reservation clearance or coordinate per-file edits
+- [x] Code review sweep of demo showcase screens for: border alignment, input routing, crash/hang risks
+- [ ] Implement remaining bd-1e3w fixes (markdown/file browser borders, macro recorder UX + ctrl+arrows, visual FX crash guard, mouse focus per pane, widgets/forms nav polish, data viz density)
+- [x] Implemented fixes:
+- [x] Markdown screen: 3× streaming speed + rule-width clamp + line truncation
+- [x] File browser: mouse pane focus + arrow panel switching + width guard to reduce border bleed
+- [x] Macro recorder: ctrl/alt+arrow handled on repeat + clearer quick-start line
+- [x] Visual FX: spiral density guard + reduced spin lattice update rate
+- [ ] Extreme optimization loop for selected hotspot (baseline → profile → implement → verify)
+- [ ] Run quality gates + UBS on changed files
+- [ ] Post Agent Mail update in thread `bd-1e3w`
+- [ ] Release reservations
+
 ## Current Session (MistyDune) — bd-1e3w Showcase Demo Overhaul (2026-02-04)
 - [x] Re-read `AGENTS.md` + `README.md`
 - [x] Run `bv --robot-triage` + `br ready --json` to pick top actionable bead
@@ -86,9 +175,10 @@
 - [x] Update `chrome` tab bar to render category tabs + per-category screens
 - [x] Add category navigation: Shift+Left/Right jumps categories
 - [x] Update command palette to use registry metadata (category, tags, blurb)
-- [ ] Implement screen palette filters + favorites (session-scoped)
-- [ ] Add palette UI hints for category filter + favorites
-- [ ] Update help overlay with category legend + palette hotkeys
+- [x] Implement screen palette filters + favorites (session-scoped)
+- [x] Add palette UI hints for category filter + favorites
+- [x] Update help overlay with palette hotkeys (filters/favorites)
+- [ ] Add category legend to help overlay
 - [x] Update CLI/default screen resolution to use registry list
 - [x] Update tests for tab cycling + palette counts + number-key mapping
 - [x] Add unit tests for registry ordering + uniqueness
