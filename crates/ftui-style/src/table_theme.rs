@@ -1172,4 +1172,38 @@ mod tests {
         assert_eq!(theme.preset_id, Some(TablePresetId::TerminalClassic));
         assert!(theme.column_gap > 0);
     }
+
+    #[test]
+    fn style_hash_is_deterministic() {
+        let theme = TableTheme::aurora();
+        let h1 = theme.style_hash();
+        let h2 = theme.style_hash();
+        assert_eq!(h1, h2, "style_hash should be stable for identical input");
+    }
+
+    #[test]
+    fn style_hash_changes_with_layout_params() {
+        let mut theme = TableTheme::aurora();
+        let base = theme.style_hash();
+        theme.padding = theme.padding.saturating_add(1);
+        assert_ne!(base, theme.style_hash(), "padding should influence style hash");
+    }
+
+    #[test]
+    fn effects_hash_changes_with_rules() {
+        let mut theme = TableTheme::aurora();
+        let base = theme.effects_hash();
+        theme.effects.push(TableEffectRule::new(
+            TableEffectTarget::AllRows,
+            TableEffect::BreathingGlow {
+                fg: PackedRgba::rgb(200, 220, 255),
+                bg: PackedRgba::rgb(30, 40, 60),
+                intensity: 0.6,
+                speed: 0.8,
+                phase_offset: 0.1,
+                asymmetry: 0.2,
+            },
+        ));
+        assert_ne!(base, theme.effects_hash(), "effects hash should change with rules");
+    }
 }

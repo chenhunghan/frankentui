@@ -49,5 +49,6 @@ pub use stylesheet::{StyleId, StyleSheet};
 pub use table_theme::{
     BlendMode, Gradient, StyleMask, TableEffect, TableEffectResolver, TableEffectRule,
     TableEffectScope, TableEffectTarget, TablePresetId, TableSection, TableTheme,
+    TableThemeDiagnostics,
 };
 pub use theme::{AdaptiveColor, ResolvedTheme, Theme, ThemeBuilder};
