@@ -189,6 +189,143 @@ impl Default for DiffStrategyConfig {
     }
 }
 
+impl DiffStrategyConfig {
+    fn sanitized(&self) -> Self {
+        const EPS: f64 = 1e-6;
+        let mut config = self.clone();
+        config.c_scan = normalize_cost(config.c_scan, 1.0);
+        config.c_emit = normalize_cost(config.c_emit, 6.0);
+        config.c_row = normalize_cost(config.c_row, 0.1);
+        config.prior_alpha = normalize_positive(config.prior_alpha, 1.0);
+        config.prior_beta = normalize_positive(config.prior_beta, 19.0);
+        config.decay = normalize_decay(config.decay);
+        config.conservative_quantile = config.conservative_quantile.clamp(EPS, 1.0 - EPS);
+        config
+    }
+}
+
+fn normalize_positive(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        fallback
+    }
+}
+
+fn normalize_cost(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() && value >= 0.0 {
+        value
+    } else {
+        fallback
+    }
+}
+
+fn normalize_decay(value: f64) -> f64 {
+    if value.is_finite() && value > 0.0 {
+        value.min(1.0)
+    } else {
+        1.0
+    }
+}
+
+// =============================================================================
+// Change-Rate Estimator (Beta-Binomial)
+// =============================================================================
+
+/// Beta-Binomial estimator for change-rate `p`.
+///
+/// Maintains a Beta posterior with exponential decay and deterministic updates.
+#[derive(Debug, Clone)]
+pub struct ChangeRateEstimator {
+    prior_alpha: f64,
+    prior_beta: f64,
+    alpha: f64,
+    beta: f64,
+    decay: f64,
+    min_observation_cells: usize,
+}
+
+impl ChangeRateEstimator {
+    /// Create a new estimator with the given priors and decay.
+    pub fn new(
+        prior_alpha: f64,
+        prior_beta: f64,
+        decay: f64,
+        min_observation_cells: usize,
+    ) -> Self {
+        Self {
+            prior_alpha,
+            prior_beta,
+            alpha: prior_alpha,
+            beta: prior_beta,
+            decay,
+            min_observation_cells,
+        }
+    }
+
+    /// Reset the posterior to the prior.
+    pub fn reset(&mut self) {
+        self.alpha = self.prior_alpha;
+        self.beta = self.prior_beta;
+    }
+
+    /// Posterior parameters (α, β).
+    pub fn posterior_params(&self) -> (f64, f64) {
+        (self.alpha, self.beta)
+    }
+
+    /// Posterior mean E[p].
+    pub fn mean(&self) -> f64 {
+        self.alpha / (self.alpha + self.beta)
+    }
+
+    /// Posterior variance Var[p].
+    pub fn variance(&self) -> f64 {
+        let sum = self.alpha + self.beta;
+        (self.alpha * self.beta) / (sum * sum * (sum + 1.0))
+    }
+
+    /// Observe an update with scanned and changed cells.
+    pub fn observe(&mut self, cells_scanned: usize, cells_changed: usize) {
+        if cells_scanned < self.min_observation_cells {
+            return;
+        }
+
+        let cells_changed = cells_changed.min(cells_scanned);
+        self.alpha *= self.decay;
+        self.beta *= self.decay;
+
+        self.alpha += cells_changed as f64;
+        self.beta += (cells_scanned.saturating_sub(cells_changed)) as f64;
+
+        const EPS: f64 = 1e-6;
+        const MAX: f64 = 1e6;
+        self.alpha = self.alpha.clamp(EPS, MAX);
+        self.beta = self.beta.clamp(EPS, MAX);
+    }
+
+    /// Upper quantile of the Beta distribution using normal approximation.
+    pub fn upper_quantile(&self, q: f64) -> f64 {
+        let q = q.clamp(1e-6, 1.0 - 1e-6);
+        let mean = self.mean();
+        let var = self.variance();
+        let std = var.sqrt();
+
+        // Standard normal quantile approximation (Abramowitz & Stegun 26.2.23)
+        let z = if q >= 0.5 {
+            let t = (-2.0 * (1.0 - q).ln()).sqrt();
+            t - (2.515517 + 0.802853 * t + 0.010328 * t * t)
+                / (1.0 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t)
+        } else {
+            let t = (-2.0 * q.ln()).sqrt();
+            -(t - (2.515517 + 0.802853 * t + 0.010328 * t * t)
+                / (1.0 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t))
+        };
+
+        (mean + z * std).clamp(0.0, 1.0)
+    }
+}
+
 // =============================================================================
 // Strategy Enum
 // =============================================================================
@@ -290,12 +427,7 @@ impl fmt::Display for StrategyEvidence {
 #[derive(Debug, Clone)]
 pub struct DiffStrategySelector {
     config: DiffStrategyConfig,
-
-    /// Posterior α (pseudo-count for "changed").
-    alpha: f64,
-
-    /// Posterior β (pseudo-count for "unchanged").
-    beta: f64,
+    estimator: ChangeRateEstimator,
 
     /// Frame counter for diagnostics.
     frame_count: u64,
@@ -307,10 +439,16 @@ pub struct DiffStrategySelector {
 impl DiffStrategySelector {
     /// Create a new selector with the given configuration.
     pub fn new(config: DiffStrategyConfig) -> Self {
+        let config = config.sanitized();
+        let estimator = ChangeRateEstimator::new(
+            config.prior_alpha,
+            config.prior_beta,
+            config.decay,
+            config.min_observation_cells,
+        );
         Self {
-            alpha: config.prior_alpha,
-            beta: config.prior_beta,
             config,
+            estimator,
             frame_count: 0,
             last_evidence: None,
         }
@@ -328,18 +466,17 @@ impl DiffStrategySelector {
 
     /// Get the current posterior parameters.
     pub fn posterior_params(&self) -> (f64, f64) {
-        (self.alpha, self.beta)
+        self.estimator.posterior_params()
     }
 
     /// Get the posterior mean E[p].
     pub fn posterior_mean(&self) -> f64 {
-        self.alpha / (self.alpha + self.beta)
+        self.estimator.mean()
     }
 
     /// Get the posterior variance Var[p].
     pub fn posterior_variance(&self) -> f64 {
-        let sum = self.alpha + self.beta;
-        (self.alpha * self.beta) / (sum * sum * (sum + 1.0))
+        self.estimator.variance()
     }
 
     /// Get the last decision evidence.
@@ -396,6 +533,7 @@ impl DiffStrategySelector {
         };
 
         // Store evidence
+        let (alpha, beta) = self.estimator.posterior_params();
         self.last_evidence = Some(StrategyEvidence {
             strategy,
             cost_full,
@@ -403,8 +541,8 @@ impl DiffStrategySelector {
             cost_redraw,
             posterior_mean: self.posterior_mean(),
             posterior_variance: self.posterior_variance(),
-            alpha: self.alpha,
-            beta: self.beta,
+            alpha,
+            beta,
             dirty_rows,
             total_rows: height as usize,
             total_cells: (width as usize) * (height as usize),
@@ -420,29 +558,12 @@ impl DiffStrategySelector {
     /// * `cells_scanned` - Number of cells that were scanned for differences
     /// * `cells_changed` - Number of cells that actually changed
     pub fn observe(&mut self, cells_scanned: usize, cells_changed: usize) {
-        if cells_scanned < self.config.min_observation_cells {
-            return;
-        }
-
-        // Apply decay (exponential forgetting)
-        self.alpha *= self.config.decay;
-        self.beta *= self.config.decay;
-
-        // Bayesian update: α += successes, β += failures
-        self.alpha += cells_changed as f64;
-        self.beta += (cells_scanned.saturating_sub(cells_changed)) as f64;
-
-        // Clamp to avoid numerical issues
-        const EPS: f64 = 1e-6;
-        const MAX: f64 = 1e6;
-        self.alpha = self.alpha.clamp(EPS, MAX);
-        self.beta = self.beta.clamp(EPS, MAX);
+        self.estimator.observe(cells_scanned, cells_changed);
     }
 
     /// Reset the posterior to priors.
     pub fn reset(&mut self) {
-        self.alpha = self.config.prior_alpha;
-        self.beta = self.config.prior_beta;
+        self.estimator.reset();
         self.frame_count = 0;
         self.last_evidence = None;
     }
@@ -452,24 +573,7 @@ impl DiffStrategySelector {
     /// Uses the normal approximation for computational efficiency:
     /// `p_q ≈ μ + z_q × σ` where z_q is the standard normal quantile.
     fn upper_quantile(&self, q: f64) -> f64 {
-        let q = q.clamp(1e-6, 1.0 - 1e-6);
-        let mean = self.posterior_mean();
-        let var = self.posterior_variance();
-        let std = var.sqrt();
-
-        // Standard normal quantile approximation (Abramowitz & Stegun 26.2.23)
-        // For q = 0.95, z ≈ 1.645
-        let z = if q >= 0.5 {
-            let t = (-2.0 * (1.0 - q).ln()).sqrt();
-            t - (2.515517 + 0.802853 * t + 0.010328 * t * t)
-                / (1.0 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t)
-        } else {
-            let t = (-2.0 * q.ln()).sqrt();
-            -(t - (2.515517 + 0.802853 * t + 0.010328 * t * t)
-                / (1.0 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t))
-        };
-
-        (mean + z * std).clamp(0.0, 1.0)
+        self.estimator.upper_quantile(q)
     }
 }
 
@@ -487,13 +591,62 @@ impl Default for DiffStrategySelector {
 mod tests {
     use super::*;
 
+    fn strategy_costs(
+        config: &DiffStrategyConfig,
+        width: u16,
+        height: u16,
+        dirty_rows: usize,
+        p_actual: f64,
+    ) -> (f64, f64, f64) {
+        let w = width as f64;
+        let h = height as f64;
+        let d = dirty_rows as f64;
+        let n = w * h;
+        let p = p_actual.clamp(0.0, 1.0);
+
+        let cost_full = config.c_row * h + config.c_scan * d * w + config.c_emit * p * n;
+        let cost_dirty = config.c_scan * d * w + config.c_emit * p * n;
+        let cost_redraw = config.c_emit * n;
+
+        (cost_full, cost_dirty, cost_redraw)
+    }
+
     #[test]
     fn test_default_config() {
         let config = DiffStrategyConfig::default();
         assert!((config.c_scan - 1.0).abs() < 1e-9);
-        assert!((config.c_emit - 5.0).abs() < 1e-9);
+        assert!((config.c_emit - 6.0).abs() < 1e-9);
         assert!((config.prior_alpha - 1.0).abs() < 1e-9);
         assert!((config.prior_beta - 19.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn estimator_initializes_from_priors() {
+        let estimator = ChangeRateEstimator::new(2.0, 8.0, 0.9, 0);
+        let (alpha, beta) = estimator.posterior_params();
+        assert!((alpha - 2.0).abs() < 1e-9);
+        assert!((beta - 8.0).abs() < 1e-9);
+        assert!((estimator.mean() - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn estimator_updates_with_decay() {
+        let mut estimator = ChangeRateEstimator::new(1.0, 9.0, 0.5, 0);
+        estimator.observe(100, 10);
+        let (alpha, beta) = estimator.posterior_params();
+        assert!((alpha - (0.5 + 10.0)).abs() < 1e-9);
+        assert!((beta - (4.5 + 90.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn estimator_clamps_bounds() {
+        let mut estimator = ChangeRateEstimator::new(1.0, 1.0, 1.0, 0);
+        for _ in 0..1000 {
+            estimator.observe(1_000_000, 1_000_000);
+        }
+        let (alpha, beta) = estimator.posterior_params();
+        assert!(alpha <= 1e6);
+        assert!(beta >= 1e-6);
     }
 
     #[test]
@@ -593,6 +746,137 @@ mod tests {
         assert!(evidence.cost_full.is_finite());
         assert!(evidence.cost_dirty.is_finite());
         assert!(evidence.cost_redraw.is_finite());
+    }
+
+    #[test]
+    fn sanitize_config_clamps_invalid_values() {
+        let config = DiffStrategyConfig {
+            c_scan: -1.0,
+            c_emit: f64::NAN,
+            c_row: f64::INFINITY,
+            prior_alpha: 0.0,
+            prior_beta: -3.0,
+            decay: -1.0,
+            conservative: true,
+            conservative_quantile: 2.0,
+            min_observation_cells: 0,
+        };
+        let selector = DiffStrategySelector::new(config);
+        let sanitized = selector.config();
+
+        assert!(sanitized.c_scan >= 0.0);
+        assert!(sanitized.c_emit.is_finite());
+        assert!(sanitized.c_row.is_finite());
+        assert!(sanitized.prior_alpha > 0.0);
+        assert!(sanitized.prior_beta > 0.0);
+        assert!((0.0..=1.0).contains(&sanitized.decay));
+        assert!((0.0..=1.0).contains(&sanitized.conservative_quantile));
+    }
+
+    #[test]
+    fn selector_regret_bounded_across_regimes() {
+        let mut selector = DiffStrategySelector::with_defaults();
+        let config = selector.config().clone();
+        let width = 200u16;
+        let height = 60u16;
+        let total_cells = width as usize * height as usize;
+
+        let regimes = [
+            (100usize, 2usize, 0.02f64),
+            (100usize, 12usize, 0.12f64),
+            (100usize, height as usize, 0.6f64),
+        ];
+
+        let mut selector_total = 0.0f64;
+        let mut fixed_full_total = 0.0f64;
+        let mut fixed_dirty_total = 0.0f64;
+        let mut fixed_redraw_total = 0.0f64;
+
+        for (frames, dirty_rows, p_actual) in regimes {
+            for _ in 0..frames {
+                let strategy = selector.select(width, height, dirty_rows);
+                let (cost_full, cost_dirty, cost_redraw) =
+                    strategy_costs(&config, width, height, dirty_rows, p_actual);
+                fixed_full_total += cost_full;
+                fixed_dirty_total += cost_dirty;
+                fixed_redraw_total += cost_redraw;
+
+                let chosen_cost = match strategy {
+                    DiffStrategy::Full => cost_full,
+                    DiffStrategy::DirtyRows => cost_dirty,
+                    DiffStrategy::FullRedraw => cost_redraw,
+                };
+                selector_total += chosen_cost;
+
+                let changed = ((p_actual * total_cells as f64).round() as usize).min(total_cells);
+                let scanned = match strategy {
+                    DiffStrategy::Full => total_cells,
+                    DiffStrategy::DirtyRows => dirty_rows.saturating_mul(width as usize),
+                    DiffStrategy::FullRedraw => 0,
+                };
+                if strategy != DiffStrategy::FullRedraw {
+                    selector.observe(scanned, changed);
+                }
+            }
+        }
+
+        let best_fixed = fixed_full_total
+            .min(fixed_dirty_total)
+            .min(fixed_redraw_total);
+        let regret = if best_fixed > 0.0 {
+            (selector_total - best_fixed) / best_fixed
+        } else {
+            0.0
+        };
+
+        assert!(
+            regret <= 0.05,
+            "Selector regret too high: {:.4} (selector {:.2}, best_fixed {:.2})",
+            regret,
+            selector_total,
+            best_fixed
+        );
+    }
+
+    #[test]
+    fn selector_switching_is_stable_under_constant_load() {
+        let mut selector = DiffStrategySelector::with_defaults();
+        let config = selector.config().clone();
+        let width = 200u16;
+        let height = 60u16;
+        let dirty_rows = 2usize;
+        let p_actual = 0.02f64;
+        let total_cells = width as usize * height as usize;
+
+        let mut switches = 0usize;
+        let mut last = None;
+
+        for _ in 0..200 {
+            let strategy = selector.select(width, height, dirty_rows);
+            if let Some(prev) = last
+                && prev != strategy
+            {
+                switches = switches.saturating_add(1);
+            }
+            last = Some(strategy);
+
+            let changed = ((p_actual * total_cells as f64).round() as usize).min(total_cells);
+            let scanned = match strategy {
+                DiffStrategy::Full => total_cells,
+                DiffStrategy::DirtyRows => dirty_rows.saturating_mul(width as usize),
+                DiffStrategy::FullRedraw => 0,
+            };
+            if strategy != DiffStrategy::FullRedraw {
+                selector.observe(scanned, changed);
+            }
+
+            let _ = strategy_costs(&config, width, height, dirty_rows, p_actual);
+        }
+
+        assert!(
+            switches <= 40,
+            "Selector switched too often under stable regime: {switches}"
+        );
     }
 
     #[test]

@@ -37,10 +37,155 @@
 //! - O(1) per mutation (single array write)
 //! - O(height) space for dirty bitmap
 //! - Target: < 2% overhead vs baseline rendering
+//!
+//! # Dirty Span Tracking (bd-3e1t.6.2)
+//!
+//! Dirty spans refine dirty rows by recording per-row x-ranges of mutations.
+//!
+//! ## Invariant
+//!
+//! ```text
+//! ∀ (x, y) mutated since last clear, ∃ span in row y with x ∈ [x0, x1)
+//! ```
+//!
+//! Spans are sorted, non-overlapping, and merged when overlapping, adjacent, or separated
+//! by at most `DIRTY_SPAN_MERGE_GAP` cells (gap becomes dirty). If a row exceeds
+//! `DIRTY_SPAN_MAX_SPANS_PER_ROW`, it falls back to full-row scan.
 
 use crate::budget::DegradationLevel;
 use crate::cell::Cell;
 use ftui_core::geometry::Rect;
+
+/// Maximum number of dirty spans per row before falling back to full-row scan.
+const DIRTY_SPAN_MAX_SPANS_PER_ROW: usize = 64;
+/// Merge spans when the gap between them is at most this many cells.
+const DIRTY_SPAN_MERGE_GAP: u16 = 1;
+
+/// Configuration for dirty-span tracking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirtySpanConfig {
+    /// Enable dirty-span tracking (used by diff).
+    pub enabled: bool,
+    /// Maximum spans per row before falling back to full-row scan.
+    pub max_spans_per_row: usize,
+    /// Merge spans when the gap between them is at most this many cells.
+    pub merge_gap: u16,
+    /// Expand spans by this many cells on each side.
+    pub guard_band: u16,
+}
+
+impl Default for DirtySpanConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_spans_per_row: DIRTY_SPAN_MAX_SPANS_PER_ROW,
+            merge_gap: DIRTY_SPAN_MERGE_GAP,
+            guard_band: 0,
+        }
+    }
+}
+
+impl DirtySpanConfig {
+    /// Toggle dirty-span tracking.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Set max spans per row before fallback.
+    pub fn with_max_spans_per_row(mut self, max_spans: usize) -> Self {
+        self.max_spans_per_row = max_spans;
+        self
+    }
+
+    /// Set merge gap threshold.
+    pub fn with_merge_gap(mut self, merge_gap: u16) -> Self {
+        self.merge_gap = merge_gap;
+        self
+    }
+
+    /// Set guard band expansion (cells).
+    pub fn with_guard_band(mut self, guard_band: u16) -> Self {
+        self.guard_band = guard_band;
+        self
+    }
+}
+
+/// Half-open dirty span [x0, x1) for a single row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DirtySpan {
+    pub x0: u16,
+    pub x1: u16,
+}
+
+impl DirtySpan {
+    #[inline]
+    pub const fn new(x0: u16, x1: u16) -> Self {
+        Self { x0, x1 }
+    }
+
+    #[inline]
+    pub const fn len(self) -> usize {
+        self.x1.saturating_sub(self.x0) as usize
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct DirtySpanRow {
+    overflow: bool,
+    spans: Vec<DirtySpan>,
+}
+
+impl DirtySpanRow {
+    #[inline]
+    fn new_full() -> Self {
+        Self {
+            overflow: true,
+            spans: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        self.overflow = false;
+        self.spans.clear();
+    }
+
+    #[inline]
+    fn set_full(&mut self) {
+        self.overflow = true;
+        self.spans.clear();
+    }
+
+    #[inline]
+    pub(crate) fn spans(&self) -> &[DirtySpan] {
+        &self.spans
+    }
+
+    #[inline]
+    pub(crate) fn is_full(&self) -> bool {
+        self.overflow
+    }
+}
+
+/// Dirty-span statistics for logging/telemetry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirtySpanStats {
+    /// Rows marked as full-row dirty.
+    pub rows_full_dirty: usize,
+    /// Rows with at least one span.
+    pub rows_with_spans: usize,
+    /// Total number of spans across all rows.
+    pub total_spans: usize,
+    /// Total number of span overflow events since last clear.
+    pub overflows: usize,
+    /// Total coverage in cells (span lengths + full rows).
+    pub span_coverage_cells: usize,
+    /// Maximum span length observed (including full-row spans).
+    pub max_span_len: usize,
+    /// Configured max spans per row.
+    pub max_spans_per_row: usize,
+}
 
 /// A 2D grid of terminal cells.
 ///
@@ -73,6 +218,18 @@ pub struct Buffer {
     ///
     /// Invariant: `dirty_rows.len() == height`
     dirty_rows: Vec<bool>,
+    /// Per-row dirty span tracking for sparse diff scans.
+    dirty_spans: Vec<DirtySpanRow>,
+    /// Dirty-span tracking configuration.
+    dirty_span_config: DirtySpanConfig,
+    /// Number of span overflow events since the last `clear_dirty()`.
+    dirty_span_overflows: usize,
+    /// Per-cell dirty bitmap for tile-based diff skipping.
+    dirty_bits: Vec<u8>,
+    /// Count of dirty cells tracked in the bitmap.
+    dirty_cells: usize,
+    /// Whether the whole buffer is marked dirty (bitmap may be stale).
+    dirty_all: bool,
 }
 
 impl Buffer {
@@ -91,6 +248,13 @@ impl Buffer {
         let size = width as usize * height as usize;
         let cells = vec![Cell::default(); size];
 
+        let dirty_spans = (0..height)
+            .map(|_| DirtySpanRow::new_full())
+            .collect::<Vec<_>>();
+        let dirty_bits = vec![0u8; size];
+        let dirty_cells = size;
+        let dirty_all = true;
+
         Self {
             width,
             height,
@@ -101,6 +265,13 @@ impl Buffer {
             // All rows start dirty to ensure initial diffs against this buffer
             // (e.g. from DoubleBuffer resize) correctly identify it as changed/empty.
             dirty_rows: vec![true; height as usize],
+            // Start with full-row dirty spans to force initial full scan.
+            dirty_spans,
+            dirty_span_config: DirtySpanConfig::default(),
+            dirty_span_overflows: 0,
+            dirty_bits,
+            dirty_cells,
+            dirty_all,
         }
     }
 
@@ -154,16 +325,130 @@ impl Buffer {
         0
     }
 
-    // ----- Dirty Row Tracking API -----
+    // ----- Dirty Tracking API -----
 
     /// Mark a row as dirty (modified since last clear).
     ///
     /// This is O(1) and must be called on every cell mutation to maintain
     /// the dirty-soundness invariant.
     #[inline]
-    fn mark_dirty(&mut self, y: u16) {
+    fn mark_dirty_row(&mut self, y: u16) {
         if let Some(slot) = self.dirty_rows.get_mut(y as usize) {
             *slot = true;
+        }
+    }
+
+    /// Mark a range of cells in a row as dirty in the bitmap (end exclusive).
+    #[inline]
+    fn mark_dirty_bits_range(&mut self, y: u16, start: u16, end: u16) {
+        if self.dirty_all {
+            return;
+        }
+        if y >= self.height {
+            return;
+        }
+
+        let width = self.width;
+        if start >= width {
+            return;
+        }
+        let end = end.min(width);
+        if start >= end {
+            return;
+        }
+
+        let row_start = y as usize * width as usize;
+        for x in start..end {
+            let idx = row_start + x as usize;
+            let slot = &mut self.dirty_bits[idx];
+            if *slot == 0 {
+                *slot = 1;
+                self.dirty_cells = self.dirty_cells.saturating_add(1);
+            }
+        }
+    }
+
+    /// Mark an entire row as dirty in the bitmap.
+    #[inline]
+    fn mark_dirty_bits_row(&mut self, y: u16) {
+        self.mark_dirty_bits_range(y, 0, self.width);
+    }
+
+    /// Mark a row as fully dirty (full scan).
+    #[inline]
+    fn mark_dirty_row_full(&mut self, y: u16) {
+        self.mark_dirty_row(y);
+        if self.dirty_span_config.enabled
+            && let Some(row) = self.dirty_spans.get_mut(y as usize)
+        {
+            row.set_full();
+        }
+        self.mark_dirty_bits_row(y);
+    }
+
+    /// Mark a span within a row as dirty (half-open).
+    #[inline]
+    fn mark_dirty_span(&mut self, y: u16, x0: u16, x1: u16) {
+        self.mark_dirty_row(y);
+        let width = self.width;
+        let (start, mut end) = if x0 <= x1 { (x0, x1) } else { (x1, x0) };
+        if start >= width {
+            return;
+        }
+        if end > width {
+            end = width;
+        }
+        if start >= end {
+            return;
+        }
+
+        self.mark_dirty_bits_range(y, start, end);
+
+        if !self.dirty_span_config.enabled {
+            return;
+        }
+
+        let guard_band = self.dirty_span_config.guard_band;
+        let span_start = start.saturating_sub(guard_band);
+        let mut span_end = end.saturating_add(guard_band);
+        if span_end > width {
+            span_end = width;
+        }
+        if span_start >= span_end {
+            return;
+        }
+
+        let Some(row) = self.dirty_spans.get_mut(y as usize) else {
+            return;
+        };
+
+        if row.is_full() {
+            return;
+        }
+
+        let new_span = DirtySpan::new(span_start, span_end);
+        let spans = &mut row.spans;
+        let insert_at = spans.partition_point(|span| span.x0 <= new_span.x0);
+        spans.insert(insert_at, new_span);
+
+        // Merge overlapping or near-adjacent spans (gap <= merge_gap).
+        let merge_gap = self.dirty_span_config.merge_gap;
+        let mut i = if insert_at > 0 { insert_at - 1 } else { 0 };
+        while i + 1 < spans.len() {
+            let current = spans[i];
+            let next = spans[i + 1];
+            let merge_limit = current.x1.saturating_add(merge_gap);
+            if merge_limit >= next.x0 {
+                spans[i].x1 = current.x1.max(next.x1);
+                spans.remove(i + 1);
+                continue;
+            }
+            i += 1;
+        }
+
+        if spans.len() > self.dirty_span_config.max_spans_per_row {
+            row.set_full();
+            self.dirty_span_overflows = self.dirty_span_overflows.saturating_add(1);
         }
     }
 
@@ -171,14 +456,32 @@ impl Buffer {
     #[inline]
     pub fn mark_all_dirty(&mut self) {
         self.dirty_rows.fill(true);
+        if self.dirty_span_config.enabled {
+            for row in &mut self.dirty_spans {
+                row.set_full();
+            }
+        } else {
+            for row in &mut self.dirty_spans {
+                row.clear();
+            }
+        }
+        self.dirty_all = true;
+        self.dirty_cells = self.cells.len();
     }
 
-    /// Reset all dirty flags to clean.
+    /// Reset all dirty flags and spans to clean.
     ///
     /// Call this after the diff has consumed the dirty state (between frames).
     #[inline]
     pub fn clear_dirty(&mut self) {
         self.dirty_rows.fill(false);
+        for row in &mut self.dirty_spans {
+            row.clear();
+        }
+        self.dirty_span_overflows = 0;
+        self.dirty_bits.fill(0);
+        self.dirty_cells = 0;
+        self.dirty_all = false;
     }
 
     /// Check if a specific row is dirty.
@@ -199,6 +502,102 @@ impl Buffer {
     /// Count the number of dirty rows.
     pub fn dirty_row_count(&self) -> usize {
         self.dirty_rows.iter().filter(|&&d| d).count()
+    }
+
+    /// Access the per-cell dirty bitmap (0 = clean, 1 = dirty).
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn dirty_bits(&self) -> &[u8] {
+        &self.dirty_bits
+    }
+
+    /// Count of dirty cells tracked in the bitmap.
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn dirty_cell_count(&self) -> usize {
+        self.dirty_cells
+    }
+
+    /// Whether the whole buffer is marked dirty (bitmap may be stale).
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn dirty_all(&self) -> bool {
+        self.dirty_all
+    }
+
+    /// Access a row's dirty span state.
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn dirty_span_row(&self, y: u16) -> Option<&DirtySpanRow> {
+        if !self.dirty_span_config.enabled {
+            return None;
+        }
+        self.dirty_spans.get(y as usize)
+    }
+
+    /// Summarize dirty-span stats for logging/telemetry.
+    pub fn dirty_span_stats(&self) -> DirtySpanStats {
+        if !self.dirty_span_config.enabled {
+            return DirtySpanStats {
+                rows_full_dirty: 0,
+                rows_with_spans: 0,
+                total_spans: 0,
+                overflows: 0,
+                span_coverage_cells: 0,
+                max_span_len: 0,
+                max_spans_per_row: self.dirty_span_config.max_spans_per_row,
+            };
+        }
+
+        let mut rows_full_dirty = 0usize;
+        let mut rows_with_spans = 0usize;
+        let mut total_spans = 0usize;
+        let mut span_coverage_cells = 0usize;
+        let mut max_span_len = 0usize;
+
+        for row in &self.dirty_spans {
+            if row.is_full() {
+                rows_full_dirty += 1;
+                span_coverage_cells += self.width as usize;
+                max_span_len = max_span_len.max(self.width as usize);
+                continue;
+            }
+            if !row.spans().is_empty() {
+                rows_with_spans += 1;
+            }
+            total_spans += row.spans().len();
+            for span in row.spans() {
+                span_coverage_cells += span.len();
+                max_span_len = max_span_len.max(span.len());
+            }
+        }
+
+        DirtySpanStats {
+            rows_full_dirty,
+            rows_with_spans,
+            total_spans,
+            overflows: self.dirty_span_overflows,
+            span_coverage_cells,
+            max_span_len,
+            max_spans_per_row: self.dirty_span_config.max_spans_per_row,
+        }
+    }
+
+    /// Access the dirty-span configuration.
+    pub fn dirty_span_config(&self) -> DirtySpanConfig {
+        self.dirty_span_config
+    }
+
+    /// Update dirty-span configuration (clears existing spans when changed).
+    pub fn set_dirty_span_config(&mut self, config: DirtySpanConfig) {
+        if self.dirty_span_config == config {
+            return;
+        }
+        self.dirty_span_config = config;
+        for row in &mut self.dirty_spans {
+            row.clear();
+        }
+        self.dirty_span_overflows = 0;
     }
 
     // ----- Coordinate Helpers -----
@@ -240,8 +639,9 @@ impl Buffer {
     /// Proactively marks the row dirty since the caller may mutate the cell.
     #[inline]
     pub fn get_mut(&mut self, x: u16, y: u16) -> Option<&mut Cell> {
-        self.mark_dirty(y);
-        self.index(x, y).map(|i| &mut self.cells[i])
+        let idx = self.index(x, y)?;
+        self.mark_dirty_span(y, x, x.saturating_add(1));
+        Some(&mut self.cells[idx])
     }
 
     /// Get a reference to the cell at (x, y) without bounds checking.
@@ -257,9 +657,14 @@ impl Buffer {
     }
 
     /// Helper to clean up overlapping multi-width cells before writing.
-    fn cleanup_overlap(&mut self, x: u16, y: u16, new_cell: &Cell) {
-        let Some(idx) = self.index(x, y) else { return };
+    ///
+    /// Returns the half-open span of any cells cleared by this cleanup.
+    fn cleanup_overlap(&mut self, x: u16, y: u16, new_cell: &Cell) -> Option<DirtySpan> {
+        let idx = self.index(x, y)?;
         let current = self.cells[idx];
+        let mut touched = false;
+        let mut min_x = x;
+        let mut max_x = x;
 
         // Case 1: Overwriting a Wide Head
         if current.content.width() > 1 {
@@ -276,6 +681,9 @@ impl Buffer {
                     && self.cells[tail_idx].is_continuation()
                 {
                     self.cells[tail_idx] = Cell::default();
+                    touched = true;
+                    min_x = min_x.min(cx);
+                    max_x = max_x.max(cx);
                 }
             }
         }
@@ -293,6 +701,9 @@ impl Buffer {
                             // This head owns the cell we are overwriting.
                             // Clear the head.
                             self.cells[h_idx] = Cell::default();
+                            touched = true;
+                            min_x = min_x.min(back_x);
+                            max_x = max_x.max(back_x);
 
                             // Clear all its tails (except the one we're about to write, effectively)
                             // We just iterate 1..width and clear CONTs.
@@ -305,6 +716,9 @@ impl Buffer {
                                     // We can clear it; `set` will overwrite it in a moment.
                                     if self.cells[tail_idx].is_continuation() {
                                         self.cells[tail_idx] = Cell::default();
+                                        touched = true;
+                                        min_x = min_x.min(cx);
+                                        max_x = max_x.max(cx);
                                     }
                                 }
                             }
@@ -313,6 +727,12 @@ impl Buffer {
                     }
                 }
             }
+        }
+
+        if touched {
+            Some(DirtySpan::new(min_x, max_x.saturating_add(1)))
+        } else {
+            None
         }
     }
 
@@ -343,8 +763,13 @@ impl Buffer {
                 return;
             }
 
-            // Cleanup overlaps
-            self.cleanup_overlap(x, y, &cell);
+            // Cleanup overlaps and track any cleared span.
+            let mut span_start = x;
+            let mut span_end = x.saturating_add(1);
+            if let Some(span) = self.cleanup_overlap(x, y, &cell) {
+                span_start = span_start.min(span.x0);
+                span_end = span_end.max(span.x1);
+            }
 
             let existing_bg = self.cells[idx].bg;
 
@@ -363,7 +788,7 @@ impl Buffer {
             final_cell.bg = final_cell.bg.over(existing_bg);
 
             self.cells[idx] = final_cell;
-            self.mark_dirty(y);
+            self.mark_dirty_span(y, span_start, span_end);
             return;
         }
 
@@ -386,11 +811,19 @@ impl Buffer {
 
         // If we get here, it's safe to write everything.
 
-        // Cleanup overlaps for all cells
-        self.cleanup_overlap(x, y, &cell);
+        // Cleanup overlaps for all cells and track any cleared span.
+        let mut span_start = x;
+        let mut span_end = x.saturating_add(width as u16);
+        if let Some(span) = self.cleanup_overlap(x, y, &cell) {
+            span_start = span_start.min(span.x0);
+            span_end = span_end.max(span.x1);
+        }
         for i in 1..width {
             // Safe: atomicity check above verified x + i fits in u16
-            self.cleanup_overlap(x + i as u16, y, &Cell::CONTINUATION);
+            if let Some(span) = self.cleanup_overlap(x + i as u16, y, &Cell::CONTINUATION) {
+                span_start = span_start.min(span.x0);
+                span_end = span_end.max(span.x1);
+            }
         }
 
         // 1. Write Head
@@ -411,7 +844,6 @@ impl Buffer {
         final_cell.bg = final_cell.bg.over(old_cell.bg);
 
         self.cells[idx] = final_cell;
-        self.mark_dirty(y);
 
         // 2. Write Tail (Continuation cells)
         // We can use set_raw-like access because we already verified bounds
@@ -419,6 +851,7 @@ impl Buffer {
             let idx = self.index_unchecked(x + i as u16, y);
             self.cells[idx] = Cell::CONTINUATION;
         }
+        self.mark_dirty_span(y, span_start, span_end);
     }
 
     /// Set the cell at (x, y) without scissor or opacity processing.
@@ -429,7 +862,7 @@ impl Buffer {
     pub fn set_raw(&mut self, x: u16, y: u16, cell: Cell) {
         if let Some(idx) = self.index(x, y) {
             self.cells[idx] = cell;
-            self.mark_dirty(y);
+            self.mark_dirty_span(y, x, x.saturating_add(1));
         }
     }
 
@@ -439,6 +872,26 @@ impl Buffer {
     pub fn fill(&mut self, rect: Rect, cell: Cell) {
         let clipped = self.current_scissor().intersection(&rect);
         if clipped.is_empty() {
+            return;
+        }
+
+        // Fast path: full-row fill with an opaque, single-width cell and no opacity.
+        // Safe because every cell in the row is overwritten, and no blending is required.
+        let cell_width = cell.content.width();
+        if cell_width <= 1
+            && !cell.is_continuation()
+            && self.current_opacity() >= 1.0
+            && cell.bg.a() == 255
+            && clipped.x == 0
+            && clipped.width == self.width
+        {
+            let row_width = self.width as usize;
+            for y in clipped.y..clipped.bottom() {
+                let row_start = y as usize * row_width;
+                let row_end = row_start + row_width;
+                self.cells[row_start..row_end].fill(cell);
+                self.mark_dirty_row_full(y);
+            }
             return;
         }
 
@@ -2330,6 +2783,33 @@ mod tests {
     }
 
     #[test]
+    fn dirty_bitmap_starts_full() {
+        let buf = Buffer::new(4, 3);
+        assert!(buf.dirty_all());
+        assert_eq!(buf.dirty_cell_count(), 12);
+    }
+
+    #[test]
+    fn dirty_bitmap_tracks_single_cell() {
+        let mut buf = Buffer::new(4, 3);
+        buf.clear_dirty();
+        assert!(!buf.dirty_all());
+        buf.set_raw(1, 1, Cell::from_char('X'));
+        let idx = 1 + 4;
+        assert_eq!(buf.dirty_cell_count(), 1);
+        assert_eq!(buf.dirty_bits()[idx], 1);
+    }
+
+    #[test]
+    fn dirty_bitmap_dedupes_cells() {
+        let mut buf = Buffer::new(4, 3);
+        buf.clear_dirty();
+        buf.set_raw(2, 2, Cell::from_char('A'));
+        buf.set_raw(2, 2, Cell::from_char('B'));
+        assert_eq!(buf.dirty_cell_count(), 1);
+    }
+
+    #[test]
     fn set_marks_row_dirty() {
         let mut buf = Buffer::new(10, 5);
         buf.clear_dirty(); // Reset initial dirty state
@@ -2372,6 +2852,17 @@ mod tests {
 
         buf.clear_dirty();
         assert_eq!(buf.dirty_row_count(), 0);
+    }
+
+    #[test]
+    fn clear_dirty_resets_bitmap() {
+        let mut buf = Buffer::new(4, 3);
+        buf.clear();
+        assert!(buf.dirty_all());
+        buf.clear_dirty();
+        assert!(!buf.dirty_all());
+        assert_eq!(buf.dirty_cell_count(), 0);
+        assert!(buf.dirty_bits().iter().all(|&b| b == 0));
     }
 
     #[test]
@@ -2465,6 +2956,145 @@ mod tests {
         assert_eq!(buf.dirty_row_count(), 1);
         assert!(buf.is_row_dirty(4));
         assert!(!buf.is_row_dirty(0));
+    }
+
+    // ========== Dirty Span Tracking Tests (bd-3e1t.6.2) ==========
+
+    #[test]
+    fn dirty_spans_start_full_dirty() {
+        let buf = Buffer::new(10, 5);
+        for y in 0..5 {
+            let row = buf.dirty_span_row(y).unwrap();
+            assert!(row.is_full(), "row {y} should start full-dirty");
+            assert!(row.spans().is_empty(), "row {y} spans should start empty");
+        }
+    }
+
+    #[test]
+    fn clear_dirty_resets_spans() {
+        let mut buf = Buffer::new(10, 5);
+        buf.clear_dirty();
+        for y in 0..5 {
+            let row = buf.dirty_span_row(y).unwrap();
+            assert!(!row.is_full(), "row {y} should clear full-dirty");
+            assert!(row.spans().is_empty(), "row {y} spans should be cleared");
+        }
+        assert_eq!(buf.dirty_span_overflows, 0);
+    }
+
+    #[test]
+    fn set_records_dirty_span() {
+        let mut buf = Buffer::new(20, 2);
+        buf.clear_dirty();
+        buf.set(2, 0, Cell::from_char('A'));
+        let row = buf.dirty_span_row(0).unwrap();
+        assert_eq!(row.spans(), &[DirtySpan::new(2, 3)]);
+        assert!(!row.is_full());
+    }
+
+    #[test]
+    fn set_merges_adjacent_spans() {
+        let mut buf = Buffer::new(20, 2);
+        buf.clear_dirty();
+        buf.set(2, 0, Cell::from_char('A'));
+        buf.set(3, 0, Cell::from_char('B')); // adjacent, should merge
+        let row = buf.dirty_span_row(0).unwrap();
+        assert_eq!(row.spans(), &[DirtySpan::new(2, 4)]);
+    }
+
+    #[test]
+    fn set_merges_close_spans() {
+        let mut buf = Buffer::new(20, 2);
+        buf.clear_dirty();
+        buf.set(2, 0, Cell::from_char('A'));
+        buf.set(4, 0, Cell::from_char('B')); // gap of 1, should merge
+        let row = buf.dirty_span_row(0).unwrap();
+        assert_eq!(row.spans(), &[DirtySpan::new(2, 5)]);
+    }
+
+    #[test]
+    fn span_overflow_sets_full_row() {
+        let width = (DIRTY_SPAN_MAX_SPANS_PER_ROW as u16 + 2) * 3;
+        let mut buf = Buffer::new(width, 1);
+        buf.clear_dirty();
+        for i in 0..(DIRTY_SPAN_MAX_SPANS_PER_ROW + 1) {
+            let x = (i as u16) * 3;
+            buf.set(x, 0, Cell::from_char('x'));
+        }
+        let row = buf.dirty_span_row(0).unwrap();
+        assert!(row.is_full());
+        assert!(row.spans().is_empty());
+        assert_eq!(buf.dirty_span_overflows, 1);
+    }
+
+    #[test]
+    fn fill_full_row_marks_full_span() {
+        let mut buf = Buffer::new(10, 3);
+        buf.clear_dirty();
+        let cell = Cell::from_char('x').with_bg(PackedRgba::rgb(0, 0, 0));
+        buf.fill(Rect::new(0, 1, 10, 1), cell);
+        let row = buf.dirty_span_row(1).unwrap();
+        assert!(row.is_full());
+        assert!(row.spans().is_empty());
+    }
+
+    #[test]
+    fn get_mut_records_dirty_span() {
+        let mut buf = Buffer::new(10, 5);
+        buf.clear_dirty();
+        let _ = buf.get_mut(5, 3);
+        let row = buf.dirty_span_row(3).unwrap();
+        assert_eq!(row.spans(), &[DirtySpan::new(5, 6)]);
+    }
+
+    #[test]
+    fn cells_mut_marks_all_full_spans() {
+        let mut buf = Buffer::new(10, 5);
+        buf.clear_dirty();
+        let _ = buf.cells_mut();
+        for y in 0..5 {
+            let row = buf.dirty_span_row(y).unwrap();
+            assert!(row.is_full(), "row {y} should be full after cells_mut");
+        }
+    }
+
+    #[test]
+    fn dirty_span_config_disabled_skips_rows() {
+        let mut buf = Buffer::new(10, 1);
+        buf.clear_dirty();
+        buf.set_dirty_span_config(DirtySpanConfig::default().with_enabled(false));
+        buf.set(5, 0, Cell::from_char('x'));
+        assert!(buf.dirty_span_row(0).is_none());
+        let stats = buf.dirty_span_stats();
+        assert_eq!(stats.total_spans, 0);
+        assert_eq!(stats.span_coverage_cells, 0);
+    }
+
+    #[test]
+    fn dirty_span_guard_band_expands_span_bounds() {
+        let mut buf = Buffer::new(10, 1);
+        buf.clear_dirty();
+        buf.set_dirty_span_config(DirtySpanConfig::default().with_guard_band(2));
+        buf.set(5, 0, Cell::from_char('x'));
+        let row = buf.dirty_span_row(0).unwrap();
+        assert_eq!(row.spans(), &[DirtySpan::new(3, 8)]);
+    }
+
+    #[test]
+    fn dirty_span_max_spans_overflow_triggers_full_row() {
+        let mut buf = Buffer::new(10, 1);
+        buf.clear_dirty();
+        buf.set_dirty_span_config(
+            DirtySpanConfig::default()
+                .with_max_spans_per_row(1)
+                .with_merge_gap(0),
+        );
+        buf.set(0, 0, Cell::from_char('a'));
+        buf.set(4, 0, Cell::from_char('b'));
+        let row = buf.dirty_span_row(0).unwrap();
+        assert!(row.is_full());
+        assert!(row.spans().is_empty());
+        assert_eq!(buf.dirty_span_overflows, 1);
     }
 
     // =====================================================================
@@ -2980,5 +3610,110 @@ mod tests {
             adb.current().get(5, 5).unwrap().content.as_char(),
             Some('K')
         );
+    }
+
+    // =========================================================================
+    // Dirty Span Tests (bd-3e1t.6.4)
+    // =========================================================================
+
+    #[test]
+    fn dirty_span_merge_adjacent() {
+        let mut buf = Buffer::new(100, 1);
+        buf.clear_dirty(); // Start clean
+
+        // Mark [10, 20) dirty
+        buf.mark_dirty_span(0, 10, 20);
+        let spans = buf.dirty_span_row(0).unwrap().spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0], DirtySpan::new(10, 20));
+
+        // Mark [20, 30) dirty (adjacent) -> merge
+        buf.mark_dirty_span(0, 20, 30);
+        let spans = buf.dirty_span_row(0).unwrap().spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0], DirtySpan::new(10, 30));
+    }
+
+    #[test]
+    fn dirty_span_merge_overlapping() {
+        let mut buf = Buffer::new(100, 1);
+        buf.clear_dirty();
+
+        // Mark [10, 20)
+        buf.mark_dirty_span(0, 10, 20);
+        // Mark [15, 25) -> merge to [10, 25)
+        buf.mark_dirty_span(0, 15, 25);
+
+        let spans = buf.dirty_span_row(0).unwrap().spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0], DirtySpan::new(10, 25));
+    }
+
+    #[test]
+    fn dirty_span_merge_with_gap() {
+        let mut buf = Buffer::new(100, 1);
+        buf.clear_dirty();
+
+        // DIRTY_SPAN_MERGE_GAP is 1
+        // Mark [10, 20)
+        buf.mark_dirty_span(0, 10, 20);
+        // Mark [21, 30) -> gap is 1 (index 20) -> merge to [10, 30)
+        buf.mark_dirty_span(0, 21, 30);
+
+        let spans = buf.dirty_span_row(0).unwrap().spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0], DirtySpan::new(10, 30));
+    }
+
+    #[test]
+    fn dirty_span_no_merge_large_gap() {
+        let mut buf = Buffer::new(100, 1);
+        buf.clear_dirty();
+
+        // Mark [10, 20)
+        buf.mark_dirty_span(0, 10, 20);
+        // Mark [22, 30) -> gap is 2 (indices 20, 21) -> no merge
+        buf.mark_dirty_span(0, 22, 30);
+
+        let spans = buf.dirty_span_row(0).unwrap().spans();
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0], DirtySpan::new(10, 20));
+        assert_eq!(spans[1], DirtySpan::new(22, 30));
+    }
+
+    #[test]
+    fn dirty_span_overflow_to_full() {
+        let mut buf = Buffer::new(1000, 1);
+        buf.clear_dirty();
+
+        // Create > 64 small spans separated by gaps
+        for i in 0..DIRTY_SPAN_MAX_SPANS_PER_ROW + 10 {
+            let start = (i * 4) as u16;
+            buf.mark_dirty_span(0, start, start + 1);
+        }
+
+        let row = buf.dirty_span_row(0).unwrap();
+        assert!(row.is_full(), "Row should overflow to full scan");
+        assert!(
+            row.spans().is_empty(),
+            "Spans should be cleared on overflow"
+        );
+    }
+
+    #[test]
+    fn dirty_span_bounds_clamping() {
+        let mut buf = Buffer::new(10, 1);
+        buf.clear_dirty();
+
+        // Mark out of bounds
+        buf.mark_dirty_span(0, 15, 20);
+        let spans = buf.dirty_span_row(0).unwrap().spans();
+        assert!(spans.is_empty());
+
+        // Mark crossing bounds
+        buf.mark_dirty_span(0, 8, 15);
+        let spans = buf.dirty_span_row(0).unwrap().spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0], DirtySpan::new(8, 10)); // Clamped to width
     }
 }

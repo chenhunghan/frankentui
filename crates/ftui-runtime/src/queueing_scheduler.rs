@@ -61,15 +61,43 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-
-/// Minimum weight to prevent division issues.
-const MIN_WEIGHT: f64 = 1e-6;
+use std::fmt::Write;
 
 /// Default aging factor (0.1 = job gains priority of 1 unit after 10 time units).
 const DEFAULT_AGING_FACTOR: f64 = 0.1;
 
 /// Maximum queue size.
 const MAX_QUEUE_SIZE: usize = 10_000;
+
+/// Default minimum processing-time estimate (ms).
+const DEFAULT_P_MIN_MS: f64 = 0.05;
+
+/// Default maximum processing-time estimate (ms).
+const DEFAULT_P_MAX_MS: f64 = 5_000.0;
+
+/// Default minimum weight to prevent division issues.
+const DEFAULT_W_MIN: f64 = 1e-6;
+
+/// Default maximum weight cap.
+const DEFAULT_W_MAX: f64 = 100.0;
+
+/// Default weight when the source is `Default`.
+const DEFAULT_WEIGHT_DEFAULT: f64 = 1.0;
+
+/// Default weight when the source is `Unknown`.
+const DEFAULT_WEIGHT_UNKNOWN: f64 = 1.0;
+
+/// Default estimate (ms) when the source is `Default`.
+const DEFAULT_ESTIMATE_DEFAULT_MS: f64 = 10.0;
+
+/// Default estimate (ms) when the source is `Unknown`.
+const DEFAULT_ESTIMATE_UNKNOWN_MS: f64 = 1_000.0;
+
+/// Default starvation guard threshold (ms). 0 disables the guard.
+const DEFAULT_WAIT_STARVE_MS: f64 = 500.0;
+
+/// Default multiplier applied when starvation guard triggers.
+const DEFAULT_STARVE_BOOST_RATIO: f64 = 1.5;
 
 /// Configuration for the scheduler.
 #[derive(Debug, Clone)]
@@ -78,6 +106,48 @@ pub struct SchedulerConfig {
     /// Higher = faster aging = more fairness, less optimality.
     /// Default: 0.1.
     pub aging_factor: f64,
+
+    /// Minimum processing-time estimate (ms). Default: 0.05.
+    pub p_min_ms: f64,
+
+    /// Maximum processing-time estimate (ms). Default: 5000.
+    pub p_max_ms: f64,
+
+    /// Default estimate (ms) when estimate source is `Default`.
+    /// Default: 10.0.
+    pub estimate_default_ms: f64,
+
+    /// Default estimate (ms) when estimate source is `Unknown`.
+    /// Default: 1000.0.
+    pub estimate_unknown_ms: f64,
+
+    /// Minimum weight clamp. Default: 1e-6.
+    pub w_min: f64,
+
+    /// Maximum weight clamp. Default: 100.
+    pub w_max: f64,
+
+    /// Default weight when weight source is `Default`.
+    /// Default: 1.0.
+    pub weight_default: f64,
+
+    /// Default weight when weight source is `Unknown`.
+    /// Default: 1.0.
+    pub weight_unknown: f64,
+
+    /// Starvation guard threshold (ms). 0 disables the guard. Default: 500.
+    pub wait_starve_ms: f64,
+
+    /// Multiplier applied to base ratio when starvation guard triggers.
+    /// Default: 1.5.
+    pub starve_boost_ratio: f64,
+
+    /// Enable Smith-rule weighting. If false, behaves like SRPT.
+    pub smith_enabled: bool,
+
+    /// Force FIFO ordering (arrival sequence) regardless of other settings.
+    /// Useful for safety overrides and debugging.
+    pub force_fifo: bool,
 
     /// Maximum queue size. Default: 10_000.
     pub max_queue_size: usize,
@@ -97,10 +167,35 @@ impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
             aging_factor: DEFAULT_AGING_FACTOR,
+            p_min_ms: DEFAULT_P_MIN_MS,
+            p_max_ms: DEFAULT_P_MAX_MS,
+            estimate_default_ms: DEFAULT_ESTIMATE_DEFAULT_MS,
+            estimate_unknown_ms: DEFAULT_ESTIMATE_UNKNOWN_MS,
+            w_min: DEFAULT_W_MIN,
+            w_max: DEFAULT_W_MAX,
+            weight_default: DEFAULT_WEIGHT_DEFAULT,
+            weight_unknown: DEFAULT_WEIGHT_UNKNOWN,
+            wait_starve_ms: DEFAULT_WAIT_STARVE_MS,
+            starve_boost_ratio: DEFAULT_STARVE_BOOST_RATIO,
+            smith_enabled: true,
+            force_fifo: false,
             max_queue_size: MAX_QUEUE_SIZE,
             preemptive: true,
             time_quantum: 10.0,
             enable_logging: false,
+        }
+    }
+}
+
+impl SchedulerConfig {
+    /// Effective scheduling mode with FIFO override.
+    pub fn mode(&self) -> SchedulingMode {
+        if self.force_fifo {
+            SchedulingMode::Fifo
+        } else if self.smith_enabled {
+            SchedulingMode::Smith
+        } else {
+            SchedulingMode::Srpt
         }
     }
 }
@@ -123,6 +218,15 @@ pub struct Job {
     /// Time when job was submitted.
     pub arrival_time: f64,
 
+    /// Monotonic arrival sequence (tie-breaker).
+    pub arrival_seq: u64,
+
+    /// Source of processing-time estimate.
+    pub estimate_source: EstimateSource,
+
+    /// Source of weight/importance.
+    pub weight_source: WeightSource,
+
     /// Optional job name for debugging.
     pub name: Option<String>,
 }
@@ -130,12 +234,37 @@ pub struct Job {
 impl Job {
     /// Create a new job with given ID, weight, and estimated time.
     pub fn new(id: u64, weight: f64, estimated_time: f64) -> Self {
+        let weight = if weight.is_nan() {
+            DEFAULT_W_MIN
+        } else if weight.is_infinite() {
+            if weight.is_sign_positive() {
+                DEFAULT_W_MAX
+            } else {
+                DEFAULT_W_MIN
+            }
+        } else {
+            weight.clamp(DEFAULT_W_MIN, DEFAULT_W_MAX)
+        };
+        let estimated_time = if estimated_time.is_nan() {
+            DEFAULT_P_MAX_MS
+        } else if estimated_time.is_infinite() {
+            if estimated_time.is_sign_positive() {
+                DEFAULT_P_MAX_MS
+            } else {
+                DEFAULT_P_MIN_MS
+            }
+        } else {
+            estimated_time.clamp(DEFAULT_P_MIN_MS, DEFAULT_P_MAX_MS)
+        };
         Self {
             id,
-            weight: weight.max(MIN_WEIGHT),
-            remaining_time: estimated_time.max(0.0),
-            total_time: estimated_time.max(0.0),
+            weight,
+            remaining_time: estimated_time,
+            total_time: estimated_time,
             arrival_time: 0.0,
+            arrival_seq: 0,
+            estimate_source: EstimateSource::Explicit,
+            weight_source: WeightSource::Explicit,
             name: None,
         }
     }
@@ -145,6 +274,17 @@ impl Job {
         let mut job = Self::new(id, weight, estimated_time);
         job.name = Some(name.into());
         job
+    }
+
+    /// Set estimate and weight sources.
+    pub fn with_sources(
+        mut self,
+        weight_source: WeightSource,
+        estimate_source: EstimateSource,
+    ) -> Self {
+        self.weight_source = weight_source;
+        self.estimate_source = estimate_source;
+        self
     }
 
     /// Fraction of job completed.
@@ -166,7 +306,9 @@ impl Job {
 #[derive(Debug, Clone)]
 struct PriorityJob {
     priority: f64,
+    base_ratio: f64,
     job: Job,
+    mode: SchedulingMode,
 }
 
 impl PartialEq for PriorityJob {
@@ -185,18 +327,26 @@ impl PartialOrd for PriorityJob {
 
 impl Ord for PriorityJob {
     fn cmp(&self, other: &Self) -> Ordering {
+        if self.mode == SchedulingMode::Fifo || other.mode == SchedulingMode::Fifo {
+            return other
+                .job
+                .arrival_seq
+                .cmp(&self.job.arrival_seq)
+                .then_with(|| other.job.id.cmp(&self.job.id));
+        }
         // Higher priority comes first (max-heap)
         self.priority
-            .partial_cmp(&other.priority)
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| {
-                // Tie-breaker: earlier arrival time
-                other
-                    .job
-                    .arrival_time
-                    .partial_cmp(&self.job.arrival_time)
-                    .unwrap_or(Ordering::Equal)
-            })
+            .total_cmp(&other.priority)
+            // Tie-break 1: base ratio (w/p)
+            .then_with(|| self.base_ratio.total_cmp(&other.base_ratio))
+            // Tie-break 2: higher weight
+            .then_with(|| self.job.weight.total_cmp(&other.job.weight))
+            // Tie-break 3: shorter remaining time
+            .then_with(|| other.job.remaining_time.total_cmp(&self.job.remaining_time))
+            // Tie-break 4: earlier arrival sequence
+            .then_with(|| other.job.arrival_seq.cmp(&self.job.arrival_seq))
+            // Tie-break 5: lower job id
+            .then_with(|| other.job.id.cmp(&self.job.id))
     }
 }
 
@@ -220,6 +370,35 @@ pub struct SchedulingEvidence {
 
     /// Reason for selection.
     pub reason: SelectionReason,
+
+    /// Tie-break reason for the selected job (if applicable).
+    pub tie_break_reason: Option<TieBreakReason>,
+
+    /// Per-job evidence entries (ordered by scheduler priority).
+    pub jobs: Vec<JobEvidence>,
+}
+
+/// Evidence entry for a single job in the queue.
+#[derive(Debug, Clone)]
+pub struct JobEvidence {
+    /// Job id.
+    pub job_id: u64,
+    /// Optional name.
+    pub name: Option<String>,
+    /// Processing-time estimate (ms).
+    pub estimate_ms: f64,
+    /// Weight (importance).
+    pub weight: f64,
+    /// Base ratio (w/p).
+    pub ratio: f64,
+    /// Age in queue (ms).
+    pub age_ms: f64,
+    /// Effective priority (ratio + aging, with starvation guard).
+    pub effective_priority: f64,
+    /// Estimate source.
+    pub estimate_source: EstimateSource,
+    /// Weight source.
+    pub weight_source: WeightSource,
 }
 
 /// Reason for job selection.
@@ -231,10 +410,215 @@ pub enum SelectionReason {
     ShortestRemaining,
     /// Selected by Smith's rule (weight/time).
     HighestWeightedPriority,
+    /// Selected by FIFO override.
+    Fifo,
     /// Selected due to aging (waited too long).
     AgingBoost,
     /// Continued from preemption.
     Continuation,
+}
+
+impl SelectionReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::QueueEmpty => "queue_empty",
+            Self::ShortestRemaining => "shortest_remaining",
+            Self::HighestWeightedPriority => "highest_weighted_priority",
+            Self::Fifo => "fifo",
+            Self::AgingBoost => "aging_boost",
+            Self::Continuation => "continuation",
+        }
+    }
+}
+
+/// Source of a processing-time estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EstimateSource {
+    /// Explicit estimate provided by caller.
+    Explicit,
+    /// Historical estimate derived from prior runs.
+    Historical,
+    /// Default estimate (fallback).
+    Default,
+    /// Unknown estimate (no data).
+    Unknown,
+}
+
+impl EstimateSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::Historical => "historical",
+            Self::Default => "default",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Source of a weight/importance value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeightSource {
+    /// Explicit weight provided by caller.
+    Explicit,
+    /// Default weight (fallback).
+    Default,
+    /// Unknown weight (no data).
+    Unknown,
+}
+
+impl WeightSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::Default => "default",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Tie-break reason for ordering decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TieBreakReason {
+    /// Effective priority (base ratio + aging) decided.
+    EffectivePriority,
+    /// Base ratio (w/p) decided.
+    BaseRatio,
+    /// Weight decided.
+    Weight,
+    /// Remaining time decided.
+    RemainingTime,
+    /// Arrival sequence decided.
+    ArrivalSeq,
+    /// Job id decided.
+    JobId,
+    /// Continued current job without comparison.
+    Continuation,
+}
+
+impl TieBreakReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::EffectivePriority => "effective_priority",
+            Self::BaseRatio => "base_ratio",
+            Self::Weight => "weight",
+            Self::RemainingTime => "remaining_time",
+            Self::ArrivalSeq => "arrival_seq",
+            Self::JobId => "job_id",
+            Self::Continuation => "continuation",
+        }
+    }
+}
+
+/// Effective scheduling discipline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchedulingMode {
+    /// Smith's rule (weight / remaining time).
+    Smith,
+    /// SRPT (shortest remaining processing time).
+    Srpt,
+    /// FIFO (arrival order).
+    Fifo,
+}
+
+impl SchedulingEvidence {
+    /// Serialize scheduling evidence to JSONL with the supplied event tag.
+    #[must_use]
+    pub fn to_jsonl(&self, event: &str) -> String {
+        let mut out = String::with_capacity(256 + (self.jobs.len() * 64));
+        out.push_str("{\"event\":\"");
+        out.push_str(&escape_json(event));
+        out.push_str("\",\"current_time\":");
+        let _ = write!(out, "{:.6}", self.current_time);
+        out.push_str(",\"selected_job_id\":");
+        match self.selected_job_id {
+            Some(id) => {
+                let _ = write!(out, "{id}");
+            }
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"queue_length\":");
+        let _ = write!(out, "{}", self.queue_length);
+        out.push_str(",\"mean_wait_time\":");
+        let _ = write!(out, "{:.6}", self.mean_wait_time);
+        out.push_str(",\"max_wait_time\":");
+        let _ = write!(out, "{:.6}", self.max_wait_time);
+        out.push_str(",\"reason\":\"");
+        out.push_str(self.reason.as_str());
+        out.push('"');
+        out.push_str(",\"tie_break_reason\":");
+        match self.tie_break_reason {
+            Some(reason) => {
+                out.push('"');
+                out.push_str(reason.as_str());
+                out.push('"');
+            }
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"jobs\":[");
+        for (idx, job) in self.jobs.iter().enumerate() {
+            if idx > 0 {
+                out.push(',');
+            }
+            out.push_str(&job.to_json());
+        }
+        out.push_str("]}");
+        out
+    }
+}
+
+impl JobEvidence {
+    fn to_json(&self) -> String {
+        let mut out = String::with_capacity(128);
+        out.push_str("{\"job_id\":");
+        let _ = write!(out, "{}", self.job_id);
+        out.push_str(",\"name\":");
+        match &self.name {
+            Some(name) => {
+                out.push('"');
+                out.push_str(&escape_json(name));
+                out.push('"');
+            }
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"estimate_ms\":");
+        let _ = write!(out, "{:.6}", self.estimate_ms);
+        out.push_str(",\"weight\":");
+        let _ = write!(out, "{:.6}", self.weight);
+        out.push_str(",\"ratio\":");
+        let _ = write!(out, "{:.6}", self.ratio);
+        out.push_str(",\"age_ms\":");
+        let _ = write!(out, "{:.6}", self.age_ms);
+        out.push_str(",\"effective_priority\":");
+        let _ = write!(out, "{:.6}", self.effective_priority);
+        out.push_str(",\"estimate_source\":\"");
+        out.push_str(self.estimate_source.as_str());
+        out.push('"');
+        out.push_str(",\"weight_source\":\"");
+        out.push_str(self.weight_source.as_str());
+        out.push('"');
+        out.push('}');
+        out
+    }
+}
+
+fn escape_json(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 8);
+    for ch in input.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            c if c < ' ' => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// Scheduler statistics.
@@ -302,6 +686,9 @@ pub struct QueueingScheduler {
     /// Next job ID.
     next_job_id: u64,
 
+    /// Next arrival sequence number.
+    next_arrival_seq: u64,
+
     /// Statistics.
     stats: SchedulerStats,
 }
@@ -315,6 +702,7 @@ impl QueueingScheduler {
             current_job: None,
             current_time: 0.0,
             next_job_id: 1,
+            next_arrival_seq: 1,
             stats: SchedulerStats::default(),
         }
     }
@@ -333,6 +721,24 @@ impl QueueingScheduler {
         estimated_time: f64,
         name: Option<impl Into<String>>,
     ) -> Option<u64> {
+        self.submit_with_sources(
+            weight,
+            estimated_time,
+            WeightSource::Explicit,
+            EstimateSource::Explicit,
+            name,
+        )
+    }
+
+    /// Submit a job with explicit estimate/weight sources for evidence logging.
+    pub fn submit_with_sources(
+        &mut self,
+        weight: f64,
+        estimated_time: f64,
+        weight_source: WeightSource,
+        estimate_source: EstimateSource,
+        name: Option<impl Into<String>>,
+    ) -> Option<u64> {
         if self.queue.len() >= self.config.max_queue_size {
             self.stats.total_rejected += 1;
             return None;
@@ -341,14 +747,21 @@ impl QueueingScheduler {
         let id = self.next_job_id;
         self.next_job_id += 1;
 
-        let mut job = Job::new(id, weight, estimated_time);
+        let mut job =
+            Job::new(id, weight, estimated_time).with_sources(weight_source, estimate_source);
+        job.weight = self.normalize_weight_with_source(job.weight, job.weight_source);
+        job.remaining_time =
+            self.normalize_time_with_source(job.remaining_time, job.estimate_source);
+        job.total_time = job.remaining_time;
         job.arrival_time = self.current_time;
+        job.arrival_seq = self.next_arrival_seq;
+        self.next_arrival_seq += 1;
         if let Some(n) = name {
             job.name = Some(n.into());
         }
 
-        let priority = self.compute_priority(&job);
-        self.queue.push(PriorityJob { priority, job });
+        let priority_job = self.make_priority_job(job);
+        self.queue.push(priority_job);
 
         self.stats.total_submitted += 1;
         self.stats.queue_length = self.queue.len();
@@ -418,17 +831,47 @@ impl QueueingScheduler {
     pub fn evidence(&self) -> SchedulingEvidence {
         let (mean_wait, max_wait) = self.compute_wait_stats();
 
+        let mut candidates: Vec<PriorityJob> = self
+            .queue
+            .iter()
+            .map(|pj| self.make_priority_job(pj.job.clone()))
+            .collect();
+
+        if let Some(ref current) = self.current_job {
+            candidates.push(self.make_priority_job(current.clone()));
+        }
+
+        candidates.sort_by(|a, b| b.cmp(a));
+
+        let selected_job_id = if let Some(ref current) = self.current_job {
+            Some(current.id)
+        } else {
+            candidates.first().map(|pj| pj.job.id)
+        };
+
+        let tie_break_reason = if self.current_job.is_some() {
+            Some(TieBreakReason::Continuation)
+        } else if candidates.len() > 1 {
+            Some(self.tie_break_reason(&candidates[0], &candidates[1]))
+        } else {
+            None
+        };
+
         let reason = if self.queue.is_empty() && self.current_job.is_none() {
             SelectionReason::QueueEmpty
         } else if self.current_job.is_some() {
             SelectionReason::Continuation
-        } else if let Some(pj) = self.queue.peek() {
-            let base_priority = pj.job.weight / pj.job.remaining_time.max(MIN_WEIGHT);
-            let aging_contribution =
-                self.config.aging_factor * (self.current_time - pj.job.arrival_time);
-            if aging_contribution > base_priority * 0.5 {
+        } else if self.config.mode() == SchedulingMode::Fifo {
+            SelectionReason::Fifo
+        } else if let Some(pj) = candidates.first() {
+            let wait_time = (self.current_time - pj.job.arrival_time).max(0.0);
+            let aging_contribution = self.config.aging_factor * wait_time;
+            let aging_boost = (self.config.wait_starve_ms > 0.0
+                && wait_time >= self.config.wait_starve_ms)
+                || aging_contribution > pj.base_ratio * 0.5;
+            if aging_boost {
                 SelectionReason::AgingBoost
-            } else if pj.job.weight > 1.0 {
+            } else if self.config.smith_enabled && pj.job.weight > 1.0 {
                 SelectionReason::HighestWeightedPriority
             } else {
                 SelectionReason::ShortestRemaining
@@ -437,13 +880,33 @@ impl QueueingScheduler {
             SelectionReason::QueueEmpty
         };
 
+        let jobs = candidates
+            .iter()
+            .map(|pj| {
+                let age_ms = (self.current_time - pj.job.arrival_time).max(0.0);
+                JobEvidence {
+                    job_id: pj.job.id,
+                    name: pj.job.name.clone(),
+                    estimate_ms: pj.job.remaining_time,
+                    weight: pj.job.weight,
+                    ratio: pj.base_ratio,
+                    age_ms,
+                    effective_priority: pj.priority,
+                    estimate_source: pj.job.estimate_source,
+                    weight_source: pj.job.weight_source,
+                }
+            })
+            .collect();
+
         SchedulingEvidence {
             current_time: self.current_time,
-            selected_job_id: self.peek_next().map(|j| j.id),
+            selected_job_id,
             queue_length: self.queue.len() + if self.current_job.is_some() { 1 } else { 0 },
             mean_wait_time: mean_wait,
             max_wait_time: max_wait,
             reason,
+            tie_break_reason,
+            jobs,
         }
     }
 
@@ -490,31 +953,142 @@ impl QueueingScheduler {
         self.current_job = None;
         self.current_time = 0.0;
         self.next_job_id = 1;
+        self.next_arrival_seq = 1;
         self.stats = SchedulerStats::default();
     }
 
     // --- Internal Methods ---
 
-    /// Compute priority for a job using Smith's rule + aging.
+    /// Normalize a weight into the configured clamp range.
+    fn normalize_weight(&self, weight: f64) -> f64 {
+        if weight.is_nan() {
+            return self.config.w_min;
+        }
+        if weight.is_infinite() {
+            return if weight.is_sign_positive() {
+                self.config.w_max
+            } else {
+                self.config.w_min
+            };
+        }
+        weight.clamp(self.config.w_min, self.config.w_max)
+    }
+
+    /// Normalize a processing-time estimate into the configured clamp range.
+    fn normalize_time(&self, estimate_ms: f64) -> f64 {
+        if estimate_ms.is_nan() {
+            return self.config.p_max_ms;
+        }
+        if estimate_ms.is_infinite() {
+            return if estimate_ms.is_sign_positive() {
+                self.config.p_max_ms
+            } else {
+                self.config.p_min_ms
+            };
+        }
+        estimate_ms.clamp(self.config.p_min_ms, self.config.p_max_ms)
+    }
+
+    /// Resolve a weight based on its declared source, then clamp to config limits.
+    fn normalize_weight_with_source(&self, weight: f64, source: WeightSource) -> f64 {
+        let resolved = match source {
+            WeightSource::Explicit => weight,
+            WeightSource::Default => self.config.weight_default,
+            WeightSource::Unknown => self.config.weight_unknown,
+        };
+        self.normalize_weight(resolved)
+    }
+
+    /// Resolve an estimate based on its declared source, then clamp to config limits.
+    fn normalize_time_with_source(&self, estimate_ms: f64, source: EstimateSource) -> f64 {
+        let resolved = match source {
+            EstimateSource::Explicit | EstimateSource::Historical => estimate_ms,
+            EstimateSource::Default => self.config.estimate_default_ms,
+            EstimateSource::Unknown => self.config.estimate_unknown_ms,
+        };
+        self.normalize_time(resolved)
+    }
+
+    /// Compute base ratio (w/p) for Smith's rule.
+    fn compute_base_ratio(&self, job: &Job) -> f64 {
+        if self.config.mode() == SchedulingMode::Fifo {
+            return 0.0;
+        }
+        let remaining = job.remaining_time.max(self.config.p_min_ms);
+        let weight = match self.config.mode() {
+            SchedulingMode::Smith => job.weight,
+            SchedulingMode::Srpt => 1.0,
+            SchedulingMode::Fifo => 0.0,
+        };
+        weight / remaining
+    }
+
+    /// Compute effective priority (base ratio + aging, with starvation guard).
     fn compute_priority(&self, job: &Job) -> f64 {
-        let remaining = job.remaining_time.max(MIN_WEIGHT);
-        let base_priority = job.weight / remaining;
+        if self.config.mode() == SchedulingMode::Fifo {
+            return 0.0;
+        }
+        let base_ratio = self.compute_base_ratio(job);
         let wait_time = (self.current_time - job.arrival_time).max(0.0);
         let aging_boost = self.config.aging_factor * wait_time;
-        base_priority + aging_boost
+        let mut effective = base_ratio + aging_boost;
+
+        if self.config.wait_starve_ms > 0.0 && wait_time >= self.config.wait_starve_ms {
+            effective = effective.max(base_ratio * self.config.starve_boost_ratio);
+        }
+
+        effective
+    }
+
+    /// Build a priority-queue entry for a job.
+    fn make_priority_job(&self, job: Job) -> PriorityJob {
+        let base_ratio = self.compute_base_ratio(&job);
+        let priority = self.compute_priority(&job);
+        PriorityJob {
+            priority,
+            base_ratio,
+            job,
+            mode: self.config.mode(),
+        }
+    }
+
+    /// Determine the tie-break reason between two candidates.
+    fn tie_break_reason(&self, a: &PriorityJob, b: &PriorityJob) -> TieBreakReason {
+        if self.config.mode() == SchedulingMode::Fifo {
+            if a.job.arrival_seq != b.job.arrival_seq {
+                return TieBreakReason::ArrivalSeq;
+            }
+            return TieBreakReason::JobId;
+        }
+        if a.priority.total_cmp(&b.priority) != Ordering::Equal {
+            TieBreakReason::EffectivePriority
+        } else if a.base_ratio.total_cmp(&b.base_ratio) != Ordering::Equal {
+            TieBreakReason::BaseRatio
+        } else if a.job.weight.total_cmp(&b.job.weight) != Ordering::Equal {
+            TieBreakReason::Weight
+        } else if a.job.remaining_time.total_cmp(&b.job.remaining_time) != Ordering::Equal {
+            TieBreakReason::RemainingTime
+        } else if a.job.arrival_seq != b.job.arrival_seq {
+            TieBreakReason::ArrivalSeq
+        } else {
+            TieBreakReason::JobId
+        }
     }
 
     /// Check if current job should be preempted.
     fn maybe_preempt(&mut self) {
+        if self.config.mode() == SchedulingMode::Fifo {
+            return;
+        }
         if let Some(ref current) = self.current_job
             && let Some(pj) = self.queue.peek()
         {
-            let current_priority = self.compute_priority(current);
-            if pj.priority > current_priority {
+            let current_pj = self.make_priority_job(current.clone());
+            if pj.cmp(&current_pj) == Ordering::Greater {
                 // Preempt
                 let old = self.current_job.take().unwrap();
-                let priority = self.compute_priority(&old);
-                self.queue.push(PriorityJob { priority, job: old });
+                let priority_job = self.make_priority_job(old);
+                self.queue.push(priority_job);
                 self.stats.total_preemptions += 1;
             }
         }
@@ -524,8 +1098,8 @@ impl QueueingScheduler {
     fn refresh_priorities(&mut self) {
         let jobs: Vec<_> = self.queue.drain().map(|pj| pj.job).collect();
         for job in jobs {
-            let priority = self.compute_priority(&job);
-            self.queue.push(PriorityJob { priority, job });
+            let priority_job = self.make_priority_job(job);
+            self.queue.push(priority_job);
         }
     }
 
@@ -565,14 +1139,225 @@ impl QueueingScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn test_config() -> SchedulerConfig {
         SchedulerConfig {
             aging_factor: 0.001,
+            p_min_ms: DEFAULT_P_MIN_MS,
+            p_max_ms: DEFAULT_P_MAX_MS,
+            estimate_default_ms: DEFAULT_ESTIMATE_DEFAULT_MS,
+            estimate_unknown_ms: DEFAULT_ESTIMATE_UNKNOWN_MS,
+            w_min: DEFAULT_W_MIN,
+            w_max: DEFAULT_W_MAX,
+            weight_default: DEFAULT_WEIGHT_DEFAULT,
+            weight_unknown: DEFAULT_WEIGHT_UNKNOWN,
+            wait_starve_ms: DEFAULT_WAIT_STARVE_MS,
+            starve_boost_ratio: DEFAULT_STARVE_BOOST_RATIO,
+            smith_enabled: true,
+            force_fifo: false,
             max_queue_size: 100,
             preemptive: true,
             time_quantum: 10.0,
             enable_logging: false,
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct WorkloadJob {
+        arrival: u64,
+        weight: f64,
+        duration: f64,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum SimPolicy {
+        Smith,
+        Fifo,
+    }
+
+    #[derive(Debug)]
+    struct SimulationMetrics {
+        mean: f64,
+        p95: f64,
+        p99: f64,
+        max: f64,
+        job_count: usize,
+        completion_order: Vec<u64>,
+    }
+
+    fn mixed_workload() -> Vec<WorkloadJob> {
+        let mut jobs = Vec::new();
+        jobs.push(WorkloadJob {
+            arrival: 0,
+            weight: 1.0,
+            duration: 100.0,
+        });
+        for t in 1..=200u64 {
+            jobs.push(WorkloadJob {
+                arrival: t,
+                weight: 1.0,
+                duration: 1.0,
+            });
+        }
+        jobs
+    }
+
+    fn percentile(sorted: &[f64], p: f64) -> f64 {
+        if sorted.is_empty() {
+            return 0.0;
+        }
+        let idx = ((sorted.len() as f64 - 1.0) * p).ceil() as usize;
+        sorted[idx.min(sorted.len() - 1)]
+    }
+
+    fn summary_json(policy: SimPolicy, metrics: &SimulationMetrics) -> String {
+        let policy = match policy {
+            SimPolicy::Smith => "Smith",
+            SimPolicy::Fifo => "Fifo",
+        };
+        let head: Vec<String> = metrics
+            .completion_order
+            .iter()
+            .take(8)
+            .map(|id| id.to_string())
+            .collect();
+        let tail: Vec<String> = metrics
+            .completion_order
+            .iter()
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|id| id.to_string())
+            .collect();
+        format!(
+            "{{\"policy\":\"{policy}\",\"jobs\":{jobs},\"mean\":{mean:.3},\"p95\":{p95:.3},\"p99\":{p99:.3},\"max\":{max:.3},\"order_head\":[{head}],\"order_tail\":[{tail}]}}",
+            policy = policy,
+            jobs = metrics.job_count,
+            mean = metrics.mean,
+            p95 = metrics.p95,
+            p99 = metrics.p99,
+            max = metrics.max,
+            head = head.join(","),
+            tail = tail.join(",")
+        )
+    }
+
+    fn workload_summary_json(workload: &[WorkloadJob]) -> String {
+        if workload.is_empty() {
+            return "{\"workload\":\"empty\"}".to_string();
+        }
+        let mut min_arrival = u64::MAX;
+        let mut max_arrival = 0u64;
+        let mut min_duration = f64::INFINITY;
+        let mut max_duration: f64 = 0.0;
+        let mut total_work: f64 = 0.0;
+        let mut long_jobs = 0usize;
+        let long_threshold = 10.0;
+
+        for job in workload {
+            min_arrival = min_arrival.min(job.arrival);
+            max_arrival = max_arrival.max(job.arrival);
+            min_duration = min_duration.min(job.duration);
+            max_duration = max_duration.max(job.duration);
+            total_work += job.duration;
+            if job.duration >= long_threshold {
+                long_jobs += 1;
+            }
+        }
+
+        format!(
+            "{{\"workload\":\"mixed\",\"jobs\":{jobs},\"arrival_min\":{arrival_min},\"arrival_max\":{arrival_max},\"duration_min\":{duration_min:.3},\"duration_max\":{duration_max:.3},\"total_work\":{total_work:.3},\"long_jobs\":{long_jobs},\"long_threshold\":{long_threshold:.1}}}",
+            jobs = workload.len(),
+            arrival_min = min_arrival,
+            arrival_max = max_arrival,
+            duration_min = min_duration,
+            duration_max = max_duration,
+            total_work = total_work,
+            long_jobs = long_jobs,
+            long_threshold = long_threshold
+        )
+    }
+
+    fn simulate_policy(policy: SimPolicy, workload: &[WorkloadJob]) -> SimulationMetrics {
+        let mut config = test_config();
+        config.aging_factor = 0.0;
+        config.wait_starve_ms = 0.0;
+        config.starve_boost_ratio = 1.0;
+        config.smith_enabled = policy == SimPolicy::Smith;
+        config.force_fifo = policy == SimPolicy::Fifo;
+        config.preemptive = true;
+
+        let mut scheduler = QueueingScheduler::new(config);
+        let mut arrivals = workload.to_vec();
+        arrivals.sort_by_key(|job| job.arrival);
+
+        let mut arrival_times: HashMap<u64, f64> = HashMap::new();
+        let mut response_times = Vec::with_capacity(arrivals.len());
+        let mut completion_order = Vec::with_capacity(arrivals.len());
+
+        let mut idx = 0usize;
+        let mut safety = 0usize;
+
+        while (idx < arrivals.len() || scheduler.peek_next().is_some()) && safety < 10_000 {
+            let now = scheduler.current_time;
+
+            while idx < arrivals.len() && (arrivals[idx].arrival as f64) <= now + f64::EPSILON {
+                let job = arrivals[idx];
+                let id = scheduler
+                    .submit(job.weight, job.duration)
+                    .expect("queue capacity should not be exceeded");
+                arrival_times.insert(id, scheduler.current_time);
+                idx += 1;
+            }
+
+            if scheduler.peek_next().is_none() {
+                if idx < arrivals.len() {
+                    let next_time = arrivals[idx].arrival as f64;
+                    let delta = (next_time - scheduler.current_time).max(0.0);
+                    let completed = scheduler.tick(delta);
+                    for id in completed {
+                        let arrival = arrival_times.get(&id).copied().unwrap_or(0.0);
+                        response_times.push(scheduler.current_time - arrival);
+                        completion_order.push(id);
+                    }
+                }
+                safety += 1;
+                continue;
+            }
+
+            let completed = scheduler.tick(1.0);
+            for id in completed {
+                let arrival = arrival_times.get(&id).copied().unwrap_or(0.0);
+                response_times.push(scheduler.current_time - arrival);
+                completion_order.push(id);
+            }
+            safety += 1;
+        }
+
+        assert_eq!(
+            response_times.len(),
+            arrivals.len(),
+            "simulation did not complete all jobs"
+        );
+
+        let mut sorted = response_times.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let mean = response_times.iter().sum::<f64>() / response_times.len() as f64;
+        let p95 = percentile(&sorted, 0.95);
+        let p99 = percentile(&sorted, 0.99);
+        let max = *sorted.last().unwrap_or(&0.0);
+
+        SimulationMetrics {
+            mean,
+            p95,
+            p99,
+            max,
+            job_count: response_times.len(),
+            completion_order,
         }
     }
 
@@ -862,6 +1647,8 @@ mod tests {
         let evidence = scheduler.evidence();
         assert_eq!(evidence.reason, SelectionReason::QueueEmpty);
         assert!(evidence.selected_job_id.is_none());
+        assert!(evidence.tie_break_reason.is_none());
+        assert!(evidence.jobs.is_empty());
     }
 
     #[test]
@@ -870,6 +1657,7 @@ mod tests {
         scheduler.submit(1.0, 10.0);
         let evidence = scheduler.evidence();
         assert_eq!(evidence.selected_job_id, Some(1));
+        assert_eq!(evidence.jobs.len(), 1);
     }
 
     #[test]
@@ -883,6 +1671,192 @@ mod tests {
         let evidence = scheduler.evidence();
         assert!(evidence.mean_wait_time > 0.0);
         assert!(evidence.max_wait_time > 0.0);
+    }
+
+    // =========================================================================
+    // Config override tests
+    // =========================================================================
+
+    #[test]
+    fn force_fifo_overrides_priority() {
+        let mut config = test_config();
+        config.force_fifo = true;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        let first = scheduler.submit(1.0, 100.0).unwrap();
+        let second = scheduler.submit(10.0, 1.0).unwrap();
+
+        let next = scheduler.peek_next().unwrap();
+        assert_eq!(next.id, first);
+        assert_ne!(next.id, second);
+        assert_eq!(scheduler.evidence().reason, SelectionReason::Fifo);
+    }
+
+    #[test]
+    fn default_sources_use_config_values() {
+        let mut config = test_config();
+        config.weight_default = 7.0;
+        config.estimate_default_ms = 12.0;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        scheduler.submit_with_sources(
+            999.0,
+            999.0,
+            WeightSource::Default,
+            EstimateSource::Default,
+            None::<&str>,
+        );
+
+        let next = scheduler.peek_next().unwrap();
+        assert!((next.weight - 7.0).abs() < f64::EPSILON);
+        assert!((next.remaining_time - 12.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn unknown_sources_use_config_values() {
+        let mut config = test_config();
+        config.weight_unknown = 2.5;
+        config.estimate_unknown_ms = 250.0;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        scheduler.submit_with_sources(
+            0.0,
+            0.0,
+            WeightSource::Unknown,
+            EstimateSource::Unknown,
+            None::<&str>,
+        );
+
+        let next = scheduler.peek_next().unwrap();
+        assert!((next.weight - 2.5).abs() < f64::EPSILON);
+        assert!((next.remaining_time - 250.0).abs() < f64::EPSILON);
+    }
+
+    // =========================================================================
+    // Tie-break tests
+    // =========================================================================
+
+    #[test]
+    fn tie_break_prefers_base_ratio_when_effective_equal() {
+        let mut config = test_config();
+        config.aging_factor = 0.1;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        // Job A: lower base ratio but older (aging brings it up).
+        let id_a = scheduler.submit(1.0, 2.0).unwrap(); // ratio 0.5
+        scheduler.current_time = 5.0;
+        scheduler.refresh_priorities();
+
+        // Job B: higher base ratio, newer.
+        let id_b = scheduler.submit(1.0, 1.0).unwrap(); // ratio 1.0
+        scheduler.refresh_priorities();
+
+        let next = scheduler.peek_next().unwrap();
+        assert_eq!(next.id, id_b);
+
+        let evidence = scheduler.evidence();
+        assert_eq!(evidence.selected_job_id, Some(id_b));
+        assert_eq!(evidence.tie_break_reason, Some(TieBreakReason::BaseRatio));
+        assert_ne!(id_a, id_b);
+    }
+
+    #[test]
+    fn tie_break_prefers_weight_over_arrival() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+
+        let high_weight = scheduler.submit(2.0, 2.0).unwrap(); // ratio 1.0
+        let _low_weight = scheduler.submit(1.0, 1.0).unwrap(); // ratio 1.0
+
+        let evidence = scheduler.evidence();
+        assert_eq!(evidence.selected_job_id, Some(high_weight));
+        assert_eq!(evidence.tie_break_reason, Some(TieBreakReason::Weight));
+    }
+
+    #[test]
+    fn tie_break_prefers_arrival_seq_when_all_equal() {
+        let mut config = test_config();
+        config.aging_factor = 0.0;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        let first = scheduler.submit(1.0, 10.0).unwrap();
+        let second = scheduler.submit(1.0, 10.0).unwrap();
+
+        let evidence = scheduler.evidence();
+        assert_eq!(evidence.selected_job_id, Some(first));
+        assert_eq!(evidence.tie_break_reason, Some(TieBreakReason::ArrivalSeq));
+        assert_ne!(first, second);
+    }
+
+    // =========================================================================
+    // Ordering + safety edge cases (bd-3e1t.10.4)
+    // =========================================================================
+
+    #[test]
+    fn srpt_mode_ignores_weights() {
+        let mut config = test_config();
+        config.smith_enabled = false;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        scheduler.submit(10.0, 100.0); // High weight, long
+        scheduler.submit(1.0, 10.0); // Low weight, short
+
+        let next = scheduler.peek_next().unwrap();
+        assert_eq!(next.remaining_time, 10.0);
+        assert_eq!(
+            scheduler.evidence().reason,
+            SelectionReason::ShortestRemaining
+        );
+    }
+
+    #[test]
+    fn fifo_mode_disables_preemption() {
+        let mut config = test_config();
+        config.force_fifo = true;
+        config.preemptive = true;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        let first = scheduler.submit(1.0, 100.0).unwrap();
+        scheduler.tick(10.0);
+
+        let _later = scheduler.submit(10.0, 1.0).unwrap();
+        let next = scheduler.peek_next().unwrap();
+        assert_eq!(next.id, first);
+    }
+
+    #[test]
+    fn explicit_zero_weight_clamps_to_min() {
+        let mut config = test_config();
+        config.w_min = 0.5;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        scheduler.submit_with_sources(
+            0.0,
+            1.0,
+            WeightSource::Explicit,
+            EstimateSource::Explicit,
+            None::<&str>,
+        );
+
+        let next = scheduler.peek_next().unwrap();
+        assert!((next.weight - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn explicit_zero_estimate_clamps_to_min() {
+        let mut config = test_config();
+        config.p_min_ms = 2.0;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        scheduler.submit_with_sources(
+            1.0,
+            0.0,
+            WeightSource::Explicit,
+            EstimateSource::Explicit,
+            None::<&str>,
+        );
+
+        let next = scheduler.peek_next().unwrap();
+        assert!((next.remaining_time - 2.0).abs() < f64::EPSILON);
     }
 
     // =========================================================================
@@ -1016,6 +1990,50 @@ mod tests {
         let run2 = run();
 
         assert_eq!(run1, run2, "Scheduling should be deterministic");
+    }
+
+    #[test]
+    fn smith_beats_fifo_on_mixed_workload() {
+        let workload = mixed_workload();
+        let smith = simulate_policy(SimPolicy::Smith, &workload);
+        let fifo = simulate_policy(SimPolicy::Fifo, &workload);
+
+        eprintln!("{}", workload_summary_json(&workload));
+        eprintln!("{}", summary_json(SimPolicy::Smith, &smith));
+        eprintln!("{}", summary_json(SimPolicy::Fifo, &fifo));
+
+        assert!(
+            smith.mean < fifo.mean,
+            "mean should improve: smith={} fifo={}",
+            summary_json(SimPolicy::Smith, &smith),
+            summary_json(SimPolicy::Fifo, &fifo)
+        );
+        assert!(
+            smith.p95 < fifo.p95,
+            "p95 should improve: smith={} fifo={}",
+            summary_json(SimPolicy::Smith, &smith),
+            summary_json(SimPolicy::Fifo, &fifo)
+        );
+        assert!(
+            smith.p99 < fifo.p99,
+            "p99 should improve: smith={} fifo={}",
+            summary_json(SimPolicy::Smith, &smith),
+            summary_json(SimPolicy::Fifo, &fifo)
+        );
+    }
+
+    #[test]
+    fn simulation_is_deterministic_per_policy() {
+        let workload = mixed_workload();
+        let smith1 = simulate_policy(SimPolicy::Smith, &workload);
+        let smith2 = simulate_policy(SimPolicy::Smith, &workload);
+        let fifo1 = simulate_policy(SimPolicy::Fifo, &workload);
+        let fifo2 = simulate_policy(SimPolicy::Fifo, &workload);
+
+        assert_eq!(smith1.completion_order, smith2.completion_order);
+        assert_eq!(fifo1.completion_order, fifo2.completion_order);
+        assert!((smith1.mean - smith2.mean).abs() < 1e-9);
+        assert!((fifo1.mean - fifo2.mean).abs() < 1e-9);
     }
 
     // =========================================================================

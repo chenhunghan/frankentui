@@ -579,11 +579,24 @@ impl<W: Write> Presenter<W> {
         };
 
         let color_cost = 19u32; // conservative max for one RGB color
-        let delta_est = removed_count * 5
-            + collateral_cost
-            + added_count * 4
-            + if fg_changed { color_cost } else { 0 }
-            + if bg_changed { color_cost } else { 0 };
+
+        let fg_cost = if !fg_changed {
+            0
+        } else if new.fg.a() == 0 {
+            5 // \x1b[39m
+        } else {
+            color_cost
+        };
+
+        let bg_cost = if !bg_changed {
+            0
+        } else if new.bg.a() == 0 {
+            5 // \x1b[49m
+        } else {
+            color_cost
+        };
+
+        let delta_est = removed_count * 5 + collateral_cost + added_count * 4 + fg_cost + bg_cost;
 
         let baseline_est = 4 // reset
             + new.attrs.bits().count_ones() * 4

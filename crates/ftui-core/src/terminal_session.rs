@@ -363,6 +363,9 @@ impl TerminalSession {
 
         let mut stdout = io::stdout();
 
+        // End synchronized output first to ensure terminal updates resume
+        let _ = stdout.write_all(SYNC_END);
+
         // Disable features in reverse order of enabling
         if self.kitty_keyboard_enabled {
             let _ = Self::disable_kitty_keyboard(&mut stdout);

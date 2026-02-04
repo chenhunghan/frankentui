@@ -756,14 +756,19 @@ where
             match constraints[i] {
                 Constraint::Ratio(n, d) => {
                     let w = n as u64 * WEIGHT_SCALE / d.max(1) as u64;
-                    total_weight += w.max(1);
+                    // Allow weight to be 0 if n is 0
+                    total_weight += w;
                 }
                 _ => total_weight += WEIGHT_SCALE,
             }
         }
 
         if total_weight == 0 {
-            total_weight = 1;
+            // If all weights are zero (e.g. all Ratio(0, N)), distribute nothing?
+            // Or break early?
+            // If we have remaining space but 0 weight, we can't distribute proportionally.
+            // Breaking seems correct as no one wants it.
+            break;
         }
 
         let space_to_distribute = remaining;
@@ -772,16 +777,19 @@ where
 
         for (idx, &i) in grow_indices.iter().enumerate() {
             let weight = match constraints[i] {
-                Constraint::Ratio(n, d) => {
-                    let w = n as u64 * WEIGHT_SCALE / d.max(1) as u64;
-                    w.max(1)
-                }
+                Constraint::Ratio(n, d) => n as u64 * WEIGHT_SCALE / d.max(1) as u64,
                 _ => WEIGHT_SCALE,
             };
 
-            // Last item gets the rest to ensure exact sum
+            // Last item gets the rest ONLY if it has weight.
+            // If it has 0 weight, it shouldn't inherit the rounding error.
             let size = if idx == grow_indices.len() - 1 {
-                space_to_distribute - allocated
+                // If the last item has 0 weight, it should get 0.
+                if weight == 0 {
+                    0
+                } else {
+                    space_to_distribute - allocated
+                }
             } else {
                 let s = (space_to_distribute as u64 * weight / total_weight) as u16;
                 min(s, space_to_distribute - allocated)
@@ -1200,6 +1208,18 @@ mod tests {
         let flex = Flex::horizontal().constraints([Constraint::Ratio(1, 0)]);
         let rects = flex.split(Rect::new(0, 0, 100, 10));
         assert_eq!(rects.len(), 1);
+    }
+
+    #[test]
+    fn ratio_zero_numerator_should_be_zero() {
+        // Ratio(0, 1) should logically get 0 space.
+        // Test with Fill first to expose "last item gets remainder" logic artifact
+        let flex = Flex::horizontal().constraints([Constraint::Fill, Constraint::Ratio(0, 1)]);
+        let rects = flex.split(Rect::new(0, 0, 100, 1));
+
+        // Fill should get 100, Ratio should get 0
+        assert_eq!(rects[0].width, 100, "Fill should take all space");
+        assert_eq!(rects[1].width, 0, "Ratio(0, 1) should be width 0");
     }
 
     // --- Max constraint ---

@@ -1886,6 +1886,91 @@ mod tests {
     }
 
     #[test]
+    fn evidence_jsonl_parses_and_has_required_fields() {
+        use serde_json::Value;
+
+        let mut config = test_config();
+        config.enable_logging = true;
+        let base = Instant::now();
+        let mut c = ResizeCoalescer::new(config, (80, 24)).with_last_render(base);
+
+        c.handle_resize_at(90, 30, base);
+        c.handle_resize_at(100, 40, base + Duration::from_millis(10));
+        let _ = c.tick_at(base + Duration::from_millis(120));
+
+        let jsonl = c.evidence_to_jsonl();
+        let mut saw_config = false;
+        let mut saw_decision = false;
+        let mut saw_summary = false;
+
+        for line in jsonl.lines() {
+            let value: Value = serde_json::from_str(line).expect("valid JSONL evidence");
+            let event = value
+                .get("event")
+                .and_then(Value::as_str)
+                .expect("event field");
+            match event {
+                "config" => {
+                    for key in [
+                        "steady_delay_ms",
+                        "burst_delay_ms",
+                        "hard_deadline_ms",
+                        "burst_enter_rate",
+                        "burst_exit_rate",
+                        "cooldown_frames",
+                        "rate_window_size",
+                        "logging_enabled",
+                    ] {
+                        assert!(value.get(key).is_some(), "missing config field {key}");
+                    }
+                    saw_config = true;
+                }
+                "decision" => {
+                    for key in [
+                        "idx",
+                        "elapsed_ms",
+                        "dt_ms",
+                        "event_rate",
+                        "regime",
+                        "action",
+                        "pending_w",
+                        "pending_h",
+                        "applied_w",
+                        "applied_h",
+                        "time_since_render_ms",
+                        "coalesce_ms",
+                        "forced",
+                    ] {
+                        assert!(value.get(key).is_some(), "missing decision field {key}");
+                    }
+                    saw_decision = true;
+                }
+                "summary" => {
+                    for key in [
+                        "decisions",
+                        "applies",
+                        "forced_applies",
+                        "coalesces",
+                        "skips",
+                        "regime",
+                        "last_w",
+                        "last_h",
+                        "checksum",
+                    ] {
+                        assert!(value.get(key).is_some(), "missing summary field {key}");
+                    }
+                    saw_summary = true;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_config, "config evidence missing");
+        assert!(saw_decision, "decision evidence missing");
+        assert!(saw_summary, "summary evidence missing");
+    }
+
+    #[test]
     fn bocpd_logging_inherits_coalescer_logging() {
         let mut config = test_config();
         config.enable_bocpd = true;

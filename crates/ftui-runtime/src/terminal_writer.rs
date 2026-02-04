@@ -52,8 +52,8 @@ use std::io::{self, BufWriter, Write};
 use crate::evidence_sink::EvidenceSink;
 use ftui_core::inline_mode::InlineStrategy;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
-use ftui_render::buffer::Buffer;
-use ftui_render::diff::BufferDiff;
+use ftui_render::buffer::{Buffer, DirtySpanStats};
+use ftui_render::diff::{BufferDiff, TileDiffFallback, TileDiffStats};
 use ftui_render::diff_strategy::{DiffStrategy, DiffStrategyConfig, DiffStrategySelector};
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::link_registry::LinkRegistry;
@@ -80,6 +80,49 @@ const ERASE_LINE: &[u8] = b"\x1b[2K";
 /// How often to probe with a real diff when FullRedraw is selected.
 #[allow(dead_code)] // API for future diff strategy integration
 const FULL_REDRAW_PROBE_INTERVAL: u64 = 60;
+
+fn default_diff_run_id() -> String {
+    format!("diff-{}", std::process::id())
+}
+
+#[allow(dead_code)]
+fn estimate_diff_scan_cost(
+    strategy: DiffStrategy,
+    dirty_rows: usize,
+    width: usize,
+    height: usize,
+    span_stats: &DirtySpanStats,
+    tile_stats: Option<TileDiffStats>,
+) -> (usize, &'static str) {
+    match strategy {
+        DiffStrategy::Full => (width.saturating_mul(height), "full_strategy"),
+        DiffStrategy::FullRedraw => (0, "full_redraw"),
+        DiffStrategy::DirtyRows => {
+            if dirty_rows == 0 {
+                return (0, "no_dirty_rows");
+            }
+            if let Some(tile_stats) = tile_stats
+                && tile_stats.fallback.is_none()
+            {
+                return (tile_stats.scan_cells_estimate, "tile_skip");
+            }
+            let span_cells = span_stats.span_coverage_cells;
+            if span_stats.overflows > 0 {
+                let estimate = if span_cells > 0 {
+                    span_cells
+                } else {
+                    dirty_rows.saturating_mul(width)
+                };
+                return (estimate, "span_overflow");
+            }
+            if span_cells > 0 {
+                (span_cells, "none")
+            } else {
+                (dirty_rows.saturating_mul(width), "no_spans")
+            }
+        }
+    }
+}
 
 fn sanitize_auto_bounds(min_height: u16, max_height: u16) -> (u16, u16) {
     let min = min_height.max(1);
@@ -301,6 +344,12 @@ pub struct TerminalWriter<W: Write> {
     diff_config: RuntimeDiffConfig,
     /// Evidence JSONL sink for diff decisions.
     evidence_sink: Option<EvidenceSink>,
+    /// Run identifier for diff decision evidence.
+    #[allow(dead_code)]
+    diff_evidence_run_id: String,
+    /// Monotonic event index for diff decision evidence.
+    #[allow(dead_code)]
+    diff_evidence_idx: u64,
     /// Last diff strategy selected during present.
     last_diff_strategy: Option<DiffStrategy>,
 }
@@ -390,6 +439,8 @@ impl<W: Write> TerminalWriter<W> {
             full_redraw_probe: 0,
             diff_config,
             evidence_sink: None,
+            diff_evidence_run_id: default_diff_run_id(),
+            diff_evidence_idx: 0,
             last_diff_strategy: None,
         }
     }
@@ -893,20 +944,99 @@ impl<W: Write> TerminalWriter<W> {
             DiffStrategy::FullRedraw => {}
         }
 
+        let width = buffer.width() as usize;
+        let height = buffer.height() as usize;
+        let mut span_stats_snapshot: Option<DirtySpanStats> = None;
+        let mut scan_cost_estimate = 0usize;
+        let mut fallback_reason: &'static str = "none";
+        let tile_stats = if strategy == DiffStrategy::DirtyRows {
+            self.diff_scratch.last_tile_stats()
+        } else {
+            None
+        };
+
         // Update posterior if Bayesian mode is enabled
         if self.diff_config.bayesian_enabled && has_diff {
-            let width = buffer.width() as usize;
-            let height = buffer.height() as usize;
-            let cells_scanned = match strategy {
-                DiffStrategy::Full => width * height,
-                DiffStrategy::DirtyRows => dirty_rows * width,
-                DiffStrategy::FullRedraw => 0,
-            };
+            let span_stats = buffer.dirty_span_stats();
+            let (scan_cost, reason) = estimate_diff_scan_cost(
+                strategy,
+                dirty_rows,
+                width,
+                height,
+                &span_stats,
+                tile_stats,
+            );
             self.diff_strategy
-                .observe(cells_scanned, self.diff_scratch.len());
+                .observe(scan_cost, self.diff_scratch.len());
+            span_stats_snapshot = Some(span_stats);
+            scan_cost_estimate = scan_cost;
+            fallback_reason = reason;
         }
 
         if let Some(evidence) = self.diff_strategy.last_evidence() {
+            let span_stats = span_stats_snapshot.unwrap_or_else(|| buffer.dirty_span_stats());
+            let (scan_cost, reason) = if span_stats_snapshot.is_some() {
+                (scan_cost_estimate, fallback_reason)
+            } else {
+                estimate_diff_scan_cost(
+                    strategy,
+                    dirty_rows,
+                    width,
+                    height,
+                    &span_stats,
+                    tile_stats,
+                )
+            };
+            let span_coverage_pct = if evidence.total_cells == 0 {
+                0.0
+            } else {
+                (span_stats.span_coverage_cells as f64 / evidence.total_cells as f64) * 100.0
+            };
+            let span_count = span_stats.total_spans;
+            let max_span_len = span_stats.max_span_len;
+            let event_idx = self.diff_evidence_idx;
+            self.diff_evidence_idx = self.diff_evidence_idx.saturating_add(1);
+            let tile_used = tile_stats.is_some_and(|stats| stats.fallback.is_none());
+            let tile_fallback = tile_stats
+                .and_then(|stats| stats.fallback)
+                .map(TileDiffFallback::as_str)
+                .unwrap_or("none");
+            let (
+                tile_w,
+                tile_h,
+                tiles_x,
+                tiles_y,
+                dirty_tiles,
+                dirty_cells,
+                dirty_tile_ratio,
+                dirty_cell_ratio,
+                scanned_tiles,
+                skipped_tiles,
+                scan_cells_estimate,
+                sat_build_cells,
+            ) = if let Some(stats) = tile_stats {
+                (
+                    stats.tile_w,
+                    stats.tile_h,
+                    stats.tiles_x,
+                    stats.tiles_y,
+                    stats.dirty_tiles,
+                    stats.dirty_cells,
+                    stats.dirty_tile_ratio,
+                    stats.dirty_cell_ratio,
+                    stats.scanned_tiles,
+                    stats.skipped_tiles,
+                    stats.scan_cells_estimate,
+                    stats.sat_build_cells,
+                )
+            } else {
+                (0, 0, 0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 0)
+            };
+            let tile_size = tile_w as usize * tile_h as usize;
+            let dirty_tile_count = dirty_tiles;
+            let skipped_tile_count = skipped_tiles;
+            let sat_build_cost_est = sat_build_cells;
+
             trace!(
                 strategy = %strategy,
                 selected = %evidence.strategy,
@@ -922,7 +1052,9 @@ impl<W: Write> TerminalWriter<W> {
             );
             if let Some(ref sink) = self.evidence_sink {
                 let line = format!(
-                    r#"{{"event":"diff_decision","strategy":"{}","cost_full":{:.6},"cost_dirty":{:.6},"cost_redraw":{:.6},"posterior_mean":{:.6},"posterior_variance":{:.6},"alpha":{:.6},"beta":{:.6},"dirty_rows":{},"total_rows":{},"total_cells":{},"bayesian_enabled":{},"dirty_rows_enabled":{}}}"#,
+                    r#"{{"event":"diff_decision","run_id":"{}","event_idx":{},"strategy":"{}","cost_full":{:.6},"cost_dirty":{:.6},"cost_redraw":{:.6},"posterior_mean":{:.6},"posterior_variance":{:.6},"alpha":{:.6},"beta":{:.6},"dirty_rows":{},"total_rows":{},"total_cells":{},"span_count":{},"span_coverage_pct":{:.6},"max_span_len":{},"fallback_reason":"{}","scan_cost_estimate":{},"tile_used":{},"tile_fallback":"{}","tile_w":{},"tile_h":{},"tile_size":{},"tiles_x":{},"tiles_y":{},"dirty_tiles":{},"dirty_tile_count":{},"dirty_cells":{},"dirty_tile_ratio":{:.6},"dirty_cell_ratio":{:.6},"scanned_tiles":{},"skipped_tiles":{},"skipped_tile_count":{},"tile_scan_cells_estimate":{},"sat_build_cost_est":{},"bayesian_enabled":{},"dirty_rows_enabled":{}}}"#,
+                    self.diff_evidence_run_id,
+                    event_idx,
                     strategy,
                     evidence.cost_full,
                     evidence.cost_dirty,
@@ -934,6 +1066,28 @@ impl<W: Write> TerminalWriter<W> {
                     evidence.dirty_rows,
                     evidence.total_rows,
                     evidence.total_cells,
+                    span_count,
+                    span_coverage_pct,
+                    max_span_len,
+                    reason,
+                    scan_cost,
+                    tile_used,
+                    tile_fallback,
+                    tile_w,
+                    tile_h,
+                    tile_size,
+                    tiles_x,
+                    tiles_y,
+                    dirty_tiles,
+                    dirty_tile_count,
+                    dirty_cells,
+                    dirty_tile_ratio,
+                    dirty_cell_ratio,
+                    scanned_tiles,
+                    skipped_tiles,
+                    skipped_tile_count,
+                    scan_cells_estimate,
+                    sat_build_cost_est,
                     self.diff_config.bayesian_enabled,
                     self.diff_config.dirty_rows_enabled,
                 );
@@ -1652,6 +1806,8 @@ impl<W: Write> Drop for TerminalWriter<W> {
 mod tests {
     use super::*;
     use ftui_render::cell::{Cell, PackedRgba};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn max_cursor_row(output: &[u8]) -> u16 {
         let mut max_row = 0u16;
@@ -1712,6 +1868,19 @@ mod tests {
             i += 1;
         }
         None
+    }
+
+    fn temp_evidence_path(label: &str) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "ftui_{}_{}_{}.jsonl",
+            label,
+            std::process::id(),
+            id
+        ));
+        path
     }
 
     #[test]
@@ -3054,6 +3223,97 @@ mod tests {
         buffer.set_raw(1, 1, Cell::from_char('Y'));
         writer.present_ui(&buffer, None, false).unwrap();
         assert!(writer.last_diff_strategy().is_some());
+    }
+
+    #[test]
+    fn diff_decision_evidence_schema_includes_span_fields() {
+        let evidence_path = temp_evidence_path("diff_decision_schema");
+        let sink = EvidenceSink::from_config(
+            &crate::evidence_sink::EvidenceSinkConfig::enabled_file(&evidence_path),
+        )
+        .expect("evidence sink config")
+        .expect("evidence sink enabled");
+
+        let mut writer = TerminalWriter::with_diff_config(
+            Vec::<u8>::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+            RuntimeDiffConfig::default(),
+        )
+        .with_evidence_sink(sink);
+        writer.set_size(10, 3);
+
+        let mut buffer = Buffer::new(10, 3);
+        buffer.set_raw(0, 0, Cell::from_char('X'));
+        writer.present_ui(&buffer, None, false).unwrap();
+
+        buffer.set_raw(1, 1, Cell::from_char('Y'));
+        writer.present_ui(&buffer, None, false).unwrap();
+
+        let jsonl = std::fs::read_to_string(&evidence_path).expect("read evidence jsonl");
+        let line = jsonl
+            .lines()
+            .find(|line| line.contains("\"event\":\"diff_decision\""))
+            .expect("diff_decision line");
+        let value: serde_json::Value = serde_json::from_str(line).expect("valid json");
+
+        assert_eq!(value["event"], "diff_decision");
+        assert!(
+            value["run_id"]
+                .as_str()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
+            "run_id should be a non-empty string"
+        );
+        assert!(
+            value["event_idx"].is_number(),
+            "event_idx should be numeric"
+        );
+        assert!(
+            value["span_count"].is_number(),
+            "span_count should be numeric"
+        );
+        assert!(
+            value["span_coverage_pct"].is_number(),
+            "span_coverage_pct should be numeric"
+        );
+        assert!(
+            value["tile_size"].is_number(),
+            "tile_size should be numeric"
+        );
+        assert!(
+            value["dirty_tile_count"].is_number(),
+            "dirty_tile_count should be numeric"
+        );
+        assert!(
+            value["skipped_tile_count"].is_number(),
+            "skipped_tile_count should be numeric"
+        );
+        assert!(
+            value["sat_build_cost_est"].is_number(),
+            "sat_build_cost_est should be numeric"
+        );
+        assert!(
+            value["fallback_reason"].is_string(),
+            "fallback_reason should be string"
+        );
+        assert!(
+            value["scan_cost_estimate"].is_number(),
+            "scan_cost_estimate should be numeric"
+        );
+        assert!(
+            value["max_span_len"].is_number(),
+            "max_span_len should be numeric"
+        );
+        assert!(
+            value["fallback_reason"].is_string(),
+            "fallback_reason should be a string"
+        );
+        assert!(
+            value["scan_cost_estimate"].is_number(),
+            "scan_cost_estimate should be numeric"
+        );
     }
 
     #[test]

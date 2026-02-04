@@ -159,7 +159,8 @@ fn wrap_words(text: &str, options: &WrapOptions, char_fallback: bool) -> Vec<Str
     let mut lines = Vec::new();
 
     // Split by existing newlines first
-    for paragraph in text.split('\n') {
+    for raw_paragraph in text.split('\n') {
+        let paragraph = raw_paragraph.strip_suffix('\r').unwrap_or(raw_paragraph);
         let mut current_line = String::new();
         let mut current_width = 0;
 
@@ -415,7 +416,11 @@ pub fn ascii_width(text: &str) -> Option<usize> {
 #[inline]
 #[must_use]
 pub fn grapheme_width(grapheme: &str) -> usize {
-    UnicodeWidthStr::width(grapheme)
+    let width = UnicodeWidthStr::width(grapheme);
+    if width == 1 && grapheme.contains('\u{FE0F}') {
+        return 2;
+    }
+    width
 }
 
 /// Calculate the display width of text in cells.
@@ -886,6 +891,12 @@ mod tests {
     fn wrap_text_preserves_newlines() {
         let lines = wrap_text("line1\nline2", 20, WrapMode::Word);
         assert_eq!(lines, vec!["line1", "line2"]);
+    }
+
+    #[test]
+    fn wrap_text_preserves_crlf_newlines() {
+        let lines = wrap_text("line1\r\nline2\r\n", 20, WrapMode::Word);
+        assert_eq!(lines, vec!["line1", "line2", ""]);
     }
 
     #[test]

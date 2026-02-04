@@ -238,7 +238,7 @@ impl<M: Model> ProgramSimulator<M> {
                 self.command_log.push(CmdRecord::Log(text.clone()));
                 self.logs.push(text);
             }
-            Cmd::Task(f) => {
+            Cmd::Task(_, f) => {
                 self.command_log.push(CmdRecord::Task);
                 let msg = f();
                 let cmd = self.model.update(msg);

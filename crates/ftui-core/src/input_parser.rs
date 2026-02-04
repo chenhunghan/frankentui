@@ -181,8 +181,8 @@ impl InputParser {
             0x7F => Some(Event::Key(KeyEvent::new(KeyCode::Backspace))),
             // Printable ASCII
             0x20..=0x7E => Some(Event::Key(KeyEvent::new(KeyCode::Char(byte as char)))),
-            // UTF-8 lead bytes
-            0xC0..=0xDF => {
+            // UTF-8 lead bytes (valid ranges only)
+            0xC2..=0xDF => {
                 self.utf8_buffer[0] = byte;
                 self.state = ParserState::Utf8 {
                     collected: 1,
@@ -198,7 +198,7 @@ impl InputParser {
                 };
                 None
             }
-            0xF0..=0xF7 => {
+            0xF0..=0xF4 => {
                 self.utf8_buffer[0] = byte;
                 self.state = ParserState::Utf8 {
                     collected: 1,
@@ -206,6 +206,10 @@ impl InputParser {
                 };
                 None
             }
+            // Invalid UTF-8 lead bytes (overlong or out of range)
+            0xC0..=0xC1 | 0xF5..=0xFF => Some(Event::Key(KeyEvent::new(KeyCode::Char(
+                std::char::REPLACEMENT_CHARACTER,
+            )))),
             // Invalid or ignored bytes
             _ => None,
         }
@@ -330,7 +334,10 @@ impl InputParser {
 
         // Final byte (0x40-0x7E) - return to ground
         // Intermediate bytes outside this range are ignored
-        if let 0x40..=0x7E = byte {
+        if (0x40..=0x7E).contains(&byte) {
+            self.state = ParserState::Ground;
+        } else if !(0x20..=0x7E).contains(&byte) {
+            // Invalid character (e.g. newline) - abort sequence
             self.state = ParserState::Ground;
         }
         None
@@ -670,6 +677,13 @@ impl InputParser {
             return None;
         }
 
+        // Robustness: Abort on control characters (except BEL) to prevent swallowing logs
+        if byte < 0x20 && byte != 0x07 {
+            self.state = ParserState::Ground;
+            self.buffer.clear();
+            return None;
+        }
+
         // DoS protection
         if self.buffer.len() >= MAX_OSC_LEN {
             self.state = ParserState::OscIgnore;
@@ -725,6 +739,11 @@ impl InputParser {
             // ESC might start terminator or new sequence
             0x1B => {
                 self.state = ParserState::OscEscape;
+                None
+            }
+            // Abort on control characters to prevent swallowing logs
+            _ if byte < 0x20 => {
+                self.state = ParserState::Ground;
                 None
             }
             // Continue ignoring
@@ -2016,6 +2035,37 @@ mod tests {
             Event::Key(k) => assert_eq!(k.code, KeyCode::Char('A')),
             _ => panic!("Expected character 'A'"),
         }
+    }
+
+    #[test]
+    fn utf8_invalid_lead_emits_replacement() {
+        let mut parser = InputParser::new();
+
+        // 0xC0 is an invalid UTF-8 lead byte (overlong sequence).
+        let events = parser.parse(&[0xC0, b'a']);
+        assert!(
+            matches!(events.first(), Some(Event::Key(k)) if k.code == KeyCode::Char(std::char::REPLACEMENT_CHARACTER)),
+            "Expected replacement for invalid lead"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Key(k) if k.code == KeyCode::Char('a'))),
+            "Expected subsequent ASCII to be preserved"
+        );
+
+        // 0xF5 is an out-of-range UTF-8 lead byte.
+        let events = parser.parse(&[0xF5, b'b']);
+        assert!(
+            matches!(events.first(), Some(Event::Key(k)) if k.code == KeyCode::Char(std::char::REPLACEMENT_CHARACTER)),
+            "Expected replacement for out-of-range lead"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Key(k) if k.code == KeyCode::Char('b'))),
+            "Expected subsequent ASCII to be preserved"
+        );
     }
 }
 

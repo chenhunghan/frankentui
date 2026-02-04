@@ -56,6 +56,7 @@ use crate::evidence_sink::{EvidenceSink, EvidenceSinkConfig};
 use crate::input_fairness::{FairnessEventType, InputFairnessGuard};
 use crate::input_macro::{EventRecorder, InputMacro};
 use crate::locale::LocaleContext;
+use crate::queueing_scheduler::{EstimateSource, QueueingScheduler, SchedulerConfig, WeightSource};
 use crate::resize_coalescer::{CoalesceAction, CoalescerConfig, ResizeCoalescer};
 use crate::state_persistence::StateRegistry;
 use crate::subscription::SubscriptionManager;
@@ -70,7 +71,10 @@ use ftui_render::buffer::Buffer;
 use ftui_render::diff_strategy::DiffStrategy;
 use ftui_render::frame::{Frame, WidgetBudget, WidgetSignal};
 use ftui_render::sanitize::sanitize;
+use std::collections::HashMap;
 use std::io::{self, Stdout, Write};
+use std::sync::mpsc;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tracing::{debug, debug_span, info, info_span};
 
@@ -118,6 +122,52 @@ pub trait Model: Sized {
     }
 }
 
+/// Default weight assigned to background tasks.
+const DEFAULT_TASK_WEIGHT: f64 = 1.0;
+
+/// Default estimated task cost (ms) used for scheduling.
+const DEFAULT_TASK_ESTIMATE_MS: f64 = 10.0;
+
+/// Scheduling metadata for background tasks.
+#[derive(Debug, Clone)]
+pub struct TaskSpec {
+    /// Task weight (importance). Higher = more priority.
+    pub weight: f64,
+    /// Estimated task cost in milliseconds.
+    pub estimate_ms: f64,
+    /// Optional task name for evidence logging.
+    pub name: Option<String>,
+}
+
+impl Default for TaskSpec {
+    fn default() -> Self {
+        Self {
+            weight: DEFAULT_TASK_WEIGHT,
+            estimate_ms: DEFAULT_TASK_ESTIMATE_MS,
+            name: None,
+        }
+    }
+}
+
+impl TaskSpec {
+    /// Create a task spec with an explicit weight and estimate.
+    #[must_use]
+    pub fn new(weight: f64, estimate_ms: f64) -> Self {
+        Self {
+            weight,
+            estimate_ms,
+            name: None,
+        }
+    }
+
+    /// Attach a task name for diagnostics.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+}
+
 /// Commands represent side effects to be executed by the runtime.
 ///
 /// Commands are returned from `init()` and `update()` to trigger
@@ -144,9 +194,11 @@ pub enum Cmd<M> {
     Log(String),
     /// Execute a blocking operation on a background thread.
     ///
-    /// The closure runs on a spawned thread and its return value
-    /// is sent back as a message to the model.
-    Task(Box<dyn FnOnce() -> M + Send>),
+    /// When effect queue scheduling is enabled, tasks are enqueued and executed
+    /// in Smith-rule order on a dedicated worker thread. Otherwise the closure
+    /// runs on a spawned thread immediately. The return value is sent back
+    /// as a message to the model.
+    Task(TaskSpec, Box<dyn FnOnce() -> M + Send>),
     /// Save widget state to the persistence registry.
     ///
     /// Triggers a flush of the state registry to the storage backend.
@@ -170,7 +222,7 @@ impl<M: std::fmt::Debug> std::fmt::Debug for Cmd<M> {
             Self::Msg(m) => f.debug_tuple("Msg").field(m).finish(),
             Self::Tick(d) => f.debug_tuple("Tick").field(d).finish(),
             Self::Log(s) => f.debug_tuple("Log").field(s).finish(),
-            Self::Task(_) => write!(f, "Task(...)"),
+            Self::Task(spec, _) => f.debug_struct("Task").field("spec", spec).finish(),
             Self::SaveState => write!(f, "SaveState"),
             Self::RestoreState => write!(f, "RestoreState"),
         }
@@ -238,7 +290,7 @@ impl<M> Cmd<M> {
             Self::Msg(_) => "Msg",
             Self::Tick(_) => "Tick",
             Self::Log(_) => "Log",
-            Self::Task(_) => "Task",
+            Self::Task(..) => "Task",
             Self::SaveState => "SaveState",
             Self::RestoreState => "RestoreState",
         }
@@ -252,13 +304,38 @@ impl<M> Cmd<M> {
 
     /// Create a background task command.
     ///
-    /// The closure runs on a spawned thread. When it completes,
-    /// the returned message is sent back to the model's `update()`.
+    /// The closure runs on a spawned thread (or the effect queue worker when
+    /// scheduling is enabled). When it completes, the returned message is
+    /// sent back to the model's `update()`.
     pub fn task<F>(f: F) -> Self
     where
         F: FnOnce() -> M + Send + 'static,
     {
-        Self::Task(Box::new(f))
+        Self::Task(TaskSpec::default(), Box::new(f))
+    }
+
+    /// Create a background task command with explicit scheduling metadata.
+    pub fn task_with_spec<F>(spec: TaskSpec, f: F) -> Self
+    where
+        F: FnOnce() -> M + Send + 'static,
+    {
+        Self::Task(spec, Box::new(f))
+    }
+
+    /// Create a background task command with explicit weight and estimate.
+    pub fn task_weighted<F>(weight: f64, estimate_ms: f64, f: F) -> Self
+    where
+        F: FnOnce() -> M + Send + 'static,
+    {
+        Self::Task(TaskSpec::new(weight, estimate_ms), Box::new(f))
+    }
+
+    /// Create a named background task command.
+    pub fn task_named<F>(name: impl Into<String>, f: F) -> Self
+    where
+        F: FnOnce() -> M + Send + 'static,
+    {
+        Self::Task(TaskSpec::default().with_name(name), Box::new(f))
     }
 
     /// Create a save state command.
@@ -440,6 +517,49 @@ impl Default for WidgetRefreshConfig {
     }
 }
 
+/// Configuration for effect queue scheduling.
+#[derive(Debug, Clone)]
+pub struct EffectQueueConfig {
+    /// Whether effect queue scheduling is enabled.
+    pub enabled: bool,
+    /// Scheduler configuration (Smith's rule by default).
+    pub scheduler: SchedulerConfig,
+}
+
+impl Default for EffectQueueConfig {
+    fn default() -> Self {
+        let scheduler = SchedulerConfig {
+            smith_enabled: true,
+            force_fifo: false,
+            preemptive: false,
+            aging_factor: 0.0,
+            wait_starve_ms: 0.0,
+            enable_logging: false,
+            ..Default::default()
+        };
+        Self {
+            enabled: false,
+            scheduler,
+        }
+    }
+}
+
+impl EffectQueueConfig {
+    /// Enable effect queue scheduling with the provided scheduler config.
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Override the scheduler configuration.
+    #[must_use]
+    pub fn with_scheduler(mut self, scheduler: SchedulerConfig) -> Self {
+        self.scheduler = scheduler;
+        self
+    }
+}
+
 /// Configuration for the program runtime.
 #[derive(Debug, Clone)]
 pub struct ProgramConfig {
@@ -477,6 +597,8 @@ pub struct ProgramConfig {
     pub inline_auto_remeasure: Option<InlineAutoRemeasureConfig>,
     /// Widget refresh selection configuration.
     pub widget_refresh: WidgetRefreshConfig,
+    /// Effect queue scheduling configuration.
+    pub effect_queue: EffectQueueConfig,
 }
 
 impl Default for ProgramConfig {
@@ -499,6 +621,7 @@ impl Default for ProgramConfig {
             persistence: PersistenceConfig::default(),
             inline_auto_remeasure: None,
             widget_refresh: WidgetRefreshConfig::default(),
+            effect_queue: EffectQueueConfig::default(),
         }
     }
 }
@@ -586,6 +709,12 @@ impl ProgramConfig {
         self
     }
 
+    /// Set the effect queue scheduling configuration.
+    pub fn with_effect_queue(mut self, config: EffectQueueConfig) -> Self {
+        self.effect_queue = config;
+        self
+    }
+
     /// Set the resize coalescer configuration.
     pub fn with_resize_coalescer(mut self, config: CoalescerConfig) -> Self {
         self.resize_coalescer = config;
@@ -628,6 +757,139 @@ impl ProgramConfig {
     pub fn without_inline_auto_remeasure(mut self) -> Self {
         self.inline_auto_remeasure = None;
         self
+    }
+}
+
+enum EffectCommand<M> {
+    Enqueue(TaskSpec, Box<dyn FnOnce() -> M + Send>),
+    Shutdown,
+}
+
+struct EffectQueue<M: Send + 'static> {
+    sender: mpsc::Sender<EffectCommand<M>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl<M: Send + 'static> EffectQueue<M> {
+    fn start(
+        config: EffectQueueConfig,
+        result_sender: mpsc::Sender<M>,
+        evidence_sink: Option<EvidenceSink>,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel::<EffectCommand<M>>();
+        let handle = thread::Builder::new()
+            .name("ftui-effects".into())
+            .spawn(move || effect_queue_loop(config, rx, result_sender, evidence_sink))
+            .expect("failed to spawn effect queue");
+
+        Self {
+            sender: tx,
+            handle: Some(handle),
+        }
+    }
+
+    fn enqueue(&self, spec: TaskSpec, task: Box<dyn FnOnce() -> M + Send>) {
+        let _ = self.sender.send(EffectCommand::Enqueue(spec, task));
+    }
+
+    fn shutdown(&mut self) {
+        let _ = self.sender.send(EffectCommand::Shutdown);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl<M: Send + 'static> Drop for EffectQueue<M> {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn effect_queue_loop<M: Send + 'static>(
+    config: EffectQueueConfig,
+    rx: mpsc::Receiver<EffectCommand<M>>,
+    result_sender: mpsc::Sender<M>,
+    evidence_sink: Option<EvidenceSink>,
+) {
+    let mut scheduler = QueueingScheduler::new(config.scheduler);
+    let mut tasks: HashMap<u64, Box<dyn FnOnce() -> M + Send>> = HashMap::new();
+
+    loop {
+        if tasks.is_empty() {
+            match rx.recv() {
+                Ok(cmd) => {
+                    if handle_effect_command(cmd, &mut scheduler, &mut tasks, &result_sender) {
+                        return;
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+
+        while let Ok(cmd) = rx.try_recv() {
+            if handle_effect_command(cmd, &mut scheduler, &mut tasks, &result_sender) {
+                return;
+            }
+        }
+
+        if tasks.is_empty() {
+            continue;
+        }
+
+        let Some(job) = scheduler.peek_next().cloned() else {
+            continue;
+        };
+
+        if let Some(ref sink) = evidence_sink {
+            let evidence = scheduler.evidence();
+            let _ = sink.write_jsonl(&evidence.to_jsonl("effect_queue_select"));
+        }
+
+        let completed = scheduler.tick(job.remaining_time);
+        for job_id in completed {
+            if let Some(task) = tasks.remove(&job_id) {
+                let msg = task();
+                let _ = result_sender.send(msg);
+            }
+        }
+    }
+}
+
+fn handle_effect_command<M: Send + 'static>(
+    cmd: EffectCommand<M>,
+    scheduler: &mut QueueingScheduler,
+    tasks: &mut HashMap<u64, Box<dyn FnOnce() -> M + Send>>,
+    result_sender: &mpsc::Sender<M>,
+) -> bool {
+    match cmd {
+        EffectCommand::Enqueue(spec, task) => {
+            let weight_source = if spec.weight == DEFAULT_TASK_WEIGHT {
+                WeightSource::Default
+            } else {
+                WeightSource::Explicit
+            };
+            let estimate_source = if spec.estimate_ms == DEFAULT_TASK_ESTIMATE_MS {
+                EstimateSource::Default
+            } else {
+                EstimateSource::Explicit
+            };
+            let id = scheduler.submit_with_sources(
+                spec.weight,
+                spec.estimate_ms,
+                weight_source,
+                estimate_source,
+                spec.name,
+            );
+            if let Some(id) = id {
+                tasks.insert(id, task);
+            } else {
+                let msg = task();
+                let _ = result_sender.send(msg);
+            }
+            false
+        }
+        EffectCommand::Shutdown => true,
     }
 }
 
@@ -1179,6 +1441,8 @@ pub struct Program<M: Model, W: Write + Send = Stdout> {
     task_receiver: std::sync::mpsc::Receiver<M::Message>,
     /// Join handles for background tasks; reaped opportunistically.
     task_handles: Vec<std::thread::JoinHandle<()>>,
+    /// Optional effect queue scheduler for background tasks.
+    effect_queue: Option<EffectQueue<M::Message>>,
     /// Optional state registry for widget persistence.
     state_registry: Option<std::sync::Arc<StateRegistry>>,
     /// Persistence configuration.
@@ -1191,12 +1455,18 @@ pub struct Program<M: Model, W: Write + Send = Stdout> {
 
 impl<M: Model> Program<M, Stdout> {
     /// Create a new program with default configuration.
-    pub fn new(model: M) -> io::Result<Self> {
+    pub fn new(model: M) -> io::Result<Self>
+    where
+        M::Message: Send + 'static,
+    {
         Self::with_config(model, ProgramConfig::default())
     }
 
     /// Create a new program with the specified configuration.
-    pub fn with_config(model: M, config: ProgramConfig) -> io::Result<Self> {
+    pub fn with_config(model: M, config: ProgramConfig) -> io::Result<Self>
+    where
+        M::Message: Send + 'static,
+    {
         let capabilities = TerminalCapabilities::with_overrides();
         let session = TerminalSession::new(SessionOptions {
             alternate_screen: matches!(config.screen_mode, ScreenMode::AltScreen),
@@ -1240,6 +1510,15 @@ impl<M: Model> Program<M, Stdout> {
             .inline_auto_remeasure
             .clone()
             .map(InlineAutoRemeasureState::new);
+        let effect_queue = if config.effect_queue.enabled {
+            Some(EffectQueue::start(
+                config.effect_queue.clone(),
+                task_sender.clone(),
+                evidence_sink.clone(),
+            ))
+        } else {
+            None
+        };
 
         Ok(Self {
             model,
@@ -1270,6 +1549,7 @@ impl<M: Model> Program<M, Stdout> {
             task_sender,
             task_receiver,
             task_handles: Vec::new(),
+            effect_queue,
             state_registry: config.persistence.registry.clone(),
             persistence_config: config.persistence,
             last_checkpoint: Instant::now(),
@@ -1682,13 +1962,17 @@ impl<M: Model, W: Write + Send> Program<M, W> {
                     self.writer.write_log(&owned)?;
                 }
             }
-            Cmd::Task(f) => {
-                let sender = self.task_sender.clone();
-                let handle = std::thread::spawn(move || {
-                    let msg = f();
-                    let _ = sender.send(msg);
-                });
-                self.task_handles.push(handle);
+            Cmd::Task(spec, f) => {
+                if let Some(ref queue) = self.effect_queue {
+                    queue.enqueue(spec, f);
+                } else {
+                    let sender = self.task_sender.clone();
+                    let handle = std::thread::spawn(move || {
+                        let msg = f();
+                        let _ = sender.send(msg);
+                    });
+                    self.task_handles.push(handle);
+                }
             }
             Cmd::SaveState => {
                 self.save_state();
@@ -2310,6 +2594,12 @@ impl<M: Model> AppBuilder<M> {
         self
     }
 
+    /// Set the effect queue scheduling configuration.
+    pub fn with_effect_queue(mut self, config: EffectQueueConfig) -> Self {
+        self.config.effect_queue = config;
+        self
+    }
+
     /// Enable inline auto UI height remeasurement.
     pub fn with_inline_auto_remeasure(mut self, config: InlineAutoRemeasureConfig) -> Self {
         self.config.inline_auto_remeasure = Some(config);
@@ -2355,7 +2645,10 @@ impl<M: Model> AppBuilder<M> {
     }
 
     /// Run the application.
-    pub fn run(self) -> io::Result<()> {
+    pub fn run(self) -> io::Result<()>
+    where
+        M::Message: Send + 'static,
+    {
         let mut program = Program::with_config(self.model, self.config)?;
         program.run()
     }
@@ -2647,14 +2940,17 @@ mod tests {
     #[test]
     fn cmd_task() {
         let cmd: Cmd<TestMsg> = Cmd::task(|| TestMsg::Increment);
-        assert!(matches!(cmd, Cmd::Task(_)));
+        assert!(matches!(cmd, Cmd::Task(..)));
     }
 
     #[test]
     fn cmd_debug_format() {
         let cmd: Cmd<TestMsg> = Cmd::task(|| TestMsg::Increment);
         let debug = format!("{cmd:?}");
-        assert_eq!(debug, "Task(...)");
+        assert_eq!(
+            debug,
+            "Task { spec: TaskSpec { weight: 1.0, estimate_ms: 10.0, name: None } }"
+        );
     }
 
     #[test]
@@ -2676,6 +2972,7 @@ mod tests {
         assert!(config.diff_config.bayesian_enabled);
         assert!(config.diff_config.dirty_rows_enabled);
         assert!(!config.resize_coalescer.enable_bocpd);
+        assert!(!config.effect_queue.enabled);
         assert_eq!(
             config.resize_coalescer.steady_delay_ms,
             CoalescerConfig::default().steady_delay_ms

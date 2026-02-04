@@ -2,17 +2,30 @@
 //!
 //! Run with: cargo bench -p ftui-render --bench diff_bench
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, CellAttrs, PackedRgba, StyleFlags};
 use ftui_render::diff::BufferDiff;
+use ftui_render::diff_strategy::{DiffStrategy, DiffStrategySelector};
 use std::hint::black_box;
+use std::time::{Duration, Instant};
+
+type DiffFn = fn(&Buffer, &Buffer) -> BufferDiff;
+type DiffMethod = (&'static str, DiffFn);
+
+struct DiffStats {
+    p50_us: u64,
+    p95_us: u64,
+    total_us: u128,
+}
 
 /// Create a pair of buffers where only `pct` percent of cells differ.
 fn make_pair(width: u16, height: u16, change_pct: f64) -> (Buffer, Buffer) {
-    let old = Buffer::new(width, height);
+    let mut old = Buffer::new(width, height);
     let mut new = old.clone();
+    old.clear_dirty();
+    new.clear_dirty();
 
     let total = width as usize * height as usize;
     let to_change = ((total as f64) * change_pct / 100.0) as usize;
@@ -29,6 +42,31 @@ fn make_pair(width: u16, height: u16, change_pct: f64) -> (Buffer, Buffer) {
     }
 
     (old, new)
+}
+
+fn measure_diff_stats(iters: u64, old: &Buffer, new: &Buffer, diff_fn: DiffFn) -> DiffStats {
+    let mut times = Vec::with_capacity(iters as usize);
+    let mut total_us: u128 = 0;
+
+    for _ in 0..iters {
+        let start = Instant::now();
+        let diff = diff_fn(old, new);
+        black_box(diff.len());
+        let elapsed = start.elapsed().as_micros() as u64;
+        total_us += elapsed as u128;
+        times.push(elapsed);
+    }
+
+    times.sort_unstable();
+    let len = times.len().max(1);
+    let p50_idx = len / 2;
+    let p95_idx = ((len as f64 * 0.95) as usize).min(len.saturating_sub(1));
+
+    DiffStats {
+        p50_us: times[p50_idx],
+        p95_us: times[p95_idx],
+        total_us,
+    }
 }
 
 fn bench_diff_identical(c: &mut Criterion) {
@@ -129,6 +167,21 @@ fn bench_full_vs_dirty(c: &mut Criterion) {
         let cells = w as u64 * h as u64;
         group.throughput(Throughput::Elements(cells));
 
+        // Sparse 2% changes - representative of large-screen micro-updates
+        let (old_sparse, new_sparse) = make_pair(w, h, 2.0);
+
+        group.bench_with_input(
+            BenchmarkId::new("compute", format!("{w}x{h}@2%")),
+            &(&old_sparse, &new_sparse),
+            |b, (old, new)| b.iter(|| black_box(BufferDiff::compute(old, new))),
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("compute_dirty", format!("{w}x{h}@2%")),
+            &(&old_sparse, &new_sparse),
+            |b, (old, new)| b.iter(|| black_box(BufferDiff::compute_dirty(old, new))),
+        );
+
         // Sparse 5% changes - dirty diff should win
         let (old, new) = make_pair(w, h, 5.0);
 
@@ -160,6 +213,202 @@ fn bench_full_vs_dirty(c: &mut Criterion) {
             BenchmarkId::new("compute_dirty", format!("{w}x{h}@1row")),
             &(&old, &single_row),
             |b, (old, new)| b.iter(|| black_box(BufferDiff::compute_dirty(old, new))),
+        );
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Selector overhead + selector vs fixed strategy benches (bd-3e1t.8.4)
+// ============================================================================
+
+fn bench_selector_overhead(c: &mut Criterion) {
+    let mut group = c.benchmark_group("diff/selector_overhead");
+
+    let scenarios = [
+        (200u16, 60u16, 2usize, 0.02f64, "200x60@2%"),
+        (200u16, 60u16, 30usize, 0.5f64, "200x60@50%"),
+    ];
+
+    for (w, h, dirty_rows, p_actual, label) in scenarios {
+        group.bench_with_input(BenchmarkId::new("select_observe", label), &(), |b, _| {
+            b.iter_batched(
+                DiffStrategySelector::with_defaults,
+                |mut selector| {
+                    let total_cells = w as usize * h as usize;
+                    let changed =
+                        ((p_actual * total_cells as f64).round() as usize).min(total_cells);
+                    for _ in 0..64 {
+                        let strategy = selector.select(w, h, dirty_rows);
+                        let scanned = match strategy {
+                            DiffStrategy::Full => total_cells,
+                            DiffStrategy::DirtyRows => dirty_rows.saturating_mul(w as usize),
+                            DiffStrategy::FullRedraw => 0,
+                        };
+                        if strategy != DiffStrategy::FullRedraw {
+                            selector.observe(scanned, changed);
+                        }
+                        black_box(strategy);
+                    }
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_selector_vs_fixed(c: &mut Criterion) {
+    let mut group = c.benchmark_group("diff/selector_vs_fixed");
+
+    let scenarios = [(200u16, 60u16, 2.0f64), (200u16, 60u16, 50.0f64)];
+
+    for (w, h, pct) in scenarios {
+        let (old, new) = make_pair(w, h, pct);
+        let dirty_rows = new.dirty_row_count();
+        let label = format!("{w}x{h}@{pct}%");
+
+        group.bench_with_input(BenchmarkId::new("fixed_full", &label), &(), |b, _| {
+            b.iter(|| black_box(BufferDiff::compute(&old, &new)));
+        });
+
+        group.bench_with_input(BenchmarkId::new("fixed_dirty", &label), &(), |b, _| {
+            b.iter(|| black_box(BufferDiff::compute_dirty(&old, &new)));
+        });
+
+        group.bench_with_input(BenchmarkId::new("selector", &label), &(), |b, _| {
+            b.iter_batched(
+                DiffStrategySelector::with_defaults,
+                |mut selector| {
+                    let total_cells = w as usize * h as usize;
+                    let strategy = selector.select(w, h, dirty_rows);
+                    match strategy {
+                        DiffStrategy::Full => {
+                            let diff = BufferDiff::compute(&old, &new);
+                            selector.observe(total_cells, diff.len());
+                            black_box(diff.len());
+                        }
+                        DiffStrategy::DirtyRows => {
+                            let diff = BufferDiff::compute_dirty(&old, &new);
+                            let scanned = dirty_rows.saturating_mul(w as usize);
+                            selector.observe(scanned, diff.len());
+                            black_box(diff.len());
+                        }
+                        DiffStrategy::FullRedraw => {
+                            black_box(0usize);
+                        }
+                    }
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Span-aware dirty diff stats + regression gate (bd-3e1t.6.5)
+// ============================================================================
+
+/// Record p50/p95 and throughput for compute vs compute_dirty on sparse cases.
+fn bench_diff_span_sparse_stats(c: &mut Criterion) {
+    let mut group = c.benchmark_group("diff/span_sparse_stats");
+    let methods: &[DiffMethod] = &[
+        ("compute", BufferDiff::compute),
+        ("compute_dirty", BufferDiff::compute_dirty),
+    ];
+
+    for (w, h) in [(200, 60), (240, 80)] {
+        let cells = w as u64 * h as u64;
+        group.throughput(Throughput::Elements(cells));
+
+        for (label, pct) in [("sparse_5pct", Some(5.0)), ("single_row", None)] {
+            let (old, new) = if let Some(pct) = pct {
+                make_pair(w, h, pct)
+            } else {
+                let old = Buffer::new(w, h);
+                let mut new = old.clone();
+                for x in 0..w {
+                    new.set_raw(x, 0, Cell::from_char('X'));
+                }
+                (old, new)
+            };
+
+            for (name, diff_fn) in methods {
+                let bench_id = BenchmarkId::new(*name, format!("{w}x{h}@{label}"));
+                group.bench_with_input(bench_id, &(&old, &new), |b, (old, new)| {
+                    b.iter_custom(|iters| {
+                        let stats = measure_diff_stats(iters, old, new, *diff_fn);
+                        let throughput = if stats.total_us > 0 {
+                            (cells as f64 * iters as f64) / (stats.total_us as f64 / 1_000_000.0)
+                        } else {
+                            0.0
+                        };
+                        eprintln!(
+                            "{{\"event\":\"diff_span_bench\",\"case\":\"{label}\",\"method\":\"{name}\",\"width\":{w},\"height\":{h},\"iters\":{iters},\"p50_us\":{},\"p95_us\":{},\"throughput_cells_per_s\":{:.2}}}",
+                            stats.p50_us,
+                            stats.p95_us,
+                            throughput
+                        );
+                        let total_us = stats.total_us.min(u128::from(u64::MAX)) as u64;
+                        Duration::from_micros(total_us)
+                    })
+                });
+            }
+        }
+    }
+
+    group.finish();
+}
+
+/// Dense-case regression gate: dirty diff must stay within a small overhead.
+fn bench_diff_span_dense_regression(c: &mut Criterion) {
+    let max_overhead = std::env::var("FTUI_SPAN_DENSE_MAX_OVERHEAD")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(1.02);
+
+    let mut group = c.benchmark_group("diff/span_dense_regression");
+
+    for (w, h) in [(200, 60), (240, 80)] {
+        let cells = w as u64 * h as u64;
+        group.throughput(Throughput::Elements(cells));
+        let (old, new) = make_pair(w, h, 50.0);
+
+        group.bench_with_input(
+            BenchmarkId::new("dense_gate", format!("{w}x{h}@50%")),
+            &(&old, &new),
+            |b, (old, new)| {
+                b.iter_custom(|iters| {
+                    let full_stats = measure_diff_stats(iters, old, new, BufferDiff::compute);
+                    let dirty_stats =
+                        measure_diff_stats(iters, old, new, BufferDiff::compute_dirty);
+
+                    let denom = full_stats.p50_us.max(1) as f64;
+                    let ratio = dirty_stats.p50_us as f64 / denom;
+
+                    eprintln!(
+                        "{{\"event\":\"diff_span_dense_gate\",\"width\":{w},\"height\":{h},\"iters\":{iters},\"full_p50_us\":{},\"dirty_p50_us\":{},\"ratio\":{:.3},\"max_overhead\":{:.3}}}",
+                        full_stats.p50_us,
+                        dirty_stats.p50_us,
+                        ratio,
+                        max_overhead
+                    );
+
+                    assert!(
+                        ratio <= max_overhead,
+                        "span dirty diff regression: {w}x{h} dense ratio {ratio:.3} exceeds {max_overhead:.3}"
+                    );
+
+                    let total_us =
+                        (full_stats.total_us + dirty_stats.total_us).min(u128::from(u64::MAX))
+                            as u64;
+                    Duration::from_micros(total_us)
+                })
+            },
         );
     }
 
@@ -394,6 +643,11 @@ criterion_group!(
     bench_diff_runs,
     // Full vs dirty comparison (bd-3e1t.1.6)
     bench_full_vs_dirty,
+    // Selector overhead + selector vs fixed (bd-3e1t.8.4)
+    bench_selector_overhead,
+    bench_selector_vs_fixed,
+    bench_diff_span_sparse_stats,
+    bench_diff_span_dense_regression,
     bench_diff_large_screen,
     // Cell benchmarks
     bench_bits_eq,

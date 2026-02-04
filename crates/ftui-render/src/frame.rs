@@ -305,6 +305,48 @@ impl WidgetSignal {
     }
 }
 
+/// Widget render budget policy for a single frame.
+#[derive(Debug, Clone)]
+pub struct WidgetBudget {
+    allow_list: Option<Vec<u64>>,
+}
+
+impl Default for WidgetBudget {
+    fn default() -> Self {
+        Self::allow_all()
+    }
+}
+
+impl WidgetBudget {
+    /// Allow all widgets to render.
+    #[must_use]
+    pub fn allow_all() -> Self {
+        Self { allow_list: None }
+    }
+
+    /// Allow only a specific set of widget IDs.
+    #[must_use]
+    pub fn allow_only(mut ids: Vec<u64>) -> Self {
+        ids.sort_unstable();
+        ids.dedup();
+        Self {
+            allow_list: Some(ids),
+        }
+    }
+
+    /// Check whether a widget should be rendered.
+    #[inline]
+    pub fn allows(&self, widget_id: u64, essential: bool) -> bool {
+        if essential {
+            return true;
+        }
+        match &self.allow_list {
+            None => true,
+            Some(ids) => ids.binary_search(&widget_id).is_ok(),
+        }
+    }
+}
+
 /// Frame = Buffer + metadata for a render pass.
 ///
 /// The Frame is passed to `Model::view()` and contains everything needed
@@ -330,6 +372,9 @@ pub struct Frame<'a> {
     ///
     /// When `Some`, widgets can register clickable regions.
     pub hit_grid: Option<HitGrid>,
+
+    /// Widget render budget policy for this frame.
+    pub widget_budget: WidgetBudget,
 
     /// Collected per-widget scheduling signals for this frame.
     pub widget_signals: Vec<WidgetSignal>,
@@ -360,6 +405,7 @@ impl<'a> Frame<'a> {
             pool,
             links: None,
             hit_grid: None,
+            widget_budget: WidgetBudget::default(),
             widget_signals: Vec::new(),
             cursor_position: None,
             cursor_visible: true,
@@ -376,6 +422,7 @@ impl<'a> Frame<'a> {
             pool,
             links: None,
             hit_grid: None,
+            widget_budget: WidgetBudget::default(),
             widget_signals: Vec::new(),
             cursor_position: None,
             cursor_visible: true,
@@ -398,6 +445,7 @@ impl<'a> Frame<'a> {
             pool,
             links: Some(links),
             hit_grid: None,
+            widget_budget: WidgetBudget::default(),
             widget_signals: Vec::new(),
             cursor_position: None,
             cursor_visible: true,
@@ -414,6 +462,7 @@ impl<'a> Frame<'a> {
             pool,
             links: None,
             hit_grid: Some(HitGrid::new(width, height)),
+            widget_budget: WidgetBudget::default(),
             widget_signals: Vec::new(),
             cursor_position: None,
             cursor_visible: true,
@@ -435,6 +484,17 @@ impl<'a> Frame<'a> {
         } else {
             0
         }
+    }
+
+    /// Set the widget render budget for this frame.
+    pub fn set_widget_budget(&mut self, budget: WidgetBudget) {
+        self.widget_budget = budget;
+    }
+
+    /// Check whether a widget should be rendered under the current budget.
+    #[inline]
+    pub fn should_render_widget(&self, widget_id: u64, essential: bool) -> bool {
+        self.widget_budget.allows(widget_id, essential)
     }
 
     /// Register a widget scheduling signal for this frame.
@@ -500,6 +560,7 @@ impl<'a> Frame<'a> {
             grid.clear();
         }
         self.cursor_position = None;
+        self.widget_signals.clear();
     }
 
     /// Set cursor position.
