@@ -13,6 +13,7 @@ use ftui_widgets::help::{HelpCategory, HelpMode, KeyFormat, KeybindingHints};
 use ftui_widgets::paragraph::Paragraph;
 
 use crate::app::ScreenId;
+use crate::screens;
 use crate::theme;
 
 // ---------------------------------------------------------------------------
@@ -28,9 +29,9 @@ const TAB_ACCENT_ALPHA: u8 = 220;
 /// Convert a hit ID back to a ScreenId if it falls in the tab range.
 pub fn screen_from_hit_id(id: HitId) -> Option<ScreenId> {
     let raw = id.id();
-    if raw >= TAB_HIT_BASE && raw < TAB_HIT_BASE + ScreenId::ALL.len() as u32 {
+    if raw >= TAB_HIT_BASE && raw < TAB_HIT_BASE + screens::screen_registry().len() as u32 {
         let idx = (raw - TAB_HIT_BASE) as usize;
-        ScreenId::ALL.get(idx).copied()
+        screens::screen_registry().get(idx).map(|meta| meta.id)
     } else {
         None
     }
@@ -39,9 +40,9 @@ pub fn screen_from_hit_id(id: HitId) -> Option<ScreenId> {
 /// Convert a pane hit ID back to a ScreenId.
 pub fn screen_from_pane_hit_id(id: HitId) -> Option<ScreenId> {
     let raw = id.id();
-    if raw >= PANE_HIT_BASE && raw < PANE_HIT_BASE + ScreenId::ALL.len() as u32 {
+    if raw >= PANE_HIT_BASE && raw < PANE_HIT_BASE + screens::screen_registry().len() as u32 {
         let idx = (raw - PANE_HIT_BASE) as usize;
-        ScreenId::ALL.get(idx).copied()
+        screens::screen_registry().get(idx).map(|meta| meta.id)
     } else {
         None
     }
@@ -55,7 +56,10 @@ pub fn screen_from_any_hit_id(id: HitId) -> Option<ScreenId> {
 /// Register a pane-sized hit region to route clicks to a screen.
 pub fn register_pane_hit(frame: &mut Frame, rect: Rect, screen: ScreenId) {
     if !rect.is_empty() {
-        frame.register_hit_region(rect, HitId::new(PANE_HIT_BASE + screen.index() as u32));
+        frame.register_hit_region(
+            rect,
+            HitId::new(PANE_HIT_BASE + screens::screen_index(screen) as u32),
+        );
     }
 }
 
@@ -75,7 +79,7 @@ pub fn render_tab_bar(current: ScreenId, frame: &mut Frame, area: Rect) {
 
     // Lay out tabs left-to-right
     let mut x = area.x;
-    for (i, &id) in ScreenId::ALL.iter().enumerate() {
+    for (i, meta) in screens::screen_registry().iter().enumerate() {
         let key_label = if i < 9 {
             format!("{}", i + 1)
         } else if i == 9 {
@@ -84,7 +88,8 @@ pub fn render_tab_bar(current: ScreenId, frame: &mut Frame, area: Rect) {
             "-".into()
         };
 
-        let label_text = id.tab_label();
+        let id = meta.id;
+        let label_text = meta.short_label;
         let label_width = 1 + key_label.len() as u16 + 2 + label_text.len() as u16 + 1; // " {key}: {label} "
 
         if x + label_width > area.x + area.width {
@@ -723,8 +728,8 @@ mod tests {
     fn accent_for_all_screens() {
         // Verify each screen has a distinct accent color
         for &id in ScreenId::ALL {
-            let color_token = accent_for(id);
-            let color: PackedRgba = color_token.into();
+            let accent_value = accent_for(id);
+            let color: PackedRgba = accent_value.into();
             // Just verify it returns something non-zero
             assert_ne!(
                 color,

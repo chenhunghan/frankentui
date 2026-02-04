@@ -575,7 +575,7 @@ fn format_breadcrumbs(path: &str) -> String {
     let mut parts = path.split('/').filter(|p| !p.is_empty());
     let mut out = String::new();
     if path.starts_with('/') {
-        out.push_str("🏠 /");
+        out.push_str("~ /");
     }
     if let Some(first) = parts.next() {
         if !out.is_empty() {
@@ -644,26 +644,26 @@ mod icons {
     use super::{FileEntry, FileKind};
 
     pub fn directory_icon() -> &'static str {
-        "📁"
+        "d "
     }
 
     pub fn symlink_icon() -> &'static str {
-        "🔗"
+        "l "
     }
 
     pub fn file_icon(name: &str) -> &'static str {
         let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
         match ext.as_str() {
-            "rs" => "🦀",
-            "py" => "🐍",
-            "js" | "ts" => "📜",
-            "md" => "📝",
-            "json" | "toml" | "yaml" | "yml" | "env" | "gitignore" => "⚙️",
-            "png" | "jpg" | "jpeg" | "gif" | "svg" => "🖼️",
-            "mp3" | "wav" | "flac" => "🎵",
-            "mp4" | "mov" | "mkv" => "🎬",
-            "sh" | "bash" => "⚡",
-            _ => "📄",
+            "rs" => "r ",
+            "py" => "p ",
+            "js" | "ts" => "j ",
+            "md" => "m ",
+            "json" | "toml" | "yaml" | "yml" | "env" | "gitignore" => "c ",
+            "png" | "jpg" | "jpeg" | "gif" | "svg" => "i ",
+            "mp3" | "wav" | "flac" => "a ",
+            "mp4" | "mov" | "mkv" => "v ",
+            "sh" | "bash" => "s ",
+            _ => "f ",
         }
     }
 

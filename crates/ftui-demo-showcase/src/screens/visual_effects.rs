@@ -3033,10 +3033,10 @@ impl DoomE1M1State {
         // Paint a subtle Doom-like sky/floor gradient under the walls.
         let horizon = center_y.round() as i32;
         let max_y = height as i32 - 1;
-        let sky_top = (16, 18, 26);
-        let sky_bottom = (52, 46, 58);
-        let floor_top = (42, 30, 22);
-        let floor_bottom = (12, 10, 8);
+        let sky_top = (22, 30, 62);
+        let sky_bottom = (78, 86, 118);
+        let floor_top = (70, 54, 38);
+        let floor_bottom = (26, 20, 16);
         for py in (0..=max_y).step_by(2) {
             let (r, g, b) = if py <= horizon {
                 let denom = horizon.max(1) as f64;
@@ -3082,32 +3082,32 @@ impl DoomE1M1State {
             }
 
             let fog = (corrected / 900.0).clamp(0.0, 1.0);
-            let mut brightness = (1.0 - fog).powf(1.35);
+            let mut brightness = (0.18 + (1.0 - fog).powf(1.2)).clamp(0.0, 1.4);
             if self.fire_flash > 0.0 {
-                brightness = (brightness + self.fire_flash * 0.35).min(1.3);
+                brightness = (brightness + self.fire_flash * 0.35).min(1.4);
             }
 
             let tex_band = ((hit_u * 32.0).floor() as i32) & 3;
             let tex_boost = match tex_band {
-                0 => 0.86,
-                1 => 0.98,
-                2 => 1.06,
-                _ => 1.14,
+                0 => 0.9,
+                1 => 1.02,
+                2 => 1.12,
+                _ => 1.22,
             };
 
             let grain =
                 (((px as u64).wrapping_mul(113) ^ (frame.wrapping_mul(131)) ^ hit_idx as u64) & 7)
                     as f32
                     / 80.0;
-            brightness = (brightness * tex_boost + grain).clamp(0.08, 1.3);
+            brightness = (brightness * tex_boost + grain + 0.06).clamp(0.15, 1.4);
 
             let r = (base.r() as f32 * brightness).min(255.0) as u8;
             let g = (base.g() as f32 * brightness).min(255.0) as u8;
             let b = (base.b() as f32 * brightness).min(255.0) as u8;
             let wall_color = PackedRgba::rgb(r, g, b);
 
-            let sky_base = PackedRgba::rgb(18, 20, 26);
-            let floor_base = PackedRgba::rgb(20, 16, 14);
+            let sky_base = PackedRgba::rgb(30, 40, 70);
+            let floor_base = PackedRgba::rgb(42, 32, 24);
             let sky_fade = fog.clamp(0.0, 1.0);
             let floor_fade = fog.clamp(0.0, 1.0);
             let ceiling_color = PackedRgba::rgb(
@@ -3663,17 +3663,17 @@ impl QuakeE1M1State {
 
         let proj_scale = (w.min(h) * 0.5) / (QUAKE_FOV * 0.5).tan();
         let near = 0.04f32;
-        let far = 6.0f32;
-        let fog_color = PackedRgba::rgb(18, 20, 24);
+        let far = 10.0f32;
+        let fog_color = PackedRgba::rgb(28, 30, 38);
 
         let horizon = (h * 0.5 - self.player.pitch * (h * 0.35) + bob * proj_scale * 0.8)
             .clamp(0.0, h - 1.0)
             .round() as i32;
         let max_y = height as i32 - 1;
-        let sky_top = (12, 14, 20);
-        let sky_bottom = (30, 34, 46);
-        let floor_top = (44, 38, 30);
-        let floor_bottom = (16, 12, 10);
+        let sky_top = (18, 24, 42);
+        let sky_bottom = (54, 62, 86);
+        let floor_top = (72, 62, 46);
+        let floor_bottom = (26, 20, 16);
         for py in (0..=max_y).step_by(2) {
             let (r, g, b) = if py <= horizon {
                 let denom = horizon.max(1) as f64;
@@ -3851,9 +3851,10 @@ impl QuakeE1M1State {
                             ^ frame)
                             & 3) as f32
                             / 22.0;
-                        let mut brightness = (light * fade * pattern + grain).clamp(0.0, 1.0);
+                        let mut brightness =
+                            (light * fade * pattern + grain + 0.12).clamp(0.08, 1.2);
                         if self.fire_flash > 0.0 {
-                            brightness = (brightness + self.fire_flash * 0.35).min(1.25);
+                            brightness = (brightness + self.fire_flash * 0.35).min(1.3);
                         }
 
                         let mut r = base.r() as f32 * brightness;
@@ -4109,6 +4110,27 @@ fn initial_effect_from_env() -> Option<EffectType> {
 impl VisualEffectsScreen {
     fn is_fps_effect(&self) -> bool {
         matches!(self.effect, EffectType::DoomE1M1 | EffectType::QuakeE1M1)
+    }
+
+    fn canvas_mode_for_effect(&self, quality: FxQuality, area_cells: usize) -> Mode {
+        let base = match quality {
+            FxQuality::Full => Mode::Braille,
+            FxQuality::Reduced => Mode::Block,
+            FxQuality::Minimal | FxQuality::Off => Mode::HalfBlock,
+        };
+
+        if matches!(self.effect, EffectType::Metaballs | EffectType::Plasma) {
+            const DOWNSHIFT_AREA_CELLS: usize = 1800;
+            if area_cells >= DOWNSHIFT_AREA_CELLS {
+                return match base {
+                    Mode::Braille => Mode::Block,
+                    Mode::Block => Mode::HalfBlock,
+                    Mode::HalfBlock => Mode::HalfBlock,
+                };
+            }
+        }
+
+        base
     }
 
     fn switch_effect(&mut self, effect: EffectType) {
@@ -4802,7 +4824,7 @@ impl Screen for VisualEffectsScreen {
             height: area.height.saturating_sub(1),
         };
 
-        // Reuse cached painter (grow-only) and render all effects at sub-pixel resolution.
+        // Reuse cached painter (grow-only) and render at sub-pixel resolution.
         {
             let area_cells = canvas_area.width as usize * canvas_area.height as usize;
             let mut quality = FxQuality::from_degradation_with_area(frame.degradation, area_cells);
@@ -4814,7 +4836,8 @@ impl Screen for VisualEffectsScreen {
             let theme_inputs = current_fx_theme();
 
             let mut painter = self.painter.borrow_mut();
-            painter.ensure_for_area(canvas_area, Mode::Braille);
+            let mode = self.canvas_mode_for_effect(quality, area_cells);
+            painter.ensure_for_area(canvas_area, mode);
             painter.clear();
             let (pw, ph) = painter.size();
 

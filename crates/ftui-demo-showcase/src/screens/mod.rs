@@ -50,6 +50,477 @@ use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 
+use crate::app::ScreenId;
+
+/// High-level IA categories for the demo showcase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScreenCategory {
+    Tour,
+    Core,
+    Visuals,
+    Interaction,
+    Text,
+    Systems,
+}
+
+impl ScreenCategory {
+    pub const ALL: &'static [ScreenCategory] = &[
+        ScreenCategory::Tour,
+        ScreenCategory::Core,
+        ScreenCategory::Visuals,
+        ScreenCategory::Interaction,
+        ScreenCategory::Text,
+        ScreenCategory::Systems,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            ScreenCategory::Tour => "Tour",
+            ScreenCategory::Core => "Core",
+            ScreenCategory::Visuals => "Visuals",
+            ScreenCategory::Interaction => "Interaction",
+            ScreenCategory::Text => "Text",
+            ScreenCategory::Systems => "Systems",
+        }
+    }
+
+    pub const fn short_label(self) -> &'static str {
+        match self {
+            ScreenCategory::Tour => "Tour",
+            ScreenCategory::Core => "Core",
+            ScreenCategory::Visuals => "Visuals",
+            ScreenCategory::Interaction => "Interact",
+            ScreenCategory::Text => "Text",
+            ScreenCategory::Systems => "Systems",
+        }
+    }
+}
+
+/// Registry metadata describing a demo screen.
+#[derive(Debug, Clone, Copy)]
+pub struct ScreenMeta {
+    pub id: ScreenId,
+    pub title: &'static str,
+    pub short_label: &'static str,
+    pub category: ScreenCategory,
+    pub palette_tags: &'static [&'static str],
+    pub blurb: &'static str,
+    pub default_hotkey: Option<&'static str>,
+    pub tour_step_hint: Option<&'static str>,
+}
+
+/// Screen Registry: single source of truth for screen ordering + metadata.
+pub const SCREEN_REGISTRY: &[ScreenMeta] = &[
+    ScreenMeta {
+        id: ScreenId::Dashboard,
+        title: "Dashboard",
+        short_label: "Dash",
+        category: ScreenCategory::Tour,
+        palette_tags: &["overview", "tour", "widgets"],
+        blurb: "Cinematic overview of key features and live tiles.",
+        default_hotkey: Some("1"),
+        tour_step_hint: Some("Start here"),
+    },
+    ScreenMeta {
+        id: ScreenId::Shakespeare,
+        title: "Shakespeare",
+        short_label: "Shakes",
+        category: ScreenCategory::Text,
+        palette_tags: &["search", "text", "highlight"],
+        blurb: "Live search over Shakespeare with animated highlights.",
+        default_hotkey: Some("2"),
+        tour_step_hint: Some("Live search + highlights"),
+    },
+    ScreenMeta {
+        id: ScreenId::CodeExplorer,
+        title: "Code Explorer",
+        short_label: "Code",
+        category: ScreenCategory::Text,
+        palette_tags: &["code", "explorer", "syntax"],
+        blurb: "Code browser with pane routing and syntax preview.",
+        default_hotkey: Some("3"),
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::WidgetGallery,
+        title: "Widget Gallery",
+        short_label: "Widgets",
+        category: ScreenCategory::Core,
+        palette_tags: &["widgets", "catalog", "layout"],
+        blurb: "Library of core widgets in a compact gallery.",
+        default_hotkey: Some("4"),
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::LayoutLab,
+        title: "Layout Lab",
+        short_label: "Layout",
+        category: ScreenCategory::Core,
+        palette_tags: &["layout", "flex", "grid"],
+        blurb: "Hands-on layout experiments with constraints.",
+        default_hotkey: Some("5"),
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::FormsInput,
+        title: "Forms & Input",
+        short_label: "Forms",
+        category: ScreenCategory::Interaction,
+        palette_tags: &["forms", "input", "controls"],
+        blurb: "Form fields, validation cues, and input widgets.",
+        default_hotkey: Some("6"),
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::DataViz,
+        title: "Data Viz",
+        short_label: "DataViz",
+        category: ScreenCategory::Visuals,
+        palette_tags: &["charts", "graphs", "visuals"],
+        blurb: "Dense charts and small-multiple visualizations.",
+        default_hotkey: Some("7"),
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::FileBrowser,
+        title: "File Browser",
+        short_label: "Files",
+        category: ScreenCategory::Interaction,
+        palette_tags: &["files", "tree", "navigation"],
+        blurb: "File tree with previews and pane routing.",
+        default_hotkey: Some("8"),
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::AdvancedFeatures,
+        title: "Advanced",
+        short_label: "Adv",
+        category: ScreenCategory::Core,
+        palette_tags: &["advanced", "widgets", "patterns"],
+        blurb: "Advanced widget patterns and composite layouts.",
+        default_hotkey: Some("9"),
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::TerminalCapabilities,
+        title: "Terminal Capabilities",
+        short_label: "Caps",
+        category: ScreenCategory::Systems,
+        palette_tags: &["terminal", "capabilities", "compat"],
+        blurb: "Terminal capability detection and feature matrix.",
+        default_hotkey: Some("0"),
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::MacroRecorder,
+        title: "Macro Recorder",
+        short_label: "Macro",
+        category: ScreenCategory::Interaction,
+        palette_tags: &["macro", "record", "replay"],
+        blurb: "Record, edit, and replay input macros.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::Performance,
+        title: "Performance",
+        short_label: "Perf",
+        category: ScreenCategory::Systems,
+        palette_tags: &["performance", "metrics", "budget"],
+        blurb: "Render performance metrics and budgets.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::MarkdownRichText,
+        title: "Markdown",
+        short_label: "MD",
+        category: ScreenCategory::Text,
+        palette_tags: &["markdown", "render", "text"],
+        blurb: "Markdown rendering with styling and layout.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::VisualEffects,
+        title: "Visual Effects",
+        short_label: "VFX",
+        category: ScreenCategory::Visuals,
+        palette_tags: &["effects", "particles", "animation"],
+        blurb: "High-performance visual effects playground.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::ResponsiveDemo,
+        title: "Responsive Layout",
+        short_label: "Resp",
+        category: ScreenCategory::Core,
+        palette_tags: &["responsive", "layout", "breakpoints"],
+        blurb: "Responsive layout behavior across sizes.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::LogSearch,
+        title: "Log Search",
+        short_label: "Logs",
+        category: ScreenCategory::Text,
+        palette_tags: &["logs", "search", "filter"],
+        blurb: "Search and filter logs with live updates.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::Notifications,
+        title: "Notifications",
+        short_label: "Notify",
+        category: ScreenCategory::Interaction,
+        palette_tags: &["notifications", "toast", "alerts"],
+        blurb: "Toast notifications and transient UI patterns.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::ActionTimeline,
+        title: "Action Timeline",
+        short_label: "Timeline",
+        category: ScreenCategory::Systems,
+        palette_tags: &["timeline", "events", "audit"],
+        blurb: "Event stream and action timeline viewer.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::IntrinsicSizing,
+        title: "Intrinsic Sizing",
+        short_label: "Sizing",
+        category: ScreenCategory::Core,
+        palette_tags: &["layout", "intrinsic", "measure"],
+        blurb: "Intrinsic sizing and content measurement.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::LayoutInspector,
+        title: "Layout Inspector",
+        short_label: "Inspect",
+        category: ScreenCategory::Core,
+        palette_tags: &["layout", "inspector", "constraints"],
+        blurb: "Constraint solver visual inspector.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::AdvancedTextEditor,
+        title: "Advanced Text Editor",
+        short_label: "Editor",
+        category: ScreenCategory::Text,
+        palette_tags: &["editor", "text", "search"],
+        blurb: "Advanced multi-line editor with search.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::MousePlayground,
+        title: "Mouse Playground",
+        short_label: "Mouse",
+        category: ScreenCategory::Interaction,
+        palette_tags: &["mouse", "hit-test", "interaction"],
+        blurb: "Mouse and hit-test interactions.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::FormValidation,
+        title: "Form Validation",
+        short_label: "Validate",
+        category: ScreenCategory::Interaction,
+        palette_tags: &["validation", "forms", "errors"],
+        blurb: "Form validation states and error cues.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::VirtualizedSearch,
+        title: "Virtualized Search",
+        short_label: "VirtSearch",
+        category: ScreenCategory::Systems,
+        palette_tags: &["virtualized", "list", "performance"],
+        blurb: "Virtualized list with fast search.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::AsyncTasks,
+        title: "Async Tasks",
+        short_label: "Tasks",
+        category: ScreenCategory::Systems,
+        palette_tags: &["async", "jobs", "queue"],
+        blurb: "Async tasks and job queue visualization.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::ThemeStudio,
+        title: "Theme Studio",
+        short_label: "Themes",
+        category: ScreenCategory::Visuals,
+        palette_tags: &["theme", "colors", "design"],
+        blurb: "Live theme and palette studio.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::SnapshotPlayer,
+        title: "Time-Travel Studio",
+        short_label: "TimeTravel",
+        category: ScreenCategory::Visuals,
+        palette_tags: &["replay", "snapshot", "diff"],
+        blurb: "Time-travel snapshots with replay controls.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::PerformanceHud,
+        title: "Performance HUD",
+        short_label: "PerfHUD",
+        category: ScreenCategory::Systems,
+        palette_tags: &["performance", "hud", "metrics"],
+        blurb: "HUD overlay for frame timing.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::I18nDemo,
+        title: "i18n Stress Lab",
+        short_label: "i18n",
+        category: ScreenCategory::Text,
+        palette_tags: &["i18n", "unicode", "width"],
+        blurb: "International text and width edge cases.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::VoiOverlay,
+        title: "VOI Overlay",
+        short_label: "VOI",
+        category: ScreenCategory::Systems,
+        palette_tags: &["voi", "bayes", "overlay"],
+        blurb: "Value-of-information overlay and evidence.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::InlineModeStory,
+        title: "Inline Mode",
+        short_label: "Inline",
+        category: ScreenCategory::Tour,
+        palette_tags: &["inline", "scrollback", "chrome"],
+        blurb: "Inline mode story and scrollback preservation.",
+        default_hotkey: None,
+        tour_step_hint: Some("Inline mode value"),
+    },
+    ScreenMeta {
+        id: ScreenId::AccessibilityPanel,
+        title: "Accessibility",
+        short_label: "A11y",
+        category: ScreenCategory::Systems,
+        palette_tags: &["a11y", "accessibility", "contrast"],
+        blurb: "Accessibility settings and telemetry.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::WidgetBuilder,
+        title: "Widget Builder",
+        short_label: "Builder",
+        category: ScreenCategory::Core,
+        palette_tags: &["widgets", "builder", "sandbox"],
+        blurb: "Interactive widget builder sandbox.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::CommandPaletteLab,
+        title: "Command Palette Evidence Lab",
+        short_label: "Palette",
+        category: ScreenCategory::Interaction,
+        palette_tags: &["command", "palette", "ranking"],
+        blurb: "Command palette ranking with evidence details.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::DeterminismLab,
+        title: "Determinism Lab",
+        short_label: "Determinism",
+        category: ScreenCategory::Systems,
+        palette_tags: &["determinism", "checksum", "replay"],
+        blurb: "Checksum equivalence and determinism checks.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
+        id: ScreenId::HyperlinkPlayground,
+        title: "Hyperlink Playground",
+        short_label: "Links",
+        category: ScreenCategory::Interaction,
+        palette_tags: &["links", "osc8", "hit-test"],
+        blurb: "OSC-8 hyperlink playground and hit regions.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+];
+
+/// Return the full registry (ordered).
+pub fn screen_registry() -> &'static [ScreenMeta] {
+    SCREEN_REGISTRY
+}
+
+/// Lookup a screen by ID in the registry.
+pub fn screen_meta(id: ScreenId) -> &'static ScreenMeta {
+    SCREEN_REGISTRY
+        .iter()
+        .find(|meta| meta.id == id)
+        .unwrap_or(&SCREEN_REGISTRY[0])
+}
+
+/// Convenience: category for a screen.
+pub fn screen_category(id: ScreenId) -> ScreenCategory {
+    screen_meta(id).category
+}
+
+/// Convenience: title for a screen.
+pub fn screen_title(id: ScreenId) -> &'static str {
+    screen_meta(id).title
+}
+
+/// Convenience: short label for tabs.
+pub fn screen_tab_label(id: ScreenId) -> &'static str {
+    screen_meta(id).short_label
+}
+
+/// Index of a screen in the registry.
+pub fn screen_index(id: ScreenId) -> usize {
+    SCREEN_REGISTRY
+        .iter()
+        .position(|meta| meta.id == id)
+        .unwrap_or(0)
+}
+
+/// Iterate screens in a given category, preserving registry order.
+pub fn screens_in_category(category: ScreenCategory) -> impl Iterator<Item = &'static ScreenMeta> {
+    SCREEN_REGISTRY
+        .iter()
+        .filter(move |meta| meta.category == category)
+}
+
+/// Count screens in a given category.
+pub fn screen_count_in_category(category: ScreenCategory) -> usize {
+    screens_in_category(category).count()
+}
+
 /// A help entry describing a keybinding.
 pub struct HelpEntry {
     /// Key label (e.g. "Tab", "Ctrl+F").
@@ -111,5 +582,67 @@ pub trait Screen {
     /// Short name for tab display (max ~12 chars).
     fn tab_label(&self) -> &'static str {
         self.title()
+    }
+}
+
+/// Check if a line contains a query string (case-insensitive) without allocation.
+///
+/// Callers should pass a pre-lowercased query string to avoid repeated work.
+pub(crate) fn line_contains_ignore_case(line: &str, query_lower: &str) -> bool {
+    if query_lower.is_empty() {
+        return true;
+    }
+    let line_bytes = line.as_bytes();
+    let query_bytes = query_lower.as_bytes();
+
+    if query_bytes.len() > line_bytes.len() {
+        return false;
+    }
+
+    for i in 0..=line_bytes.len() - query_bytes.len() {
+        let mut match_found = true;
+        for j in 0..query_bytes.len() {
+            if line_bytes[i + j].to_ascii_lowercase() != query_bytes[j] {
+                match_found = false;
+                break;
+            }
+        }
+        if match_found {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_matches_screen_list() {
+        assert_eq!(SCREEN_REGISTRY.len(), ScreenId::ALL.len());
+        for &id in ScreenId::ALL {
+            assert!(
+                SCREEN_REGISTRY.iter().any(|meta| meta.id == id),
+                "missing screen in registry: {id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_has_unique_ids() {
+        for (idx, meta) in SCREEN_REGISTRY.iter().enumerate() {
+            let duplicates = SCREEN_REGISTRY
+                .iter()
+                .enumerate()
+                .filter(|(i, other)| *i != idx && other.id == meta.id)
+                .count();
+            assert_eq!(
+                duplicates,
+                0,
+                "duplicate id in registry: {id:?}",
+                id = meta.id
+            );
+        }
     }
 }
