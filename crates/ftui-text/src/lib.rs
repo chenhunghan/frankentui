@@ -120,10 +120,10 @@ pub use width_cache::{
     CacheStats, CountMinSketch, DEFAULT_CACHE_CAPACITY, Doorkeeper, TinyLfuWidthCache, WidthCache,
 };
 pub use wrap::{
-    KpBreakResult, WrapMode, WrapOptions, ascii_width, display_width, grapheme_count, graphemes,
-    has_wide_chars, is_ascii_only, truncate_to_width, truncate_to_width_with_info,
-    truncate_with_ellipsis, word_boundaries, word_segments, wrap_optimal, wrap_text,
-    wrap_text_optimal, wrap_with_options,
+    KpBreakResult, WrapMode, WrapOptions, ascii_width, display_width, grapheme_count,
+    grapheme_width, graphemes, has_wide_chars, is_ascii_only, truncate_to_width,
+    truncate_to_width_with_info, truncate_with_ellipsis, word_boundaries, word_segments,
+    wrap_optimal, wrap_text, wrap_text_optimal, wrap_with_options,
 };
 
 #[cfg(feature = "markup")]

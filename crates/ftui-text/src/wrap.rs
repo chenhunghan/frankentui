@@ -133,7 +133,7 @@ fn wrap_chars(text: &str, options: &WrapOptions) -> Vec<String> {
             continue;
         }
 
-        let grapheme_width = grapheme.width();
+        let grapheme_width = crate::wrap::grapheme_width(grapheme);
 
         // Check if this grapheme fits
         if current_width + grapheme_width > options.width && !current_line.is_empty() {
@@ -194,7 +194,7 @@ fn wrap_paragraph(
     current_width: &mut usize,
 ) {
     for word in split_words(text) {
-        let word_width = word.width();
+        let word_width = display_width(&word);
 
         // If word fits on current line
         if *current_width + word_width <= options.width {
@@ -225,7 +225,7 @@ fn wrap_paragraph(
                 (word.as_str(), word_width)
             } else {
                 let trimmed = word.trim_start();
-                (trimmed, trimmed.width())
+                (trimmed, display_width(trimmed))
             };
             if !fragment.is_empty() {
                 current_line.push_str(fragment);
@@ -244,7 +244,7 @@ fn wrap_long_word(
     current_width: &mut usize,
 ) {
     for grapheme in word.graphemes(true) {
-        let grapheme_width = grapheme.width();
+        let grapheme_width = crate::wrap::grapheme_width(grapheme);
 
         // Skip leading whitespace on new lines
         if *current_width == 0 && grapheme.trim().is_empty() && !options.preserve_indent {
@@ -337,13 +337,13 @@ fn finalize_line(line: &str, options: &WrapOptions) -> String {
 /// an emoji, ZWJ sequence, or combining character sequence.
 #[must_use]
 pub fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &str) -> String {
-    let text_width = text.width();
+    let text_width = display_width(text);
 
     if text_width <= max_width {
         return text.to_string();
     }
 
-    let ellipsis_width = ellipsis.width();
+    let ellipsis_width = display_width(ellipsis);
 
     // If ellipsis alone exceeds width, just truncate without ellipsis
     if ellipsis_width >= max_width {
@@ -365,7 +365,7 @@ pub fn truncate_to_width(text: &str, max_width: usize) -> String {
     let mut current_width = 0;
 
     for grapheme in text.graphemes(true) {
-        let grapheme_width = grapheme.width();
+        let grapheme_width = crate::wrap::grapheme_width(grapheme);
 
         if current_width + grapheme_width > max_width {
             break;
@@ -408,23 +408,34 @@ pub fn ascii_width(text: &str) -> Option<usize> {
     }
 }
 
+/// Calculate the display width of a single grapheme cluster.
+///
+/// This uses the maximum width of any code point in the cluster, which aligns
+/// with terminal behavior for ZWJ emoji and combining sequences.
+#[inline]
+#[must_use]
+pub fn grapheme_width(grapheme: &str) -> usize {
+    UnicodeWidthStr::width(grapheme)
+}
+
 /// Calculate the display width of text in cells.
 ///
 /// Uses ASCII fast-path when possible, falling back to Unicode width calculation.
 ///
 /// # Performance
 /// - ASCII text: O(n) byte scan, no allocations
-/// - Non-ASCII: Full Unicode width calculation via `unicode-width`
+/// - Non-ASCII: Grapheme segmentation + per-grapheme width
 #[inline]
 #[must_use]
 pub fn display_width(text: &str) -> usize {
-    ascii_width(text).unwrap_or_else(|| text.width())
+    ascii_width(text).unwrap_or_else(|| text.graphemes(true).map(crate::wrap::grapheme_width).sum())
 }
 
 /// Check if a string contains any wide characters (width > 1).
 #[must_use]
 pub fn has_wide_chars(text: &str) -> bool {
-    text.graphemes(true).any(|g| g.width() > 1)
+    text.graphemes(true)
+        .any(|g| crate::wrap::grapheme_width(g) > 1)
 }
 
 /// Check if a string is ASCII-only (fast path possible).
@@ -501,7 +512,7 @@ pub fn truncate_to_width_with_info(text: &str, max_width: usize) -> (&str, usize
     let mut current_width = 0;
 
     for grapheme in text.graphemes(true) {
-        let grapheme_width = grapheme.width();
+        let grapheme_width = crate::wrap::grapheme_width(grapheme);
 
         if current_width + grapheme_width > max_width {
             break;
@@ -664,18 +675,18 @@ fn kp_tokenize(text: &str) -> Vec<KpWord> {
             if let Some(last) = words.last_mut() {
                 let w: &mut KpWord = last;
                 w.text.push_str(seg);
-                w.space_width += UnicodeWidthStr::width(seg);
+                w.space_width += display_width(seg);
             } else {
                 // Handle leading whitespace as a word with 0 content width
                 words.push(KpWord {
                     text: seg.to_string(),
                     content_width: 0,
-                    space_width: UnicodeWidthStr::width(seg),
+                    space_width: display_width(seg),
                 });
             }
             i += 1;
         } else {
-            let content_width = UnicodeWidthStr::width(seg);
+            let content_width = display_width(seg);
             words.push(KpWord {
                 text: seg.to_string(),
                 content_width,
@@ -807,7 +818,7 @@ pub fn wrap_optimal(text: &str, width: usize) -> KpBreakResult {
         let trimmed = line.trim_end().to_string();
 
         // Compute this line's badness for diagnostics
-        let line_w = UnicodeWidthStr::width(trimmed.as_str());
+        let line_w = display_width(trimmed.as_str());
         let slack = width as i64 - line_w as i64;
         let is_last = idx == break_count - 1;
         let bad = if slack < 0 {
@@ -847,6 +858,7 @@ pub fn wrap_text_optimal(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unicode_width::UnicodeWidthStr;
 
     // ==========================================================================
     // wrap_text tests
@@ -1289,19 +1301,19 @@ mod tests {
     #[test]
     fn display_width_emoji_skin_tone() {
         let width = display_width("👍🏻");
-        assert!(width >= 1);
+        assert_eq!(width, 2);
     }
 
     #[test]
     fn display_width_flag_emoji() {
         let width = display_width("🇺🇸");
-        assert!(width >= 1);
+        assert_eq!(width, 2);
     }
 
     #[test]
     fn display_width_zwj_family() {
         let width = display_width("👨‍👩‍👧");
-        assert!(width >= 1);
+        assert_eq!(width, 2);
     }
 
     #[test]
@@ -1955,6 +1967,7 @@ mod tests {
 mod proptests {
     use super::*;
     use proptest::prelude::*;
+    use unicode_width::UnicodeWidthStr;
 
     proptest! {
         #[test]

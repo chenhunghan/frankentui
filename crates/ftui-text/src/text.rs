@@ -29,12 +29,12 @@
 //! ```
 
 use crate::TextMeasurement;
+use crate::grapheme_width;
 use crate::segment::{Segment, SegmentLine, SegmentLines, split_into_lines};
 use crate::wrap::{WrapMode, graphemes, truncate_to_width_with_info};
 use ftui_style::Style;
 use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 /// A styled span of text.
 ///
@@ -687,7 +687,7 @@ fn find_cell_boundary(text: &str, target_cells: usize) -> (usize, usize) {
     let mut byte_pos = 0;
 
     for grapheme in graphemes(text) {
-        let grapheme_width = grapheme.width();
+        let grapheme_width = grapheme_width(grapheme);
 
         if current_cells + grapheme_width > target_cells {
             break;
@@ -858,7 +858,7 @@ fn wrap_line_chars(line: &Line, width: usize) -> Vec<Line> {
                     .as_str()
                     .graphemes(true)
                     .next()
-                    .map(|g| g.width())
+                    .map(grapheme_width)
                     .unwrap_or(1);
                 remaining.split_at_cell(first_w.max(1))
             } else {
@@ -935,7 +935,7 @@ fn wrap_line_words(line: &Line, width: usize, char_fallback: bool) -> Vec<Line> 
                                 .as_str()
                                 .graphemes(true)
                                 .next()
-                                .map(|g| g.width())
+                                .map(grapheme_width)
                                 .unwrap_or(1);
                             remaining.split_at_cell(first_w.max(1))
                         } else {

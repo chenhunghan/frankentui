@@ -26,11 +26,11 @@
 //! assert_eq!(right.as_str(), ", world!");
 //! ```
 
+use crate::grapheme_width;
 use ftui_style::Style;
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 /// Control codes that can be carried by a segment.
 ///
@@ -336,7 +336,7 @@ pub fn find_cell_boundary(text: &str, target_cells: usize) -> (usize, usize) {
     let mut byte_pos = 0;
 
     for grapheme in text.graphemes(true) {
-        let grapheme_width = grapheme.width();
+        let grapheme_width = grapheme_width(grapheme);
 
         // Check if adding this grapheme would exceed the target
         if current_cells + grapheme_width > target_cells {
