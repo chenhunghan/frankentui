@@ -94,19 +94,6 @@ impl<'a> Table<'a> {
 
     /// Set the header row.
     pub fn header(mut self, header: Row) -> Self {
-        let col_count = self.widths.len();
-        if col_count > 0 && Self::requires_measurement(&self.widths) {
-            // Incremental update: merge header widths into existing row widths.
-            // This avoids re-scanning all rows (O(N) -> O(1)).
-            if self.intrinsic_col_widths.len() < col_count {
-                self.intrinsic_col_widths.resize(col_count, 0);
-            }
-
-            for (i, cell) in header.cells.iter().enumerate().take(col_count) {
-                let cell_width = cell.width().min(u16::MAX as usize) as u16;
-                self.intrinsic_col_widths[i] = self.intrinsic_col_widths[i].max(cell_width);
-            }
-        }
         self.header = Some(header);
         self
     }
@@ -528,9 +515,15 @@ impl<'a> StatefulWidget for Table<'a> {
         let column_rects = flex.split_with_measurer(
             Rect::new(table_area.x, table_area.y, table_area.width, 1),
             |idx, _| {
-                // Use cached intrinsic widths instead of re-iterating rows
-                let width = self.intrinsic_col_widths.get(idx).copied().unwrap_or(0);
-                ftui_layout::LayoutSizeHint::exact(width)
+                // Use cached intrinsic widths (rows) and merge with header width
+                let row_width = self.intrinsic_col_widths.get(idx).copied().unwrap_or(0);
+                let header_width = self
+                    .header
+                    .as_ref()
+                    .and_then(|h| h.cells.get(idx))
+                    .map(|c| c.width().min(u16::MAX as usize) as u16)
+                    .unwrap_or(0);
+                ftui_layout::LayoutSizeHint::exact(row_width.max(header_width))
             },
         );
 
@@ -610,13 +603,7 @@ fn render_row(row: &Row, col_rects: &[Rect], frame: &mut Frame, y: u16, style: S
         let rect = col_rects[i];
         let cell_area = Rect::new(rect.x, y, rect.width, row.height);
 
-        let styled_text = if apply_styling {
-            cell_text.clone().with_base_style(style)
-        } else {
-            cell_text.clone()
-        };
-
-        for (line_idx, line) in styled_text.lines().iter().enumerate() {
+        for (line_idx, line) in cell_text.lines().iter().enumerate() {
             if line_idx as u16 >= row.height {
                 break;
             }
@@ -625,7 +612,10 @@ fn render_row(row: &Row, col_rects: &[Rect], frame: &mut Frame, y: u16, style: S
             for span in line.spans() {
                 // At NoStyling+, ignore span-level styles
                 let span_style = if apply_styling {
-                    span.style.unwrap_or(style)
+                    match span.style {
+                        Some(s) => s.merge(&style),
+                        None => style,
+                    }
                 } else {
                     Style::default()
                 };
@@ -658,24 +648,33 @@ impl MeasurableWidget for Table<'_> {
         }
 
         let fallback;
-        let col_widths = if self.intrinsic_col_widths.len() == col_count {
+        let row_widths = if self.intrinsic_col_widths.len() == col_count {
             &self.intrinsic_col_widths
         } else {
-            fallback = Self::compute_intrinsic_widths(&self.rows, self.header.as_ref(), col_count);
+            // Compute rows only (pass None for header) to match intrinsic_col_widths semantics
+            fallback = Self::compute_intrinsic_widths(&self.rows, None, col_count);
             &fallback
         };
 
-        // Total width = sum of column widths + column spacing
-        // Use saturating arithmetic to prevent overflow with many/wide columns
+        // Total width = sum of max(row_width, header_width) + column spacing
         let separator_width = if col_count > 1 {
             ((col_count - 1) as u16).saturating_mul(self.column_spacing)
         } else {
             0
         };
-        let content_width: u16 = col_widths
-            .iter()
-            .fold(0u16, |acc, &w| acc.saturating_add(w))
-            .saturating_add(separator_width);
+
+        let mut summed_col_width = 0u16;
+        for (i, &r_w) in row_widths.iter().enumerate() {
+            let h_w = self
+                .header
+                .as_ref()
+                .and_then(|h| h.cells.get(i))
+                .map(|c| c.width().min(u16::MAX as usize) as u16)
+                .unwrap_or(0);
+            summed_col_width = summed_col_width.saturating_add(r_w.max(h_w));
+        }
+
+        let content_width = summed_col_width.saturating_add(separator_width);
 
         // Total height = header height + row heights + margins
         // Use saturating arithmetic to prevent overflow with many rows

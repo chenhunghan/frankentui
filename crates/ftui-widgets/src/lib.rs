@@ -285,7 +285,7 @@ pub use validation_error::{
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
-use ftui_render::frame::Frame;
+use ftui_render::frame::{Frame, WidgetSignal};
 use ftui_style::Style;
 use ftui_text::grapheme_width;
 
@@ -348,6 +348,73 @@ pub trait Widget {
     /// Returns `false` by default, appropriate for decorative widgets.
     fn is_essential(&self) -> bool {
         false
+    }
+}
+
+/// Budget-aware wrapper that registers widget signals and respects refresh budgets.
+pub struct Budgeted<W> {
+    widget_id: u64,
+    signal: WidgetSignal,
+    inner: W,
+}
+
+impl<W> Budgeted<W> {
+    /// Wrap a widget with a stable identifier and default signal values.
+    #[must_use]
+    pub fn new(widget_id: u64, inner: W) -> Self {
+        Self {
+            widget_id,
+            signal: WidgetSignal::new(widget_id),
+            inner,
+        }
+    }
+
+    /// Override the widget signal template.
+    #[must_use]
+    pub fn with_signal(mut self, mut signal: WidgetSignal) -> Self {
+        signal.widget_id = self.widget_id;
+        self.signal = signal;
+        self
+    }
+
+    /// Access the wrapped widget.
+    #[must_use]
+    pub fn inner(&self) -> &W {
+        &self.inner
+    }
+}
+
+impl<W: Widget> Widget for Budgeted<W> {
+    fn render(&self, area: Rect, frame: &mut Frame) {
+        let mut signal = self.signal.clone();
+        signal.widget_id = self.widget_id;
+        signal.essential = self.inner.is_essential();
+        signal.area_cells = area.width as u32 * area.height as u32;
+        frame.register_widget_signal(signal);
+
+        if frame.should_render_widget(self.widget_id, self.inner.is_essential()) {
+            self.inner.render(area, frame);
+        }
+    }
+
+    fn is_essential(&self) -> bool {
+        self.inner.is_essential()
+    }
+}
+
+impl<W: StatefulWidget + Widget> StatefulWidget for Budgeted<W> {
+    type State = W::State;
+
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
+        let mut signal = self.signal.clone();
+        signal.widget_id = self.widget_id;
+        signal.essential = self.inner.is_essential();
+        signal.area_cells = area.width as u32 * area.height as u32;
+        frame.register_widget_signal(signal);
+
+        if frame.should_render_widget(self.widget_id, self.inner.is_essential()) {
+            StatefulWidget::render(&self.inner, area, frame, state);
+        }
     }
 }
 

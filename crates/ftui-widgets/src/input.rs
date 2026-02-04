@@ -510,10 +510,21 @@ impl TextInput {
         let graphemes: Vec<&str> = self.value.graphemes(true).collect();
         let mut pos = self.cursor;
 
-        while pos > 0 && Self::get_grapheme_class(graphemes[pos - 1]) != 1 {
+        // 1. Skip trailing whitespace
+        while pos > 0 && Self::get_grapheme_class(graphemes[pos - 1]) == 0 {
             pos -= 1;
         }
-        while pos > 0 && Self::get_grapheme_class(graphemes[pos - 1]) == 1 {
+
+        if pos == 0 {
+            self.cursor = 0;
+            return;
+        }
+
+        // 2. Determine target class from the character before cursor
+        let target_class = Self::get_grapheme_class(graphemes[pos - 1]);
+
+        // 3. Skip contiguous characters of that class
+        while pos > 0 && Self::get_grapheme_class(graphemes[pos - 1]) == target_class {
             pos -= 1;
         }
 
@@ -536,10 +547,16 @@ impl TextInput {
 
         let mut pos = self.cursor;
 
-        while pos < max && Self::get_grapheme_class(graphemes[pos]) == 1 {
+        // 1. Determine target class from current character
+        let target_class = Self::get_grapheme_class(graphemes[pos]);
+
+        // 2. Skip contiguous characters of that class
+        while pos < max && Self::get_grapheme_class(graphemes[pos]) == target_class {
             pos += 1;
         }
-        while pos < max && Self::get_grapheme_class(graphemes[pos]) != 1 {
+
+        // 3. Skip trailing whitespace
+        while pos < max && Self::get_grapheme_class(graphemes[pos]) == 0 {
             pos += 1;
         }
 
@@ -568,6 +585,17 @@ impl TextInput {
         }
     }
 
+    fn prev_grapheme_width(&self) -> usize {
+        if self.cursor == 0 {
+            return 0;
+        }
+        self.value
+            .graphemes(true)
+            .nth(self.cursor - 1)
+            .map(|g| self.grapheme_width(g))
+            .unwrap_or(0)
+    }
+
     fn cursor_visual_pos(&self) -> usize {
         if self.value.is_empty() {
             return 0;
@@ -586,7 +614,13 @@ impl TextInput {
             scroll = cursor_visual;
         }
         if cursor_visual >= scroll + viewport_width {
-            scroll = cursor_visual - viewport_width + 1;
+            let candidate_scroll = cursor_visual - viewport_width + 1;
+            // Ensure the character BEFORE the cursor is also fully visible
+            // (prevent "hole" artifact for wide characters where start < scroll)
+            let prev_width = self.prev_grapheme_width();
+            let max_scroll_for_prev = cursor_visual.saturating_sub(prev_width);
+
+            scroll = candidate_scroll.min(max_scroll_for_prev);
         }
         self.scroll_cells.set(scroll);
         scroll
@@ -1432,5 +1466,29 @@ mod tests {
         assert_eq!(input.value(), "e\u{0301}");
         assert_eq!(input.grapheme_count(), 1);
         assert_eq!(input.cursor(), 1);
+    }
+
+    #[test]
+    fn test_wide_char_scroll_visibility() {
+        use ftui_render::frame::Frame;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let wide_char = "\u{3000}"; // Ideographic space, Width 2
+        let mut input = TextInput::new().with_value(wide_char).with_focused(true);
+        input.cursor = 1; // After the char
+
+        // Viewport width 2.
+        // cursor_visual_pos = 2.
+        // effective_scroll: 2 >= 0 + 2 -> scroll = 1.
+        // Render: char at 0..2. 0 < 1 -> Skipped!
+        // Expectation: We should see it.
+        let area = Rect::new(0, 0, 2, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(2, 1, &mut pool);
+        input.render(area, &mut frame);
+
+        let cell = frame.buffer.get(0, 0).unwrap();
+        // If bug exists, this assertion will fail because cell is empty/default
+        assert!(!cell.is_empty(), "Wide char should be visible");
     }
 }

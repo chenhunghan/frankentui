@@ -766,6 +766,23 @@ impl TextArea {
         (0, 0)
     }
 
+    /// Get the visual width of the character immediately before the cursor.
+    fn get_prev_char_width(&self) -> usize {
+        let cursor = self.editor.cursor();
+        if cursor.grapheme == 0 {
+            return 0;
+        }
+        let rope = self.editor.rope();
+        let line = rope
+            .line(cursor.line)
+            .unwrap_or(std::borrow::Cow::Borrowed(""));
+
+        line.graphemes(true)
+            .nth(cursor.grapheme - 1)
+            .map(display_width)
+            .unwrap_or(0)
+    }
+
     /// Ensure the cursor line and column are visible in the viewport.
     fn ensure_cursor_visible(&mut self) {
         let cursor = self.editor.cursor();
@@ -820,17 +837,17 @@ impl TextArea {
                 self.scroll_left.set(visual_col);
             }
             // Scroll right if cursor is past viewport
-
             // Need space for gutter if we had access to it, but this is a best effort
-
             // approximation using the last known width.
-
             // Effective text width approx vp_width - gutter (assume ~4 for gutter if unknown)
-
             // But we use raw vp_width here.
             else if vp_width > 0 && visual_col >= current_left + vp_width {
+                let candidate_scroll = visual_col.saturating_sub(vp_width - 1);
+                let prev_width = self.get_prev_char_width();
+                let max_scroll_for_prev = visual_col.saturating_sub(prev_width);
+
                 self.scroll_left
-                    .set(visual_col.saturating_sub(vp_width - 1));
+                    .set(candidate_scroll.min(max_scroll_for_prev));
             }
         }
     }
@@ -878,7 +895,11 @@ impl Widget for TextArea {
             if visual_col < scroll_left {
                 scroll_left = visual_col;
             } else if visual_col >= scroll_left + text_area_w {
-                scroll_left = visual_col.saturating_sub(text_area_w - 1);
+                let candidate_scroll = visual_col.saturating_sub(text_area_w - 1);
+                let prev_width = self.get_prev_char_width();
+                let max_scroll_for_prev = visual_col.saturating_sub(prev_width);
+
+                scroll_left = candidate_scroll.min(max_scroll_for_prev);
             }
         }
         self.scroll_left.set(scroll_left);

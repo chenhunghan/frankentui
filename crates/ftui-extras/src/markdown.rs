@@ -43,7 +43,9 @@ use crate::diagram;
 use ftui_render::cell::PackedRgba;
 use ftui_style::Style;
 use ftui_text::text::{Line, Span, Text};
-use pulldown_cmark::{BlockQuoteKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    Alignment, BlockQuoteKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
+};
 
 // ---------------------------------------------------------------------------
 // GFM Auto-Detection
@@ -782,6 +784,12 @@ pub struct MarkdownTheme {
     pub list_bullet: Style,
     pub horizontal_rule: Style,
 
+    // Tables
+    pub table_border: Style,
+    pub table_header: Style,
+    pub table_row: Style,
+    pub table_row_alt: Style,
+
     // Task lists
     pub task_done: Style,
     pub task_todo: Style,
@@ -827,6 +835,17 @@ impl Default for MarkdownTheme {
             // Lists: warm gold bullets
             list_bullet: Style::new().fg(PackedRgba::rgb(180, 180, 100)),
             horizontal_rule: Style::new().fg(PackedRgba::rgb(100, 100, 100)).dim(),
+
+            // Tables: cool borders with subtle zebra rows
+            table_border: Style::new().fg(PackedRgba::rgb(110, 110, 130)).dim(),
+            table_header: Style::new()
+                .fg(PackedRgba::rgb(240, 240, 255))
+                .bg(PackedRgba::rgb(35, 35, 55))
+                .bold(),
+            table_row: Style::new().fg(PackedRgba::rgb(210, 210, 220)),
+            table_row_alt: Style::new()
+                .fg(PackedRgba::rgb(210, 210, 220))
+                .bg(PackedRgba::rgb(25, 25, 35)),
 
             // Task lists: green for done, cyan for todo
             task_done: Style::new().fg(PackedRgba::rgb(120, 220, 120)),
@@ -1022,6 +1041,31 @@ impl AdmonitionKind {
     }
 }
 
+#[derive(Debug, Clone)]
+struct TableRow {
+    cells: Vec<Vec<Span<'static>>>,
+    is_header: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TableState {
+    alignments: Vec<Alignment>,
+    rows: Vec<TableRow>,
+    current_row: Vec<Vec<Span<'static>>>,
+    in_head: bool,
+}
+
+impl TableState {
+    fn new(alignments: Vec<Alignment>) -> Self {
+        Self {
+            alignments,
+            rows: Vec::new(),
+            current_row: Vec::new(),
+            in_head: false,
+        }
+    }
+}
+
 struct RenderState<'t> {
     theme: &'t MarkdownTheme,
     rule_width: u16,
@@ -1051,6 +1095,8 @@ struct RenderState<'t> {
     current_footnote: Option<String>,
     /// Lines being collected for the current footnote definition.
     current_footnote_lines: Vec<Line>,
+    /// Table state (if currently parsing a table).
+    table_state: Option<TableState>,
 }
 
 impl<'t> RenderState<'t> {
@@ -1073,6 +1119,7 @@ impl<'t> RenderState<'t> {
             footnotes: Vec::new(),
             current_footnote: None,
             current_footnote_lines: Vec::new(),
+            table_state: None,
         }
     }
 
@@ -1174,8 +1221,22 @@ impl<'t> RenderState<'t> {
                 self.current_footnote = Some(label.to_string());
                 self.style_stack.push(StyleContext::FootnoteDefinition);
             }
-            Tag::Table(_) | Tag::TableHead | Tag::TableRow | Tag::TableCell => {
-                // Table support: we render as simple text with separators
+            Tag::Table(alignments) => {
+                self.flush_blank();
+                self.table_state = Some(TableState::new(alignments));
+            }
+            Tag::TableHead => {
+                if let Some(table) = self.table_state.as_mut() {
+                    table.in_head = true;
+                }
+            }
+            Tag::TableRow => {
+                if let Some(table) = self.table_state.as_mut() {
+                    table.current_row.clear();
+                }
+            }
+            Tag::TableCell => {
+                // Cells are captured on end tag.
             }
             _ => {}
         }
@@ -1239,11 +1300,35 @@ impl<'t> RenderState<'t> {
                 }
                 self.needs_blank = true;
             }
-            TagEnd::TableHead | TagEnd::TableRow => {
-                self.flush_line();
+            TagEnd::TableHead => {
+                if let Some(table) = self.table_state.as_mut() {
+                    table.in_head = false;
+                }
+            }
+            TagEnd::TableRow => {
+                if let Some(table) = self.table_state.as_mut()
+                    && !table.current_row.is_empty()
+                {
+                    let row = TableRow {
+                        cells: std::mem::take(&mut table.current_row),
+                        is_header: table.in_head,
+                    };
+                    table.rows.push(row);
+                }
             }
             TagEnd::TableCell => {
-                self.current_spans.push(Span::raw(String::from(" │ ")));
+                if let Some(table) = self.table_state.as_mut() {
+                    let spans = std::mem::take(&mut self.current_spans);
+                    let cell = if spans.is_empty() {
+                        vec![Span::raw("")]
+                    } else {
+                        spans
+                    };
+                    table.current_row.push(cell);
+                }
+            }
+            TagEnd::Table => {
+                self.flush_table();
             }
             _ => {}
         }
@@ -1339,7 +1424,11 @@ impl<'t> RenderState<'t> {
     }
 
     fn hard_break(&mut self) {
-        self.flush_line();
+        if self.in_table() {
+            self.current_spans.push(Span::raw(String::from(" ")));
+        } else {
+            self.flush_line();
+        }
     }
 
     fn horizontal_rule(&mut self) {
@@ -1543,7 +1632,157 @@ impl<'t> RenderState<'t> {
         }
     }
 
+    fn in_table(&self) -> bool {
+        self.table_state.is_some()
+    }
+
+    fn flush_table(&mut self) {
+        let Some(table) = self.table_state.take() else {
+            return;
+        };
+        if table.rows.is_empty() {
+            return;
+        }
+
+        let column_count = table
+            .rows
+            .iter()
+            .map(|row| row.cells.len())
+            .max()
+            .unwrap_or(0)
+            .max(table.alignments.len());
+        if column_count == 0 {
+            return;
+        }
+
+        let mut widths = vec![0usize; column_count];
+        for row in &table.rows {
+            for (idx, cell) in row.cells.iter().enumerate() {
+                let width = cell.iter().map(|span| span.width()).sum();
+                widths[idx] = widths[idx].max(width);
+            }
+        }
+
+        let border_style = self.theme.table_border;
+        self.lines
+            .push(self.table_border_line(&widths, '┌', '┬', '┐', border_style));
+
+        let last_header = table.rows.iter().rposition(|row| row.is_header);
+        let mut body_index = 0usize;
+
+        for (idx, row) in table.rows.iter().enumerate() {
+            let base_style = if row.is_header {
+                self.theme.table_header
+            } else if body_index.is_multiple_of(2) {
+                self.theme.table_row
+            } else {
+                self.theme.table_row_alt
+            };
+
+            let line =
+                self.table_row_line(row, &widths, &table.alignments, base_style, border_style);
+            self.lines.push(line);
+
+            if row.is_header {
+                if Some(idx) == last_header && idx + 1 < table.rows.len() {
+                    self.lines
+                        .push(self.table_border_line(&widths, '├', '┼', '┤', border_style));
+                }
+            } else {
+                body_index += 1;
+            }
+        }
+
+        self.lines
+            .push(self.table_border_line(&widths, '└', '┴', '┘', border_style));
+        self.needs_blank = true;
+    }
+
+    fn table_border_line(
+        &self,
+        widths: &[usize],
+        left: char,
+        mid: char,
+        right: char,
+        style: Style,
+    ) -> Line {
+        let mut line = String::new();
+        line.push(left);
+        for (idx, width) in widths.iter().enumerate() {
+            line.push_str(&"─".repeat(width.saturating_add(2)));
+            if idx + 1 < widths.len() {
+                line.push(mid);
+            }
+        }
+        line.push(right);
+        Line::styled(line, style)
+    }
+
+    fn table_row_line(
+        &self,
+        row: &TableRow,
+        widths: &[usize],
+        alignments: &[Alignment],
+        base_style: Style,
+        border_style: Style,
+    ) -> Line {
+        let mut spans = Vec::new();
+        spans.push(Span::styled("│", border_style));
+
+        for (idx, width) in widths.iter().enumerate() {
+            let cell_spans = row
+                .cells
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| vec![Span::raw("")]);
+            let cell_width: usize = cell_spans.iter().map(|span| span.width()).sum();
+            let extra = width.saturating_sub(cell_width);
+            let alignment = alignments.get(idx).copied().unwrap_or(Alignment::None);
+
+            let (left_extra, right_extra) = match alignment {
+                Alignment::Right => (extra, 0),
+                Alignment::Center => (extra / 2, extra - (extra / 2)),
+                _ => (0, extra),
+            };
+
+            let left_pad = 1 + left_extra;
+            let right_pad = 1 + right_extra;
+
+            spans.push(Span::styled(" ".repeat(left_pad), base_style));
+            spans.extend(self.apply_table_cell_style(&cell_spans, base_style));
+            spans.push(Span::styled(" ".repeat(right_pad), base_style));
+            spans.push(Span::styled("│", border_style));
+        }
+
+        Line::from_spans(spans)
+    }
+
+    fn apply_table_cell_style(
+        &self,
+        spans: &[Span<'static>],
+        base_style: Style,
+    ) -> Vec<Span<'static>> {
+        spans
+            .iter()
+            .map(|span| {
+                let content = span.content.to_string();
+                let style = match span.style {
+                    Some(style) => style.merge(&base_style),
+                    None => base_style,
+                };
+                let mut styled = Span::styled(content, style);
+                if let Some(link) = &span.link {
+                    styled = styled.link(link.to_string());
+                }
+                styled
+            })
+            .collect()
+    }
+
     fn flush_line(&mut self) {
+        if self.in_table() {
+            return;
+        }
         if !self.current_spans.is_empty() {
             let spans = std::mem::take(&mut self.current_spans);
             let line = Line::from_spans(spans);
@@ -1561,6 +1800,9 @@ impl<'t> RenderState<'t> {
     }
 
     fn flush_blank(&mut self) {
+        if self.in_table() {
+            return;
+        }
         self.flush_line();
         if self.needs_blank && !self.lines.is_empty() {
             self.lines.push(Line::new());

@@ -275,6 +275,54 @@ struct ScoredItem {
 }
 
 // ---------------------------------------------------------------------------
+// Public Result View
+// ---------------------------------------------------------------------------
+
+/// Read-only view of a scored palette item.
+#[derive(Debug, Clone, Copy)]
+pub struct PaletteMatch<'a> {
+    /// Action metadata.
+    pub action: &'a ActionItem,
+    /// Match result (score, match type, evidence).
+    pub result: &'a MatchResult,
+}
+
+// ---------------------------------------------------------------------------
+// Match Filter
+// ---------------------------------------------------------------------------
+
+/// Optional match-type filter for palette results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchFilter {
+    /// Show all matches.
+    All,
+    /// Exact match only.
+    Exact,
+    /// Prefix match only.
+    Prefix,
+    /// Word-start match only.
+    WordStart,
+    /// Substring match only.
+    Substring,
+    /// Fuzzy match only.
+    Fuzzy,
+}
+
+impl MatchFilter {
+    fn allows(self, match_type: MatchType) -> bool {
+        matches!(
+            (self, match_type),
+            (Self::All, _)
+                | (Self::Exact, MatchType::Exact)
+                | (Self::Prefix, MatchType::Prefix)
+                | (Self::WordStart, MatchType::WordStart)
+                | (Self::Substring, MatchType::Substring)
+                | (Self::Fuzzy, MatchType::Fuzzy)
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Command Palette Widget
 // ---------------------------------------------------------------------------
 
@@ -315,6 +363,8 @@ pub struct CommandPalette {
     scorer: IncrementalScorer,
     /// Current filtered results.
     filtered: Vec<ScoredItem>,
+    /// Optional match-type filter.
+    match_filter: MatchFilter,
     /// Generation counter for corpus invalidation.
     generation: u64,
     /// Maximum visible results.
@@ -346,6 +396,7 @@ impl CommandPalette {
             style: PaletteStyle::default(),
             scorer: IncrementalScorer::new(),
             filtered: Vec::new(),
+            match_filter: MatchFilter::All,
             generation: 0,
             max_visible: 10,
             #[cfg(feature = "tracing")]
@@ -363,6 +414,16 @@ impl CommandPalette {
     pub fn with_max_visible(mut self, n: usize) -> Self {
         self.max_visible = n;
         self
+    }
+
+    /// Enable or disable evidence tracking for match results.
+    pub fn enable_evidence_tracking(&mut self, enabled: bool) {
+        self.scorer = if enabled {
+            IncrementalScorer::with_scorer(BayesianScorer::new())
+        } else {
+            IncrementalScorer::new()
+        };
+        self.update_filtered(false);
     }
 
     // --- Action Registration ---
@@ -438,6 +499,24 @@ impl CommandPalette {
         self
     }
 
+    /// Replace all actions with a new list.
+    ///
+    /// This resets caches and refreshes the filtered results.
+    pub fn replace_actions(&mut self, actions: Vec<ActionItem>) {
+        self.actions = actions;
+        self.rebuild_title_cache();
+        self.generation = self.generation.wrapping_add(1);
+        self.scorer.invalidate();
+        self.selected = 0;
+        self.scroll_offset = 0;
+        self.update_filtered(false);
+    }
+
+    /// Clear all registered actions.
+    pub fn clear_actions(&mut self) {
+        self.replace_actions(Vec::new());
+    }
+
     /// Number of registered actions.
     pub fn action_count(&self) -> usize {
         self.actions.len()
@@ -488,6 +567,16 @@ impl CommandPalette {
         &self.query
     }
 
+    /// Replace the query string and re-run filtering.
+    pub fn set_query(&mut self, query: impl Into<String>) {
+        self.query = query.into();
+        self.cursor = self.query.len();
+        self.selected = 0;
+        self.scroll_offset = 0;
+        self.scorer.invalidate();
+        self.update_filtered(false);
+    }
+
     /// Number of filtered results.
     pub fn result_count(&self) -> usize {
         self.filtered.len()
@@ -503,6 +592,33 @@ impl CommandPalette {
         self.filtered
             .get(self.selected)
             .map(|si| &self.actions[si.action_index])
+    }
+
+    /// Read-only access to the selected match (action + result).
+    pub fn selected_match(&self) -> Option<PaletteMatch<'_>> {
+        self.filtered.get(self.selected).map(|si| PaletteMatch {
+            action: &self.actions[si.action_index],
+            result: &si.result,
+        })
+    }
+
+    /// Iterate over the current filtered results.
+    pub fn results(&self) -> impl Iterator<Item = PaletteMatch<'_>> {
+        self.filtered.iter().map(|si| PaletteMatch {
+            action: &self.actions[si.action_index],
+            result: &si.result,
+        })
+    }
+
+    /// Set a match-type filter and refresh results.
+    pub fn set_match_filter(&mut self, filter: MatchFilter) {
+        if self.match_filter == filter {
+            return;
+        }
+        self.match_filter = filter;
+        self.selected = 0;
+        self.scroll_offset = 0;
+        self.update_filtered(false);
     }
 
     /// Get scorer statistics for diagnostics.
@@ -667,6 +783,7 @@ impl CommandPalette {
 
         self.filtered = results
             .into_iter()
+            .filter(|(_, result)| self.match_filter.allows(result.match_type))
             .map(|(idx, result)| ScoredItem {
                 action_index: idx,
                 result,
@@ -1373,6 +1490,64 @@ mod widget_tests {
 
         palette.register_action(item);
         assert_eq!(palette.action_count(), 1);
+    }
+
+    #[test]
+    fn replace_actions_refreshes_results() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.register("Beta", None, &[]);
+        palette.open();
+        palette.set_query("Beta");
+        assert_eq!(
+            palette.selected_action().map(|a| a.title.as_str()),
+            Some("Beta")
+        );
+
+        let actions = vec![
+            ActionItem::new("gamma", "Gamma"),
+            ActionItem::new("delta", "Delta"),
+        ];
+        palette.replace_actions(actions);
+        palette.set_query("Delta");
+        assert_eq!(
+            palette.selected_action().map(|a| a.title.as_str()),
+            Some("Delta")
+        );
+    }
+
+    #[test]
+    fn clear_actions_resets_results() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.register("Beta", None, &[]);
+        palette.open();
+        palette.set_query("Alpha");
+        assert!(palette.selected_action().is_some());
+
+        palette.clear_actions();
+        assert_eq!(palette.action_count(), 0);
+        assert!(palette.selected_action().is_none());
+    }
+
+    #[test]
+    fn set_query_refilters() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.register("Beta", None, &[]);
+        palette.open();
+        palette.set_query("Alpha");
+        assert_eq!(palette.query(), "Alpha");
+        assert_eq!(
+            palette.selected_action().map(|a| a.title.as_str()),
+            Some("Alpha")
+        );
+        palette.set_query("Beta");
+        assert_eq!(palette.query(), "Beta");
+        assert_eq!(
+            palette.selected_action().map(|a| a.title.as_str()),
+            Some("Beta")
+        );
     }
 
     #[test]

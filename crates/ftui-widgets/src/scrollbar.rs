@@ -249,7 +249,8 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
 
                 if let Some(id) = self.hit_id {
                     let data = (part << 56) | (i as u64);
-                    frame.register_hit(Rect::new(x, y, 1, 1), id, HitRegion::Scrollbar, data);
+                    let hit_w = symbol_width.max(1) as u16;
+                    frame.register_hit(Rect::new(x, y, hit_w, 1), id, HitRegion::Scrollbar, data);
                 }
             }
         }
