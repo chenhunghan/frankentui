@@ -19,3 +19,13 @@ a.out
 
 # Profiling data (llvm-profdata)
 *.profraw
+
+# perf profiling data
+perf.data
+perf.data.*
+
+# Flamegraph output
+flamegraph*.svg
+
+# Test checksums (ephemeral)
+golden_checksums.txt
