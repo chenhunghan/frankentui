@@ -80,17 +80,17 @@
 - [x] Implement `ScreenMeta` struct + registry list for all screens
 - [x] Add registry navigation helpers (next/prev screen/category) + tests
 - [x] Replace `ScreenId::ALL` usage with registry-driven ordering
-- [ ] Update `ScreenId` helpers to use registry (title/tab_label/index/category)
+- [x] Update `ScreenId` helpers to use registry (title/tab_label/index/category)
 - [x] Switch `chrome` tab bar + hit mapping to registry ordering
 - [x] Implement category tab render helpers in `chrome.rs`
 - [ ] Update `chrome` tab bar to render category tabs + per-category screens
 - [ ] Add category navigation: Shift+Left/Right jumps categories
-- [ ] Update command palette to use registry metadata (category, tags, blurb)
+- [x] Update command palette to use registry metadata (category, tags, blurb)
 - [ ] Implement screen palette filters + favorites (session-scoped)
 - [ ] Add palette UI hints for category filter + favorites
 - [ ] Update help overlay with category legend + palette hotkeys
-- [ ] Update CLI/default screen resolution to use registry list
-- [ ] Update tests for tab cycling + palette counts + number-key mapping
+- [x] Update CLI/default screen resolution to use registry list
+- [x] Update tests for tab cycling + palette counts + number-key mapping
 - [x] Add unit tests for registry ordering + uniqueness
 - [ ] Add unit tests for palette ranking (category/favorites filters)
 - [ ] Add snapshot tests for palette (empty/filtered/favorites) at 80x24 + 120x40
