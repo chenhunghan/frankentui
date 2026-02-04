@@ -16,13 +16,28 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+LIB_DIR="$PROJECT_ROOT/tests/e2e/lib"
+# shellcheck source=/dev/null
+if [[ -f "$LIB_DIR/logging.sh" ]]; then
+    source "$LIB_DIR/logging.sh"
+fi
+if ! declare -f e2e_timestamp >/dev/null 2>&1; then
+    e2e_timestamp() { date -Iseconds; }
+fi
+if ! declare -f e2e_log_stamp >/dev/null 2>&1; then
+    e2e_log_stamp() { date +%Y%m%d_%H%M%S; }
+fi
+if ! declare -f e2e_now_ms >/dev/null 2>&1; then
+    e2e_now_ms() { date +%s%3N; }
+fi
+
+TIMESTAMP="$(e2e_log_stamp)"
 LOG_DIR="${E2E_LOG_DIR:-/tmp/ftui-modal-dialog-e2e-${TIMESTAMP}}"
 JSONL_OUT=""
 VERBOSE=false
 SEED="${MODAL_DIALOG_SEED:-42}"
 DETERMINISTIC="${MODAL_DIALOG_DETERMINISTIC:-1}"
-RUN_ID="modal_dialog_${TIMESTAMP}_$$"
+RUN_ID="modal_dialog_${TIMESTAMP}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -56,6 +71,8 @@ done
 mkdir -p "$LOG_DIR"
 RESULTS_JSONL="$LOG_DIR/results.jsonl"
 LOG_FILE="$LOG_DIR/modal_dialog_e2e.log"
+export E2E_DETERMINISTIC="$DETERMINISTIC"
+export E2E_SEED="$SEED"
 
 emit_jsonl() {
     local line="$1"
@@ -102,14 +119,14 @@ log_env() {
     local capabilities
     capabilities="$(detect_capabilities)"
 
-    emit_jsonl "{\"run_id\":\"$RUN_ID\",\"event\":\"env\",\"timestamp\":\"$(date -Iseconds)\",\"seed\":\"$SEED\",\"term\":\"$term_val\",\"colorterm\":\"$colorterm\",\"no_color\":\"$no_color\",\"tmux\":\"$tmux\",\"zellij\":\"$zellij\",\"kitty_window_id\":\"$kitty\",\"capabilities\":\"$capabilities\",\"rustc\":\"$rustc_version\",\"cargo\":\"$cargo_version\",\"git_commit\":\"$git_commit\"}"
+    emit_jsonl "{\"run_id\":\"$RUN_ID\",\"event\":\"env\",\"timestamp\":\"$(e2e_timestamp)\",\"seed\":\"$SEED\",\"term\":\"$term_val\",\"colorterm\":\"$colorterm\",\"no_color\":\"$no_color\",\"tmux\":\"$tmux\",\"zellij\":\"$zellij\",\"kitty_window_id\":\"$kitty\",\"capabilities\":\"$capabilities\",\"rustc\":\"$rustc_version\",\"cargo\":\"$cargo_version\",\"git_commit\":\"$git_commit\"}"
 }
 
 run_case() {
     local name="$1"
     shift
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_now_ms)"
 
     emit_jsonl "{\"run_id\":\"$RUN_ID\",\"case\":\"$name\",\"event\":\"start\"}"
 
@@ -129,7 +146,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_now_ms)"
     local duration_ms=$((end_ms - start_ms))
     local checksum
     checksum="$(compute_checksum "$LOG_FILE")"

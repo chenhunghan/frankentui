@@ -37,13 +37,13 @@ mkdir -p "$GOLDEN_LOG_DIR"
 mkdir -p "$GOLDEN_CHECKSUMS_DIR"
 
 # Master JSONL log
-GOLDEN_JSONL="$GOLDEN_LOG_DIR/golden_resize_$(date +%Y%m%d_%H%M%S).jsonl"
+GOLDEN_JSONL="$GOLDEN_LOG_DIR/golden_resize_$(e2e_log_stamp).jsonl"
 
 # Log environment header
 log_golden_env() {
     local run_id="$1"
     cat >> "$GOLDEN_JSONL" <<EOF
-{"event":"env","run_id":"$run_id","timestamp":"$(date -Iseconds)","seed":$GOLDEN_SEED,"term":"${TERM:-}","colorterm":"${COLORTERM:-}","bless":$BLESS}
+{"event":"env","run_id":"$run_id","timestamp":"$(e2e_timestamp)","seed":$GOLDEN_SEED,"term":"${TERM:-}","colorterm":"${COLORTERM:-}","bless":$BLESS}
 {"event":"git","run_id":"$run_id","commit":"$(git rev-parse HEAD 2>/dev/null || echo 'N/A')","branch":"$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'N/A')"}
 EOF
 }
@@ -132,7 +132,7 @@ run_golden_case() {
     log_golden_env "$run_id"
 
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_now_ms)"
 
     # Build environment
     local pty_env=(
@@ -162,7 +162,7 @@ run_golden_case() {
     env "${pty_env[@]}" pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_now_ms)"
     local duration_ms=$((end_ms - start_ms))
 
     # Compute checksum of output
@@ -198,7 +198,7 @@ run_golden_case() {
         mkdir -p "$(dirname "$checksum_file")"
         cat > "$checksum_file" <<EOF
 # Golden checksum for $name
-# Generated: $(date -Iseconds)
+# Generated: $(e2e_timestamp)
 # Seed: $GOLDEN_SEED
 # Size: ${initial_cols}x${initial_rows}$(if [[ -n "$resize_cols" ]]; then echo " -> ${resize_cols}x${resize_rows}"; fi)
 sha256:$checksum
@@ -223,11 +223,11 @@ run_case() {
     local name="$1"
     shift
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_now_ms)"
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_now_ms)"
         local duration_ms=$((end_ms - start_ms))
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
@@ -235,7 +235,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_now_ms)"
     local duration_ms=$((end_ms - start_ms))
     log_test_fail "$name" "assertion failed"
     record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "assertion failed"

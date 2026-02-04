@@ -10,6 +10,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+LIB_DIR="$PROJECT_ROOT/tests/e2e/lib"
+
+# shellcheck source=/dev/null
+if [[ -f "$LIB_DIR/logging.sh" ]]; then
+    source "$LIB_DIR/logging.sh"
+fi
+if ! declare -f e2e_timestamp >/dev/null 2>&1; then
+    e2e_timestamp() { date -Iseconds; }
+fi
+if ! declare -f e2e_log_stamp >/dev/null 2>&1; then
+    e2e_log_stamp() { date +%Y%m%d_%H%M%S; }
+fi
+if ! declare -f e2e_now_ms >/dev/null 2>&1; then
+    e2e_now_ms() { date +%s%3N; }
+fi
 
 VERBOSE=false
 QUICK=false
@@ -27,7 +42,7 @@ for arg in "$@"; do
     esac
 done
 
-TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+TIMESTAMP="$(e2e_log_stamp)"
 LOG_DIR="${LOG_DIR:-/tmp/ftui-a11y-transitions-${TIMESTAMP}}"
 mkdir -p "$LOG_DIR"
 
@@ -42,7 +57,7 @@ SKIPPED=0
 jsonl() {
     local step="$1"
     shift
-    local fields="\"ts\":\"$(date -Iseconds)\",\"step\":\"$step\""
+    local fields="\"ts\":\"$(e2e_timestamp)\",\"step\":\"$step\""
     while (( $# >= 2 )); do
         fields="${fields},\"$1\":\"$2\""
         shift 2
@@ -57,7 +72,7 @@ run_step() {
     local name="$1"
     shift
     local step_start
-    step_start=$(date +%s%3N)
+    step_start=$(e2e_now_ms)
 
     jsonl "step_start" "name" "$name"
 
@@ -71,7 +86,7 @@ run_step() {
     fi
 
     local step_end
-    step_end=$(date +%s%3N)
+    step_end=$(e2e_now_ms)
     local elapsed=$(( step_end - step_start ))
 
     if [ "$exit_code" -eq 0 ]; then

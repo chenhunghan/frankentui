@@ -35,7 +35,19 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+LIB_DIR="$PROJECT_ROOT/tests/e2e/lib"
+# shellcheck source=/dev/null
+if [[ -f "$LIB_DIR/logging.sh" ]]; then
+    source "$LIB_DIR/logging.sh"
+fi
+if ! declare -f e2e_timestamp >/dev/null 2>&1; then
+    e2e_timestamp() { date -Iseconds; }
+fi
+if ! declare -f e2e_log_stamp >/dev/null 2>&1; then
+    e2e_log_stamp() { date +%Y%m%d_%H%M%S; }
+fi
+
+TIMESTAMP="$(e2e_log_stamp)"
 LOG_DIR="${LOG_DIR:-/tmp/ftui-demo-e2e-${TIMESTAMP}}"
 PKG="ftui-demo-showcase"
 
@@ -254,7 +266,7 @@ echo "=============================================="
 echo ""
 echo "Project root: $PROJECT_ROOT"
 echo "Log directory: $LOG_DIR"
-echo "Started at:   $(date -Iseconds)"
+echo "Started at:   $(e2e_timestamp)"
 MODE=""
 if $QUICK; then MODE="${MODE}quick "; fi
 if $VERBOSE; then MODE="${MODE}verbose "; fi
@@ -268,7 +280,7 @@ cd "$PROJECT_ROOT"
 {
     echo "Environment Information"
     echo "======================="
-    echo "Date: $(date -Iseconds)"
+    echo "Date: $(e2e_timestamp)"
     echo "User: $(whoami)"
     echo "Hostname: $(hostname)"
     echo "Working directory: $(pwd)"
@@ -507,15 +519,18 @@ if $CAN_SMOKE; then
             local outcome="$3"
             local exit_code="$4"
             local duration_ms="$5"
+            local seed="${E2E_CONTEXT_SEED:-${E2E_SEED:-}}"
+            local seed_json="null"
+            if [[ -n "$seed" ]]; then seed_json="$seed"; fi
             printf '{'
-            printf '"run_id":"%s",' "$TIMESTAMP"
+            printf '"run_id":"%s",' "${E2E_RUN_ID:-$TIMESTAMP}"
             printf '"step":"visual_effects_backdrop",'
             printf '"effect":"%s",' "$effect"
             printf '"size":"%s",' "$size"
             printf '"screen":14,'
             printf '"exit_code":%s,' "$exit_code"
             printf '"duration_ms":%s,' "$duration_ms"
-            printf '"seed":null,'
+            printf '"seed":%s,' "$seed_json"
             printf '"outcome":"%s",' "$outcome"
             printf '"env":{'
             printf '"term":"%s","colorterm":"%s","tmux":%s,"zellij":%s,"kitty":%s,"wt":%s' \
@@ -554,13 +569,19 @@ if $CAN_SMOKE; then
         }
 
         # Metaballs (default effect) — full size matrix
+        jsonl_set_context "alt" 80 24 "${E2E_SEED:-}" 2>/dev/null || true
         run_vfx_case "metaballs" "" 24 80
+        jsonl_set_context "alt" 120 40 "${E2E_SEED:-}" 2>/dev/null || true
         run_vfx_case "metaballs" "" 40 120
+        jsonl_set_context "alt" 40 10 "${E2E_SEED:-}" 2>/dev/null || true
         run_vfx_case "metaballs" "" 10 40
+        jsonl_set_context "alt" 200 24 "${E2E_SEED:-}" 2>/dev/null || true
         run_vfx_case "metaballs" "" 24 200
 
         # Plasma — explicit effect override
+        jsonl_set_context "alt" 80 24 "${E2E_SEED:-}" 2>/dev/null || true
         run_vfx_case "plasma" "FTUI_DEMO_VFX_EFFECT=plasma" 24 80
+        jsonl_set_context "alt" 120 40 "${E2E_SEED:-}" 2>/dev/null || true
         run_vfx_case "plasma" "FTUI_DEMO_VFX_EFFECT=plasma" 40 120
 
         echo ""
@@ -631,7 +652,7 @@ if $CAN_SMOKE; then
             rects_hash=$(sha256sum "$log_file" | awk '{print $1}')
 
             printf '{'
-            printf '"run_id":"%s",' "$TIMESTAMP"
+            printf '"run_id":"%s",' "${E2E_RUN_ID:-$TIMESTAMP}"
             printf '"screen":20,'
             printf '"scenario_id":%s,' "$scenario"
             printf '"step_idx":%s,' "$step"
@@ -1376,7 +1397,7 @@ echo "=============================================="
 echo "  E2E Test Suite Complete"
 echo "=============================================="
 echo ""
-echo "Ended at: $(date -Iseconds)"
+echo "Ended at: $(e2e_timestamp)"
 echo "Log directory: $LOG_DIR"
 echo ""
 
@@ -1407,7 +1428,7 @@ echo ""
 {
     echo "Demo Showcase E2E Summary"
     echo "========================="
-    echo "Date: $(date -Iseconds)"
+    echo "Date: $(e2e_timestamp)"
     echo "Passed: $PASS_COUNT"
     echo "Failed: $FAIL_COUNT"
     echo "Skipped: $SKIP_COUNT"

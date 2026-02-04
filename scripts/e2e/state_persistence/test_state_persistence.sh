@@ -53,8 +53,16 @@ fi
 # Configuration
 # ============================================================================
 
-PERSIST_SEED="${PERSIST_SEED:-$(date +%s%N | cut -c1-10)}"
-PERSIST_RUN_ID="persist_$(date +%Y%m%d_%H%M%S)_$$"
+if declare -f e2e_is_deterministic >/dev/null 2>&1 && e2e_is_deterministic; then
+    PERSIST_SEED="${PERSIST_SEED:-${E2E_SEED:-0}}"
+else
+    PERSIST_SEED="${PERSIST_SEED:-$(date +%s%N | cut -c1-10)}"
+fi
+if declare -f e2e_log_stamp >/dev/null 2>&1; then
+    PERSIST_RUN_ID="persist_$(e2e_log_stamp)"
+else
+    PERSIST_RUN_ID="persist_$(date +%Y%m%d_%H%M%S)"
+fi
 PERSIST_LOG_DIR="${E2E_LOG_DIR:-/tmp/ftui-e2e}/state_persistence"
 PERSIST_JSONL="$PERSIST_LOG_DIR/${PERSIST_RUN_ID}.jsonl"
 
@@ -70,7 +78,11 @@ log_jsonl() {
 
 log_persist_start() {
     local timestamp
-    timestamp="$(date -Iseconds)"
+    if declare -f e2e_timestamp >/dev/null 2>&1; then
+        timestamp="$(e2e_timestamp)"
+    else
+        timestamp="$(date -Iseconds)"
+    fi
     local git_commit
     git_commit="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo 'N/A')"
     local rustc_version
@@ -122,7 +134,11 @@ compute_checksum() {
 
 run_rust_tests() {
     local start_ms end_ms duration_ms
-    start_ms="$(date +%s%3N)"
+    if declare -f e2e_now_ms >/dev/null 2>&1; then
+        start_ms="$(e2e_now_ms)"
+    else
+        start_ms="$(date +%s%3N)"
+    fi
 
     echo "Running Rust integration tests..."
 
@@ -143,7 +159,11 @@ run_rust_tests() {
         echo "$test_output"
     fi
 
-    end_ms="$(date +%s%3N)"
+    if declare -f e2e_now_ms >/dev/null 2>&1; then
+        end_ms="$(e2e_now_ms)"
+    else
+        end_ms="$(date +%s%3N)"
+    fi
     duration_ms=$((end_ms - start_ms))
 
     log_persist_case "rust_integration_tests" "$status" "$duration_ms" "$error"
@@ -157,7 +177,11 @@ run_rust_tests() {
 
 main() {
     local run_start_ms
-    run_start_ms="$(date +%s%3N)"
+    if declare -f e2e_now_ms >/dev/null 2>&1; then
+        run_start_ms="$(e2e_now_ms)"
+    else
+        run_start_ms="$(date +%s%3N)"
+    fi
 
     echo "=========================================="
     echo "State Persistence E2E Tests (bd-30g1.6)"
@@ -188,7 +212,11 @@ main() {
 
     # Summary
     local run_end_ms
-    run_end_ms="$(date +%s%3N)"
+    if declare -f e2e_now_ms >/dev/null 2>&1; then
+        run_end_ms="$(e2e_now_ms)"
+    else
+        run_end_ms="$(date +%s%3N)"
+    fi
     local total_duration_ms=$((run_end_ms - run_start_ms))
 
     local checksum

@@ -26,7 +26,7 @@ source "$LIB_DIR/logging.sh"
 source "$LIB_DIR/pty.sh"
 
 JSONL_FILE="$E2E_RESULTS_DIR/virtualized_search.jsonl"
-RUN_ID="vsearch_$(date +%Y%m%d_%H%M%S)_$$"
+RUN_ID="vsearch_$(e2e_log_stamp)"
 
 # Prefer canonicalization when the helper binary is available.
 CANON_BIN="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}/debug/pty_canonicalize"
@@ -38,7 +38,11 @@ fi
 # Deterministic mode: seed capture
 # =========================================================================
 if [[ -z "${FTUI_VSEARCH_SEED:-}" ]]; then
-    FTUI_VSEARCH_SEED="$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' ' || date +%s)"
+    if [[ "${E2E_DETERMINISTIC:-0}" == "1" && -n "${E2E_SEED:-}" ]]; then
+        FTUI_VSEARCH_SEED="$E2E_SEED"
+    else
+        FTUI_VSEARCH_SEED="$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' ' || date +%s)"
+    fi
 fi
 export FTUI_VSEARCH_SEED
 
@@ -117,7 +121,7 @@ jsonl_log_case() {
             --arg case "$case" \
             --arg status "$status" \
             --argjson duration_ms "$duration_ms" \
-            --arg ts "$(date -Iseconds)" \
+            --arg ts "$(e2e_timestamp)" \
             --arg seed "$FTUI_VSEARCH_SEED" \
             --argjson cols 120 \
             --argjson rows 40 \
@@ -155,7 +159,7 @@ run_case() {
     local name="$1" send_label="$2"
     shift 2
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_now_ms)"
 
     LOG_FILE="$E2E_LOG_DIR/${name}.log"
     local output_file="$E2E_LOG_DIR/${name}.pty"

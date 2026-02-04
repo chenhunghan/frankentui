@@ -5,6 +5,14 @@ PTY_CANONICALIZE="${PTY_CANONICALIZE:-0}"
 PTY_CANONICALIZE_BIN="${PTY_CANONICALIZE_BIN:-}"
 PTY_CANONICALIZE_BUILT="${PTY_CANONICALIZE_BUILT:-}"
 
+pty_timestamp() {
+    if declare -f e2e_timestamp >/dev/null 2>&1; then
+        e2e_timestamp
+        return 0
+    fi
+    date -Iseconds
+}
+
 resolve_canonicalize_bin() {
     if [[ -n "${PTY_CANONICALIZE_BIN:-}" && -x "$PTY_CANONICALIZE_BIN" ]]; then
         echo "$PTY_CANONICALIZE_BIN"
@@ -104,7 +112,7 @@ pty_record_metadata() {
 
     if command -v jq >/dev/null 2>&1; then
         jq -nc \
-            --arg timestamp "$(date -Iseconds)" \
+            --arg timestamp "$(pty_timestamp)" \
             --arg test_name "$test_name" \
             --arg output_file "$output_file" \
             --arg canonical_file "$canonical_file" \
@@ -122,8 +130,12 @@ pty_record_metadata() {
             >> "$jsonl"
     else
         printf '{"timestamp":"%s","test_name":"%s","output_file":"%s","canonical_file":"%s","cols":%s,"rows":%s,"exit_code":%s,"output_bytes":%s,"canonical_bytes":%s,"output_sha256":"%s","canonical_sha256":"%s","term":"%s","colorterm":"%s","no_color":"%s"}\n' \
-            "$(date -Iseconds)" "$test_name" "$output_file" "$canonical_file" "$cols" "$rows" "$exit_code" "$output_bytes" "$canonical_bytes" "$output_sha" "$canonical_sha" "${TERM:-}" "${COLORTERM:-}" "${NO_COLOR:-}" \
+            "$(pty_timestamp)" "$test_name" "$output_file" "$canonical_file" "$cols" "$rows" "$exit_code" "$output_bytes" "$canonical_bytes" "$output_sha" "$canonical_sha" "${TERM:-}" "${COLORTERM:-}" "${NO_COLOR:-}" \
             >> "$jsonl"
+    fi
+
+    if declare -f jsonl_pty_capture >/dev/null 2>&1; then
+        jsonl_pty_capture "$output_file" "$cols" "$rows" "$exit_code" "$canonical_file"
     fi
 }
 

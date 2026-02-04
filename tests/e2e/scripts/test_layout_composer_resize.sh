@@ -23,7 +23,7 @@ source "$LIB_DIR/logging.sh"
 source "$LIB_DIR/pty.sh"
 
 JSONL_FILE="$E2E_RESULTS_DIR/layout_composer_resize.jsonl"
-RUN_ID="layout_resize_$(date +%Y%m%d_%H%M%S)_$$"
+RUN_ID="layout_resize_$(e2e_log_stamp)"
 SEED="${LAYOUT_RESIZE_SEED:-0}"
 
 jsonl_log() {
@@ -122,7 +122,7 @@ run_case() {
     local name="$1" send_label="$2" start_cols="$3" start_rows="$4" resize_cols="$5" resize_rows="$6"
     shift 6
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_now_ms)"
 
     LOG_FILE="$E2E_LOG_DIR/${name}.log"
     local output_file="$E2E_LOG_DIR/${name}.pty"
@@ -131,7 +131,7 @@ run_case() {
 
     if "$@"; then
         local end_ms
-        end_ms="$(date +%s%3N)"
+        end_ms="$(e2e_now_ms)"
         local duration_ms=$((end_ms - start_ms))
         local size
         size=$(wc -c < "$output_file" | tr -d ' ')
@@ -144,7 +144,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_now_ms)"
     local duration_ms=$((end_ms - start_ms))
     local output_sha
     output_sha="$(sha256_file "$output_file")"
@@ -247,7 +247,7 @@ if command -v jq >/dev/null 2>&1; then
     jq -nc \
         --arg run_id "$RUN_ID" \
         --arg event "run_end" \
-        --arg ts "$(date -Iseconds)" \
+        --arg ts "$(e2e_timestamp)" \
         --arg seed "$SEED" \
         --argjson total_tests "$TOTAL_TESTS" \
         --argjson passed "$PASSED" \
@@ -255,7 +255,7 @@ if command -v jq >/dev/null 2>&1; then
         '{run_id:$run_id,event:$event,ts:$ts,seed:$seed,total_tests:$total_tests,passed:$passed,failed:$failed}' \
         >> "$JSONL_FILE"
 else
-    jsonl_log "{\"run_id\":\"$RUN_ID\",\"event\":\"run_end\",\"ts\":\"$(date -Iseconds)\",\"seed\":\"$SEED\",\"total_tests\":$TOTAL_TESTS,\"passed\":$PASSED,\"failed\":$FAILURES}"
+    jsonl_log "{\"run_id\":\"$RUN_ID\",\"event\":\"run_end\",\"ts\":\"$(e2e_timestamp)\",\"seed\":\"$SEED\",\"total_tests\":$TOTAL_TESTS,\"passed\":$PASSED,\"failed\":$FAILURES}"
 fi
 
 # Optional: Hyperfine baseline (p50/p95/p99) for startup+render.
@@ -289,7 +289,7 @@ if [[ "${E2E_BENCHMARK:-}" == "1" ]]; then
             jq -nc \
                 --arg run_id "$RUN_ID" \
                 --arg event "benchmark" \
-                --arg ts "$(date -Iseconds)" \
+                --arg ts "$(e2e_timestamp)" \
                 --arg seed "$SEED" \
                 --arg benchmark "startup" \
                 --argjson p50_ms "$p50_ms" \

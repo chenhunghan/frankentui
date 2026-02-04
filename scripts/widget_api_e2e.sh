@@ -45,9 +45,20 @@ if [[ -f "$E2E_LIB_DIR/common.sh" ]]; then
     # shellcheck source=/dev/null
     source "$E2E_LIB_DIR/common.sh"
 fi
+if [[ -f "$E2E_LIB_DIR/logging.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$E2E_LIB_DIR/logging.sh"
+fi
 if [[ -f "$E2E_LIB_DIR/pty.sh" ]]; then
     # shellcheck source=/dev/null
     source "$E2E_LIB_DIR/pty.sh"
+fi
+if declare -f e2e_log_stamp >/dev/null 2>&1; then
+    TIMESTAMP="$(e2e_log_stamp)"
+    LOG_DIR="${LOG_DIR:-/tmp/widget_api_e2e_${TIMESTAMP}}"
+fi
+if ! declare -f e2e_timestamp >/dev/null 2>&1; then
+    e2e_timestamp() { date -Iseconds; }
 fi
 
 # Resolve python for PTY runner if available
@@ -222,7 +233,7 @@ write_case_meta() {
     if command -v jq >/dev/null 2>&1; then
         jq -nc \
             --arg case "$case_name" \
-            --arg timestamp "$(date -Iseconds)" \
+            --arg timestamp "$(e2e_timestamp)" \
             --arg seed "$SEED" \
             --arg screen_mode "$screen_mode" \
             --argjson cols "$cols" \
@@ -243,7 +254,7 @@ write_case_meta() {
     else
         printf '{"case":"%s","timestamp":"%s","seed":"%s","screen_mode":"%s","cols":%s,"rows":%s,"ui_height":%s,"diff_bayesian":%s,"bocpd":%s,"conformal":%s,"evidence_jsonl":"%s","run_log":"%s","pty_output":"%s","caps_file":"%s","term":"%s","colorterm":"%s","no_color":"%s"}\n' \
             "$(escape_json "$case_name")" \
-            "$(date -Iseconds)" \
+            "$(e2e_timestamp)" \
             "$(escape_json "$SEED")" \
             "$(escape_json "$screen_mode")" \
             "$cols" "$rows" "$ui_height" \
@@ -366,7 +377,7 @@ echo "=============================================="
 echo ""
 echo "Project root: $PROJECT_ROOT"
 echo "Log directory: $LOG_DIR"
-echo "Started at: $(date -Iseconds)"
+echo "Started at: $(e2e_timestamp)"
 # Determine mode string
 MODE=""
 if $QUICK; then MODE="${MODE}quick "; fi
@@ -382,7 +393,7 @@ cd "$PROJECT_ROOT"
 {
     echo "Environment Information"
     echo "======================="
-    echo "Date: $(date -Iseconds)"
+    echo "Date: $(e2e_timestamp)"
     echo "User: $(whoami)"
     echo "Hostname: $(hostname)"
     echo "Working directory: $(pwd)"
@@ -414,7 +425,7 @@ run_step "Running clippy" "$LOG_DIR/03_clippy.log" \
 # Step 4: Feature Combinations
 log_step "Testing feature combinations"
 {
-    echo "Feature combination tests - $(date -Iseconds)"
+    echo "Feature combination tests - $(e2e_timestamp)"
     echo ""
 
     # ftui-extras base features
@@ -506,7 +517,7 @@ log_step "Testing feature combinations"
 # Step 5: Widget Signature Verification
 log_step "Verifying Widget signatures"
 {
-    echo "Widget signature verification - $(date -Iseconds)"
+    echo "Widget signature verification - $(e2e_timestamp)"
     echo ""
 
     WIDGET_DIR="$PROJECT_ROOT/crates/ftui-widgets/src"
@@ -578,7 +589,7 @@ fi
 log_step "Policy toggle matrix (diff/BOCPD/conformal)"
 policy_log="$LOG_DIR/08_policy.log"
 {
-    echo "Policy Toggle Matrix - $(date -Iseconds)"
+    echo "Policy Toggle Matrix - $(e2e_timestamp)"
     echo ""
 
     policy_dir="$LOG_DIR/policy_runs"
@@ -657,7 +668,7 @@ echo "=============================================="
 echo "  E2E Test Suite Complete"
 echo "=============================================="
 echo ""
-echo "Ended at: $(date -Iseconds)"
+echo "Ended at: $(e2e_timestamp)"
 echo "Log directory: $LOG_DIR"
 echo ""
 echo "Results:"
@@ -676,7 +687,7 @@ echo ""
 {
     echo "E2E Test Summary"
     echo "================"
-    echo "Date: $(date -Iseconds)"
+    echo "Date: $(e2e_timestamp)"
     echo "Passed: $PASS_COUNT"
     echo "Failed: $FAIL_COUNT"
     echo "Skipped: $SKIP_COUNT"

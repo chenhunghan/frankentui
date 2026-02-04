@@ -65,7 +65,7 @@ if $QUICK; then
     RUN_TILE=false
 fi
 
-TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+TIMESTAMP="$(e2e_log_stamp)"
 E2E_LOG_DIR="${E2E_LOG_DIR:-/tmp/ftui_e2e_${TIMESTAMP}}"
 if [[ -e "$E2E_LOG_DIR" ]]; then
     base="$E2E_LOG_DIR"
@@ -77,10 +77,13 @@ if [[ -e "$E2E_LOG_DIR" ]]; then
 fi
 E2E_RESULTS_DIR="$E2E_LOG_DIR/results"
 LOG_FILE="$E2E_LOG_DIR/e2e.log"
-export E2E_LOG_DIR E2E_RESULTS_DIR LOG_FILE LOG_LEVEL
-export E2E_RUN_START_MS="$(date +%s%3N)"
+E2E_RUN_CMD="${E2E_RUN_CMD:-$0 ${ARGS[*]}}"
+export E2E_LOG_DIR E2E_RESULTS_DIR LOG_FILE LOG_LEVEL E2E_RUN_CMD
+export E2E_RUN_START_MS="${E2E_RUN_START_MS:-$(e2e_run_start_ms)}"
+export E2E_JSONL_FILE="${E2E_JSONL_FILE:-$E2E_LOG_DIR/e2e.jsonl}"
 
 mkdir -p "$E2E_LOG_DIR" "$E2E_RESULTS_DIR"
+jsonl_init
 
 log_info "FrankenTUI E2E launcher"
 log_info "Project root: $PROJECT_ROOT"
@@ -126,7 +129,7 @@ write_large_env() {
     local seed="$2"
     local run_id="$3"
     cat >> "$jsonl" <<EOF
-{"event":"large_screen_env","run_id":"$run_id","timestamp":"$(date -Iseconds)","seed":$seed,"term":"${TERM:-}","colorterm":"${COLORTERM:-}","no_color":"${NO_COLOR:-}","tmux":"${TMUX:-}","zellij":"${ZELLIJ:-}","kitty_window_id":"${KITTY_WINDOW_ID:-}","term_program":"${TERM_PROGRAM:-}"}
+{"event":"large_screen_env","run_id":"$run_id","timestamp":"$(e2e_timestamp)","seed":$seed,"term":"${TERM:-}","colorterm":"${COLORTERM:-}","no_color":"${NO_COLOR:-}","tmux":"${TMUX:-}","zellij":"${ZELLIJ:-}","kitty_window_id":"${KITTY_WINDOW_ID:-}","term_program":"${TERM_PROGRAM:-}"}
 EOF
 }
 
@@ -152,7 +155,7 @@ write_large_case_meta() {
         jq -nc \
             --arg case "$case_name" \
             --arg status "$status" \
-            --arg timestamp "$(date -Iseconds)" \
+            --arg timestamp "$(e2e_timestamp)" \
             --arg run_id "$run_id" \
             --argjson seed "$seed" \
             --arg screen_mode "$screen_mode" \
@@ -170,7 +173,7 @@ write_large_case_meta() {
             >> "$jsonl"
     else
         printf '{"event":"large_screen_case","case":"%s","status":"%s","timestamp":"%s","run_id":"%s","seed":%s,"screen_mode":"%s","cols":%s,"rows":%s,"ui_height":%s,"diff_bayesian":%s,"bocpd":%s,"conformal":%s,"evidence_jsonl":"%s","pty_output":"%s","caps_file":"%s","duration_ms":%s}\n' \
-            "$(escape_json "$case_name")" "$(escape_json "$status")" "$(date -Iseconds)" "$(escape_json "$run_id")" \
+            "$(escape_json "$case_name")" "$(escape_json "$status")" "$(e2e_timestamp)" "$(escape_json "$run_id")" \
             "$seed" "$(escape_json "$screen_mode")" "$cols" "$rows" "$ui_height" \
             "$diff_bayes" "$bocpd" "$conformal" \
             "$(escape_json "$evidence_jsonl")" "$(escape_json "$pty_out")" "$(escape_json "$caps_file")" \
@@ -339,7 +342,7 @@ write_budget_case_meta() {
         jq -nc \
             --arg case "$case_name" \
             --arg status "$status" \
-            --arg timestamp "$(date -Iseconds)" \
+            --arg timestamp "$(e2e_timestamp)" \
             --arg run_id "$run_id" \
             --argjson seed "$seed" \
             --arg screen_mode "$screen_mode" \
@@ -355,7 +358,7 @@ write_budget_case_meta() {
             >> "$jsonl"
     else
         printf '{"event":"budgeted_refresh_case","case":"%s","status":"%s","timestamp":"%s","run_id":"%s","seed":%s,"screen_mode":"%s","cols":%s,"rows":%s,"frame_budget_us":%s,"render_budget_us":%s,"evidence_jsonl":"%s","pty_output":"%s","duration_ms":%s,"widget_refresh_hash":"%s"}\n' \
-            "$(escape_json "$case_name")" "$(escape_json "$status")" "$(date -Iseconds)" "$(escape_json "$run_id")" \
+            "$(escape_json "$case_name")" "$(escape_json "$status")" "$(e2e_timestamp)" "$(escape_json "$run_id")" \
             "$seed" "$(escape_json "$screen_mode")" "$cols" "$rows" "$frame_budget_us" "$render_budget_us" \
             "$(escape_json "$evidence_jsonl")" "$(escape_json "$pty_out")" "$duration_ms" "$(escape_json "$refresh_hash")" \
             >> "$jsonl"
@@ -500,7 +503,7 @@ write_span_case_meta() {
         jq -nc \
             --arg case "$case_name" \
             --arg status "$status" \
-            --arg timestamp "$(date -Iseconds)" \
+            --arg timestamp "$(e2e_timestamp)" \
             --arg run_id "$run_id" \
             --argjson seed "$seed" \
             --arg screen_mode "$screen_mode" \
@@ -514,7 +517,7 @@ write_span_case_meta() {
             >> "$jsonl"
     else
         printf '{"event":"span_diff_case","case":"%s","status":"%s","timestamp":"%s","run_id":"%s","seed":%s,"screen_mode":"%s","cols":%s,"rows":%s,"evidence_jsonl":"%s","pty_output":"%s","duration_ms":%s,"diff_hash":"%s"}\n' \
-            "$(escape_json "$case_name")" "$(escape_json "$status")" "$(date -Iseconds)" "$(escape_json "$run_id")" \
+            "$(escape_json "$case_name")" "$(escape_json "$status")" "$(e2e_timestamp)" "$(escape_json "$run_id")" \
             "$seed" "$(escape_json "$screen_mode")" "$cols" "$rows" \
             "$(escape_json "$evidence_jsonl")" "$(escape_json "$pty_out")" "$duration_ms" "$(escape_json "$diff_hash")" \
             >> "$jsonl"
@@ -539,7 +542,7 @@ write_tile_case_meta() {
         jq -nc \
             --arg case "$case_name" \
             --arg status "$status" \
-            --arg timestamp "$(date -Iseconds)" \
+            --arg timestamp "$(e2e_timestamp)" \
             --arg run_id "$run_id" \
             --argjson seed "$seed" \
             --arg screen_mode "$screen_mode" \
@@ -553,7 +556,7 @@ write_tile_case_meta() {
             >> "$jsonl"
     else
         printf '{"event":"tile_skip_case","case":"%s","status":"%s","timestamp":"%s","run_id":"%s","seed":%s,"screen_mode":"%s","cols":%s,"rows":%s,"evidence_jsonl":"%s","pty_output":"%s","duration_ms":%s,"diff_hash":"%s"}\n' \
-            "$(escape_json "$case_name")" "$(escape_json "$status")" "$(date -Iseconds)" "$(escape_json "$run_id")" \
+            "$(escape_json "$case_name")" "$(escape_json "$status")" "$(e2e_timestamp)" "$(escape_json "$run_id")" \
             "$seed" "$(escape_json "$screen_mode")" "$cols" "$rows" \
             "$(escape_json "$evidence_jsonl")" "$(escape_json "$pty_out")" "$duration_ms" "$(escape_json "$diff_hash")" \
             >> "$jsonl"
@@ -585,7 +588,7 @@ run_large_case() {
     record_terminal_caps "$caps_file"
 
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_now_ms)"
 
     FTUI_HARNESS_SCREEN_MODE="$screen_mode" \
     FTUI_HARNESS_UI_HEIGHT="$ui_height" \
@@ -609,7 +612,7 @@ run_large_case() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_now_ms)"
     local duration_ms=$((end_ms - start_ms))
 
     local size
@@ -674,7 +677,7 @@ run_span_case() {
     log_test_start "$case_name"
 
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_now_ms)"
 
     FTUI_HARNESS_SCREEN_MODE="$screen_mode" \
     FTUI_HARNESS_VIEW="span-diff" \
@@ -695,7 +698,7 @@ run_span_case() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_now_ms)"
     local duration_ms=$((end_ms - start_ms))
 
     local size
@@ -759,7 +762,7 @@ run_tile_case() {
     log_test_start "$case_name"
 
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_now_ms)"
 
     FTUI_HARNESS_SCREEN_MODE="$screen_mode" \
     FTUI_HARNESS_VIEW="tile-skip" \
@@ -781,7 +784,7 @@ run_tile_case() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_now_ms)"
     local duration_ms=$((end_ms - start_ms))
 
     local size
@@ -847,7 +850,7 @@ run_budget_case() {
     log_test_start "$case_name"
 
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_now_ms)"
 
     FTUI_HARNESS_SCREEN_MODE="$screen_mode" \
     FTUI_HARNESS_VIEW="widget-budget" \
@@ -870,7 +873,7 @@ run_budget_case() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_now_ms)"
     local duration_ms=$((end_ms - start_ms))
 
     local size
@@ -937,18 +940,23 @@ if $RUN_LARGE; then
         LARGE_JSONL="$E2E_LOG_DIR/large_screen.jsonl"
         SEED="${FTUI_HARNESS_SEED:-${E2E_SEED:-0}}"
         export FTUI_HARNESS_SEED="$SEED"
+        jsonl_set_context "altscreen" 200 60 "$SEED" 2>/dev/null || true
 
         DIFF_BAYES="${FTUI_HARNESS_DIFF_BAYESIAN:-1}"
         BOCPD="${FTUI_HARNESS_BOCPD:-1}"
         CONFORMAL="${FTUI_HARNESS_CONFORMAL:-1}"
 
-        RUN_ID="large_screen_${TIMESTAMP}_$$"
+        RUN_ID="large_screen_${TIMESTAMP}"
         write_large_env "$LARGE_JSONL" "$SEED" "$RUN_ID"
 
         LARGE_FAILURES=0
+        jsonl_set_context "inline" 200 60 "$SEED" 2>/dev/null || true
         run_large_case "large_inline_200x60" "inline" 200 60 12 "$SEED" "$DIFF_BAYES" "$BOCPD" "$CONFORMAL" "$LARGE_JSONL" "$RUN_ID" || LARGE_FAILURES=$((LARGE_FAILURES + 1))
+        jsonl_set_context "inline" 240 80 "$SEED" 2>/dev/null || true
         run_large_case "large_inline_240x80" "inline" 240 80 12 "$SEED" "$DIFF_BAYES" "$BOCPD" "$CONFORMAL" "$LARGE_JSONL" "$RUN_ID" || LARGE_FAILURES=$((LARGE_FAILURES + 1))
+        jsonl_set_context "altscreen" 200 60 "$SEED" 2>/dev/null || true
         run_large_case "large_altscreen_200x60" "altscreen" 200 60 0 "$SEED" "$DIFF_BAYES" "$BOCPD" "$CONFORMAL" "$LARGE_JSONL" "$RUN_ID" || LARGE_FAILURES=$((LARGE_FAILURES + 1))
+        jsonl_set_context "altscreen" 240 80 "$SEED" 2>/dev/null || true
         run_large_case "large_altscreen_240x80" "altscreen" 240 80 0 "$SEED" "$DIFF_BAYES" "$BOCPD" "$CONFORMAL" "$LARGE_JSONL" "$RUN_ID" || LARGE_FAILURES=$((LARGE_FAILURES + 1))
 
         if [[ "$LARGE_FAILURES" -gt 0 ]]; then
@@ -971,7 +979,8 @@ if $RUN_SPAN; then
     else
         SPAN_JSONL="$E2E_LOG_DIR/span_diff.jsonl"
         SEED="${FTUI_HARNESS_SEED:-${E2E_SEED:-0}}"
-        RUN_ID="span_diff_${TIMESTAMP}_$$"
+        jsonl_set_context "altscreen" 160 60 "$SEED" 2>/dev/null || true
+        RUN_ID="span_diff_${TIMESTAMP}"
 
         SPAN_FAILURES=0
         run_span_case "span_diff_run1" "altscreen" 160 60 "$SEED" "$SPAN_JSONL" "$RUN_ID" || SPAN_FAILURES=1
@@ -1028,7 +1037,8 @@ if $RUN_TILE; then
     else
         TILE_JSONL="$E2E_LOG_DIR/tile_skip.jsonl"
         SEED="${FTUI_HARNESS_SEED:-${E2E_SEED:-0}}"
-        RUN_ID="tile_skip_${TIMESTAMP}_$$"
+        jsonl_set_context "altscreen" 200 60 "$SEED" 2>/dev/null || true
+        RUN_ID="tile_skip_${TIMESTAMP}"
 
         TILE_FAILURES=0
         run_tile_case "tile_skip_run1" "altscreen" 200 60 "$SEED" "$TILE_JSONL" "$RUN_ID" || TILE_FAILURES=1
@@ -1087,9 +1097,10 @@ if $RUN_BUDGETED; then
     else
         BUDGET_JSONL="$E2E_LOG_DIR/budget_refresh.jsonl"
         SEED="${FTUI_HARNESS_SEED:-${E2E_SEED:-0}}"
+        jsonl_set_context "inline" 120 40 "$SEED" 2>/dev/null || true
         FRAME_BUDGET_US="${FTUI_HARNESS_FRAME_BUDGET_US:-6000}"
         RENDER_BUDGET_US="${FTUI_HARNESS_RENDER_BUDGET_US:-2500}"
-        RUN_ID="budget_refresh_${TIMESTAMP}_$$"
+        RUN_ID="budget_refresh_${TIMESTAMP}"
 
         BUDGET_FAILURES=0
         run_budget_case "budgeted_refresh_run1" "inline" 120 40 "$SEED" "$FRAME_BUDGET_US" "$RENDER_BUDGET_US" "$BUDGET_JSONL" "$RUN_ID" || BUDGET_FAILURES=1

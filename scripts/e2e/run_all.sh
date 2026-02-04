@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LIB_DIR="$SCRIPT_DIR/lib"
+RUN_ARGS=("$@")
 
 # shellcheck source=/dev/null
 source "$PROJECT_ROOT/tests/e2e/lib/common.sh"
@@ -50,15 +51,18 @@ for arg in "$@"; do
     fi
 done
 
-TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+E2E_RUN_CMD="${E2E_RUN_CMD:-$0 ${RUN_ARGS[*]}}"
+TIMESTAMP="$(e2e_log_stamp)"
 E2E_LOG_DIR="${E2E_LOG_DIR:-/tmp/ftui_e2e_${TIMESTAMP}}"
 E2E_RESULTS_DIR="${E2E_RESULTS_DIR:-$E2E_LOG_DIR/results}"
 LOG_FILE="$E2E_LOG_DIR/e2e.log"
+E2E_JSONL_FILE="${E2E_JSONL_FILE:-$E2E_LOG_DIR/e2e.jsonl}"
 
-export E2E_LOG_DIR E2E_RESULTS_DIR LOG_FILE LOG_LEVEL
-export E2E_RUN_START_MS="$(date +%s%3N)"
+export E2E_LOG_DIR E2E_RESULTS_DIR LOG_FILE LOG_LEVEL E2E_JSONL_FILE E2E_RUN_CMD
+export E2E_RUN_START_MS="${E2E_RUN_START_MS:-$(e2e_run_start_ms)}"
 
 mkdir -p "$E2E_LOG_DIR" "$E2E_RESULTS_DIR"
+jsonl_init
 
 log_info "FrankenTUI E2E Test Suite"
 log_info "Project root: $PROJECT_ROOT"
@@ -70,7 +74,7 @@ log_info "Mode: $([ "$VERBOSE" = true ] && echo verbose || echo normal)"
 {
     echo "Environment Information"
     echo "======================="
-    echo "Date: $(date -Iseconds)"
+    echo "Date: $(e2e_timestamp)"
     echo "User: $(whoami)"
     echo "Hostname: $(hostname)"
     echo "Working directory: $(pwd)"

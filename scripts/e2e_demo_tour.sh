@@ -9,8 +9,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+LIB_DIR="$PROJECT_ROOT/tests/e2e/lib"
+
+# shellcheck source=/dev/null
+if [[ -f "$LIB_DIR/logging.sh" ]]; then
+    source "$LIB_DIR/logging.sh"
+fi
+if ! declare -f e2e_timestamp >/dev/null 2>&1; then
+    e2e_timestamp() { date -Iseconds; }
+fi
+if ! declare -f e2e_log_stamp >/dev/null 2>&1; then
+    e2e_log_stamp() { date +%Y%m%d_%H%M%S; }
+fi
+
 LOG_DIR="${PROJECT_ROOT}/target/e2e-logs"
-TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+TIMESTAMP="$(e2e_log_stamp)"
 RUN_ID="tour_${TIMESTAMP}"
 LOG_FILE="${LOG_DIR}/guided_tour_${TIMESTAMP}.jsonl"
 STDOUT_LOG="${LOG_DIR}/guided_tour_${TIMESTAMP}.log"
@@ -22,12 +35,12 @@ mkdir -p "$LOG_DIR"
 # -----------------------------------------------------------------------
 
 echo '=== Guided Tour E2E (bd-iuvb.1) ==='
-echo "Date: $(date -Iseconds)"
+echo "Date: $(e2e_timestamp)"
 echo "Log: $LOG_FILE"
 echo
 
 cat > "$LOG_FILE" <<EOF_ENV
-{"type":"env","timestamp":"$(date -Iseconds)","rust_version":"$(rustc --version 2>/dev/null || echo 'unknown')","platform":"$(uname -s)","arch":"$(uname -m)","run_id":"${RUN_ID}"}
+{"type":"env","timestamp":"$(e2e_timestamp)","rust_version":"$(rustc --version 2>/dev/null || echo 'unknown')","platform":"$(uname -s)","arch":"$(uname -m)","run_id":"${RUN_ID}"}
 EOF_ENV
 
 # -----------------------------------------------------------------------

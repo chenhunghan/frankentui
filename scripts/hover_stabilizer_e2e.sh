@@ -12,8 +12,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+LIB_DIR="$PROJECT_ROOT/tests/e2e/lib"
+
+# shellcheck source=/dev/null
+if [[ -f "$LIB_DIR/logging.sh" ]]; then
+    source "$LIB_DIR/logging.sh"
+fi
+if ! declare -f e2e_timestamp >/dev/null 2>&1; then
+    e2e_timestamp() { date -Iseconds; }
+fi
+if ! declare -f e2e_log_stamp >/dev/null 2>&1; then
+    e2e_log_stamp() { date +%Y%m%d_%H%M%S; }
+fi
+
 LOG_DIR="${PROJECT_ROOT}/target/e2e-logs"
-LOG_FILE="${LOG_DIR}/hover_stabilizer_$(date +%Y%m%d_%H%M%S).jsonl"
+LOG_FILE="${LOG_DIR}/hover_stabilizer_$(e2e_log_stamp).jsonl"
 
 mkdir -p "$LOG_DIR"
 
@@ -22,13 +35,13 @@ mkdir -p "$LOG_DIR"
 # -----------------------------------------------------------------------
 
 echo '=== Hover Stabilizer E2E Tests (bd-9n09) ==='
-echo "Date: $(date -Iseconds)"
+echo "Date: $(e2e_timestamp)"
 echo "Log: $LOG_FILE"
 echo
 
 # Log environment
 cat > "$LOG_FILE" <<EOF
-{"type":"env","timestamp":"$(date -Iseconds)","rust_version":"$(rustc --version 2>/dev/null || echo 'unknown')","platform":"$(uname -s)","arch":"$(uname -m)"}
+{"type":"env","timestamp":"$(e2e_timestamp)","rust_version":"$(rustc --version 2>/dev/null || echo 'unknown')","platform":"$(uname -s)","arch":"$(uname -m)"}
 EOF
 
 # -----------------------------------------------------------------------

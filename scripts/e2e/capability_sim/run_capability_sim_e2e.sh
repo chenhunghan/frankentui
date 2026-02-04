@@ -14,7 +14,22 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+LIB_DIR="$PROJECT_ROOT/tests/e2e/lib"
+# shellcheck source=/dev/null
+if [[ -f "$LIB_DIR/logging.sh" ]]; then
+    source "$LIB_DIR/logging.sh"
+fi
+if ! declare -f e2e_timestamp >/dev/null 2>&1; then
+    e2e_timestamp() { date -Iseconds; }
+fi
+if ! declare -f e2e_log_stamp >/dev/null 2>&1; then
+    e2e_log_stamp() { date +%Y%m%d_%H%M%S; }
+fi
+if ! declare -f e2e_now_ms >/dev/null 2>&1; then
+    e2e_now_ms() { date +%s%3N; }
+fi
+
+TIMESTAMP="$(e2e_log_stamp)"
 LOG_DIR="${E2E_LOG_DIR:-/tmp/ftui-cap-sim-e2e-${TIMESTAMP}}"
 RESULTS_DIR="${E2E_RESULTS_DIR:-$LOG_DIR/results}"
 LOG_FILE="$LOG_DIR/capability_sim_e2e.log"
@@ -22,7 +37,7 @@ JSONL_OUT=""
 VERBOSE=false
 SEED="${CAP_SIM_SEED:-0}"
 DETERMINISTIC="${CAP_SIM_DETERMINISTIC:-1}"
-RUN_ID="cap_sim_${TIMESTAMP}_$$"
+RUN_ID="cap_sim_${TIMESTAMP}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -79,6 +94,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p "$LOG_DIR" "$RESULTS_DIR"
+export E2E_DETERMINISTIC="$DETERMINISTIC"
+export E2E_SEED="$SEED"
 
 emit_jsonl() {
     local line="$1"
@@ -111,14 +128,14 @@ log_env() {
     local git_commit
     git_commit="$(cd "$PROJECT_ROOT" && git log -1 --oneline 2>/dev/null || echo 'N/A')"
 
-    emit_jsonl "{\"run_id\":\"$RUN_ID\",\"event\":\"env\",\"timestamp\":\"$(date -Iseconds)\",\"seed\":$SEED,\"deterministic\":$DETERMINISTIC,\"env\":{\"term\":\"$term_val\",\"colorterm\":\"$colorterm\",\"no_color\":\"$no_color\",\"tmux\":\"$tmux\",\"zellij\":\"$zellij\",\"kitty_window_id\":\"$kitty\"},\"toolchain\":{\"rustc\":\"$rustc_version\",\"cargo\":\"$cargo_version\"},\"git_commit\":\"$git_commit\"}"
+    emit_jsonl "{\"run_id\":\"$RUN_ID\",\"event\":\"env\",\"timestamp\":\"$(e2e_timestamp)\",\"seed\":$SEED,\"deterministic\":$DETERMINISTIC,\"env\":{\"term\":\"$term_val\",\"colorterm\":\"$colorterm\",\"no_color\":\"$no_color\",\"tmux\":\"$tmux\",\"zellij\":\"$zellij\",\"kitty_window_id\":\"$kitty\"},\"toolchain\":{\"rustc\":\"$rustc_version\",\"cargo\":\"$cargo_version\"},\"git_commit\":\"$git_commit\"}"
 }
 
 run_case() {
     local name="$1"
     shift
     local start_ms
-    start_ms="$(date +%s%3N)"
+    start_ms="$(e2e_now_ms)"
     emit_jsonl "{\"run_id\":\"$RUN_ID\",\"case\":\"$name\",\"event\":\"start\",\"ts_ms\":$start_ms}"
 
     local exit_code=0
@@ -137,7 +154,7 @@ run_case() {
     fi
 
     local end_ms
-    end_ms="$(date +%s%3N)"
+    end_ms="$(e2e_now_ms)"
     local duration_ms=$((end_ms - start_ms))
     local checksum
     checksum="$(compute_checksum "$LOG_FILE")"
