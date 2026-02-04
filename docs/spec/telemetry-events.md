@@ -221,9 +221,9 @@ ftui.schema_version   string   - Semantic version (e.g., "1.0.0")
 
 ---
 
-## 9) Evidence Ledger Fields
+## 9) Decision Evidence + Local Evidence Sink
 
-For decision events, include:
+For OTEL decision events, include structured evidence:
 
 ```rust
 pub struct DecisionEvidence {
@@ -242,84 +242,110 @@ pub struct DecisionEvidence {
 }
 ```
 
-### 9.1 Evidence Ledger JSONL (v1)
+### 9.1 Evidence Sink Configuration (Runtime)
 
-Decision evidence is also emitted as **local JSONL** for deterministic
-replay and E2E verification. This ledger is distinct from OTEL spans
-but uses aligned field names for easy correlation.
+Deterministic decision logs are emitted via the **local JSONL evidence sink**.
+This is distinct from OTEL spans and is intended for E2E capture + replay.
 
-Each JSONL line is a single object with **shared fields** plus
-**component-specific payloads**. All fields are snake_case.
+Configuration (see `crates/ftui-runtime/src/evidence_sink.rs`):
 
-**Shared fields (required for all components):**
+```rust
+use ftui_runtime::{EvidenceSinkConfig, EvidenceSinkDestination, ProgramConfig};
 
-- `schema_version`: string, **must** be `"v1"`
-- `run_id`: string (UUID v4; stable per run)
-- `event_idx`: u64 (monotonic per run)
-- `timestamp`: ISO-8601 string (optional but recommended)
-- `screen_mode`: `"inline" | "alt"`
-- `buffer_cols`: u16
-- `buffer_rows`: u16
-- `component`: `"diff_strategy" | "resize_coalesce" | "budget_risk"`
-- `strategy`: string (selected action/strategy)
-- `costs`: object (expected cost/latency values)
-- `thresholds`: object (budget/decision thresholds)
-- `params`: object (model parameters / config)
-- `terms`: object (equation terms / intermediate values)
-- `rationale`: string (plain-English justification)
-
-#### Component: `diff_strategy`
-
-**Required fields:**
-
-- `strategy`: `"Full" | "DirtyRows" | "FullRedraw"`
-- `costs.full`, `costs.dirty`, `costs.redraw` (expected cost units)
-- `params.prior_alpha`, `params.prior_beta`
-- `terms.alpha`, `terms.beta`, `terms.posterior_mean`, `terms.posterior_variance`
-- `terms.dirty_rows`, `terms.total_rows`, `terms.total_cells`
-
-**Example:**
-
-```json
-{"schema_version":"v1","run_id":"1d2b2e2d-4b3f-4b75-a6ad-7b0b1b3a5b7e","event_idx":42,"screen_mode":"inline","buffer_cols":120,"buffer_rows":40,"component":"diff_strategy","strategy":"DirtyRows","costs":{"full":4800.0,"dirty":1200.0,"redraw":0.0},"thresholds":{"dirty_rows_enabled":true},"params":{"prior_alpha":1.0,"prior_beta":1.0},"terms":{"alpha":3.5,"beta":92.5,"posterior_mean":0.036,"posterior_variance":0.00034,"dirty_rows":10,"total_rows":40,"total_cells":4800},"rationale":"Dirty rows minimize expected diff cost at the observed change rate."}
+let config = ProgramConfig::default()
+    .with_evidence_sink(
+        EvidenceSinkConfig::default()
+            .with_enabled(true)
+            .with_destination(EvidenceSinkDestination::file("evidence.jsonl"))
+            .with_flush_on_write(true),
+    );
 ```
 
-#### Component: `resize_coalesce`
+Notes:
+- Default is **disabled**.
+- Destination: `Stdout` or `File(path)`.
+- Flush-on-write defaults to **true** (recommended for tests).
+- Resize decision JSONL requires `CoalescerConfig::with_logging(true)`.
+- BOCPD JSONL requires `BocpdConfig::with_logging(true)`.
 
-**Required fields:**
+### 9.2 Evidence Sink JSONL (Current)
 
-- `strategy`: `"apply" | "apply_forced" | "coalesce" | "skip_same_size"`
-- `costs.time_since_render_ms`, `costs.coalesce_ms`
-- `thresholds.steady_delay_ms`, `thresholds.burst_delay_ms`, `thresholds.hard_deadline_ms`
-- `params.burst_enter_rate`, `params.burst_exit_rate`, `params.rate_window_size`, `params.cooldown_frames`
-- `terms.dt_ms`, `terms.event_rate`, `terms.regime`
-- `terms.log_bayes_factor`, `terms.regime_contribution`, `terms.timing_contribution`, `terms.rate_contribution`
-- `terms.pending_w`, `terms.pending_h`, `terms.applied_w`, `terms.applied_h`, `terms.forced`
+Each line is a single JSON object. Field sets are **event-specific**.
+These are the current runtime events emitted by the evidence sink.
 
-**Example:**
+#### Event: `diff_decision`
 
-```json
-{"schema_version":"v1","run_id":"1d2b2e2d-4b3f-4b75-a6ad-7b0b1b3a5b7e","event_idx":57,"screen_mode":"alt","buffer_cols":80,"buffer_rows":24,"component":"resize_coalesce","strategy":"coalesce","costs":{"time_since_render_ms":12.4,"coalesce_ms":24.1},"thresholds":{"steady_delay_ms":16,"burst_delay_ms":40,"hard_deadline_ms":100},"params":{"burst_enter_rate":10.0,"burst_exit_rate":5.0,"rate_window_size":8,"cooldown_frames":3},"terms":{"dt_ms":7.2,"event_rate":18.5,"regime":"burst","log_bayes_factor":-1.42,"regime_contribution":1.0,"timing_contribution":1.25,"rate_contribution":0.50,"pending_w":100,"pending_h":40,"applied_w":80,"applied_h":24,"forced":false},"rationale":"Burst regime + high event rate favors coalescing to reduce redundant redraws."}
-```
+Required fields:
+- `strategy` (`Full` | `DirtyRows` | `FullRedraw`)
+- `cost_full`, `cost_dirty`, `cost_redraw`
+- `posterior_mean`, `posterior_variance`, `alpha`, `beta`
+- `dirty_rows`, `total_rows`, `total_cells`
+- `bayesian_enabled`, `dirty_rows_enabled`
 
-#### Component: `budget_risk`
+Runtime defaults (`RuntimeDiffConfig`):
+- `bayesian_enabled = true`
+- `dirty_rows_enabled = true`
+- `reset_on_resize = true`
+- `reset_on_invalidation = true`
 
-**Required fields:**
-
-- `strategy`: `"degrade" | "upgrade" | "stay"`
-- `costs.frame_time_ms`, `costs.target_ms`, `costs.remaining_ms`
-- `thresholds.degrade_threshold`, `thresholds.upgrade_threshold`
-- `thresholds.e_alpha`, `thresholds.e_beta`, `thresholds.warmup_frames`
-- `params.pid_kp`, `params.pid_ki`, `params.pid_kd`, `params.pid_integral_max`
-- `params.eprocess_lambda`, `params.eprocess_sigma`
-- `terms.pid_p`, `terms.pid_i`, `terms.pid_d`, `terms.pid_output`
-- `terms.e_value`, `terms.frames_observed`, `terms.frames_since_change`, `terms.in_warmup`
-
-**Example:**
+Example:
 
 ```json
-{"schema_version":"v1","run_id":"1d2b2e2d-4b3f-4b75-a6ad-7b0b1b3a5b7e","event_idx":88,"screen_mode":"inline","buffer_cols":120,"buffer_rows":40,"component":"budget_risk","strategy":"degrade","costs":{"frame_time_ms":22.1,"target_ms":16.0,"remaining_ms":-6.1},"thresholds":{"degrade_threshold":0.3,"upgrade_threshold":0.2,"e_alpha":0.05,"e_beta":0.5,"warmup_frames":30},"params":{"pid_kp":0.5,"pid_ki":0.05,"pid_kd":0.2,"pid_integral_max":5.0,"eprocess_lambda":0.5,"eprocess_sigma":1.0},"terms":{"pid_p":0.19,"pid_i":0.07,"pid_d":0.05,"pid_output":0.31,"e_value":23.4,"frames_observed":64,"frames_since_change":5,"in_warmup":false},"rationale":"Sustained over-budget frames crossed PID and e-process thresholds; degrade one level."}
+{"event":"diff_decision","strategy":"DirtyRows","cost_full":4800.000000,"cost_dirty":1200.000000,"cost_redraw":0.000000,"posterior_mean":0.036000,"posterior_variance":0.000340,"alpha":3.500000,"beta":92.500000,"dirty_rows":10,"total_rows":40,"total_cells":4800,"bayesian_enabled":true,"dirty_rows_enabled":true}
 ```
+
+#### Event: `config` (resize coalescer)
+
+Required fields:
+- `steady_delay_ms`, `burst_delay_ms`, `hard_deadline_ms`
+- `burst_enter_rate`, `burst_exit_rate`
+- `cooldown_frames`, `rate_window_size`
+- `logging_enabled`
+
+#### Event: `decision` (resize coalescer)
+
+Required fields:
+- `idx`, `elapsed_ms`, `dt_ms`, `event_rate`
+- `regime` (`steady` | `burst`)
+- `action` (`apply` | `apply_forced` | `apply_immediate` | `coalesce` | `skip_same_size`)
+- `pending_w`, `pending_h`, `applied_w`, `applied_h`
+- `time_since_render_ms`, `coalesce_ms`, `forced`
+
+#### Event: `decision_evidence` (resize coalescer)
+
+Required fields:
+- `log_bayes_factor` (float or `"inf"`)
+- `regime_contribution`, `timing_contribution`, `rate_contribution`
+- `explanation`
+
+#### Event: `bocpd`
+
+Schema versioned (`schema_version: "bocpd-v1"`).
+Required fields:
+- `p_burst`, `log_bf`, `obs_ms`, `regime`
+- `ll_steady`, `ll_burst`
+- `runlen_mean`, `runlen_var`, `runlen_mode`, `runlen_p95`, `runlen_tail`
+- `delay_ms` (nullable), `forced_deadline` (nullable)
+- `n_obs`
+
+Example:
+
+```json
+{"schema_version":"bocpd-v1","event":"bocpd","p_burst":0.7321,"log_bf":1.204,"obs_ms":18.0,"regime":"burst","ll_steady":0.001234,"ll_burst":0.056789,"runlen_mean":12.4,"runlen_var":9.100,"runlen_mode":9,"runlen_p95":21,"runlen_tail":0.0420,"delay_ms":40,"forced_deadline":false,"n_obs":64}
+```
+
+#### Event: `allocation_budget_config`
+
+Required fields:
+- `alpha`, `mu_0`, `sigma_sq`, `cusum_k`, `cusum_h`
+- `lambda`, `window_size`
+
+#### Event: `allocation_budget_evidence`
+
+Required fields:
+- `frame`, `x`, `residual`
+- `cusum_plus`, `cusum_minus`, `e_value`
+- `alert` (bool)
 
 ---
 

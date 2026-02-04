@@ -212,11 +212,18 @@ Recommended defaults:
 All thresholds must be logged in the evidence ledger.
 
 ### 6.5) BOCPD Evidence Ledger Fields
-Add these fields to the per‑decision log:
-- `r_max`, `p_change`, `top_runlen`, `runlen_entropy`
-- `alpha0`, `beta0`, `lambda_hat`
-- `mean_dv`, `mad_dv`, `b_hat`
-- `mu_v`, `var_v`
+When BOCPD logging is enabled (`BocpdConfig::with_logging(true)`), each update
+emits JSONL with:
+- `schema_version`: `"bocpd-v1"`
+- `event`: `"bocpd"`
+- `p_burst`, `log_bf`, `obs_ms`, `regime`
+- `ll_steady`, `ll_burst`
+- `runlen_mean`, `runlen_var`, `runlen_mode`, `runlen_p95`, `runlen_tail`
+- `delay_ms` (nullable), `forced_deadline` (nullable)
+- `n_obs`
+
+`delay_ms` / `forced_deadline` are populated when the coalescer supplies
+decision context for the current update.
 
 ---
 
@@ -412,16 +419,29 @@ on_resize_event(x_t):
 - Coalesce starvation (no render for too long).
 
 ### Evidence Ledger (per decision)
-Fields:
-- `ts`, `dt`, `dv`, `v`
-- `P(S)`, `P(B)`
-- `p_change`, `conf_burst`
-- `T_target`, `T_actual`, `u_t`
-- `loss_render`, `loss_coalesce`, `loss_skip`
-- `chosen_action`
-- `e_value`, `storm_mode`
-- `h_bocpd`, `R_max`, `tau_burst`, `tau_change`
-- `deadline_ms`, `time_since_last_render`
+When resize decision logging is enabled (`CoalescerConfig::with_logging(true)`),
+the coalescer emits JSONL lines to the evidence sink:
+
+**Event: `config` (once per run)**
+- `steady_delay_ms`, `burst_delay_ms`, `hard_deadline_ms`
+- `burst_enter_rate`, `burst_exit_rate`
+- `cooldown_frames`, `rate_window_size`
+- `logging_enabled`
+
+**Event: `decision` (each decision)**
+- `idx`, `elapsed_ms`, `dt_ms`, `event_rate`
+- `regime` (`steady` | `burst`)
+- `action` (`apply` | `apply_forced` | `apply_immediate` | `coalesce` | `skip_same_size`)
+- `pending_w`, `pending_h`, `applied_w`, `applied_h`
+- `time_since_render_ms`, `coalesce_ms`, `forced`
+
+**Event: `decision_evidence` (optional)**
+- `log_bayes_factor` (float or `"inf"`)
+- `regime_contribution`, `timing_contribution`, `rate_contribution`
+- `explanation`
+
+If BOCPD is enabled, a `bocpd` event is also emitted per update
+(`schema_version: "bocpd-v1"`; see §6.5).
 
 ---
 
@@ -440,10 +460,11 @@ Fields:
 
 ### E2E Logs
 JSONL fields include:
-- `event_idx`, `dt`, `dv`, `v`
-- `P(S)`, `P(B)`
-- `e_value`, `storm_mode`
-- `action`, `latency_ms`, `skip_count`
+- `event` (`config` | `decision` | `decision_evidence` | `bocpd`)
+- `idx`, `elapsed_ms`, `dt_ms`, `event_rate`
+- `regime`, `action`, `forced`
+- `time_since_render_ms`, `coalesce_ms`
+- BOCPD fields from §6.5 when enabled
 
 ---
 

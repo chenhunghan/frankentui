@@ -298,6 +298,15 @@ Notes:
 
 ---
 
+#### Workflow (Capture + Replay)
+1. **Capture**: write `trace.jsonl` (and optional `frames/`) for the scenario.
+2. **Record context**: include `schema_version`, `seed`, `policies`, and terminal
+   capabilities in the header record.
+3. **Verify**: recompute `checksum` and `checksum_chain` during replay.
+4. **Fail fast**: any mismatch in `checksum_chain` or `final_checksum_chain`
+   is a hard regression.
+5. **Review**: attach `trace.jsonl` + `frames/` artifacts to CI for diffing.
+
 ### 3.13 Conformal Predictor for Frame-Time Risk
 This spec defines a distribution-free, explainable predictor for frame-time risk.
 It outputs an *upper bound* on frame time with formal coverage guarantees and
@@ -377,6 +386,25 @@ Unit tests:
 Integration tests:
 - Bucket isolation for large-screen sizes (coverage not diluted).
 - Reset on regime shift (BOCPD reset causes temporary conservative bounds).
+
+#### 3.13.9 Runtime Defaults + Config
+`ConformalConfig` defaults in `ftui-runtime`:
+- `alpha = 0.05`
+- `min_samples = 20`
+- `window_size = 256`
+- `q_default = 10_000.0` (microseconds)
+
+Enable with:
+```rust
+use ftui_runtime::{ConformalConfig, ProgramConfig};
+let config = ProgramConfig::default().with_conformal_config(ConformalConfig::default());
+```
+Disable with `ProgramConfig::without_conformal()`.
+
+The predictor returns a `ConformalPrediction` with fields:
+`upper_us`, `risk`, `confidence`, `bucket`, `sample_count`, `quantile`,
+`fallback_level`, `window_size`, `reset_count`, `y_hat`, `budget_us`.
+If you emit JSONL evidence, serialize these fields verbatim.
 
 E2E tests (with JSONL logging):
 - Inline + alt-screen coverage checks across size buckets.

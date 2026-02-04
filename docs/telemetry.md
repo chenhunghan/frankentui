@@ -272,6 +272,46 @@ in tests via `handle_resize_at` / `tick_at`).
 
 ---
 
+## Unified Evidence Sink (JSONL)
+
+Runtime policies that emit evidence can share a single JSONL sink for
+deterministic capture in tests and E2E runs.
+
+Supported components:
+
+- Diff strategy evidence (TerminalWriter)
+- Resize coalescer evidence (ResizeCoalescer)
+- Budget evidence (AllocationBudget)
+
+### Program Integration (Diff + Resize)
+
+```rust
+use ftui_runtime::{EvidenceSinkConfig, EvidenceSinkDestination, ProgramConfig};
+
+let config = ProgramConfig::default().with_evidence_sink(
+    EvidenceSinkConfig::enabled_file("target/evidence.jsonl")
+        .with_destination(EvidenceSinkDestination::Stdout), // optional override
+);
+```
+
+### Manual Integration (Budget Monitor)
+
+```rust
+use ftui_runtime::{AllocationBudget, BudgetConfig, EvidenceSink, EvidenceSinkConfig};
+
+let sink = EvidenceSink::from_config(&EvidenceSinkConfig::enabled_stdout())
+    .expect("sink")
+    .expect("enabled");
+let mut budget = AllocationBudget::new(BudgetConfig::default()).with_evidence_sink(sink);
+```
+
+Notes:
+
+- `flush_on_write` ensures deterministic, line-at-a-time capture.
+- When disabled, overhead is negligible (one boolean check).
+
+---
+
 ## Performance Impact
 
 ### When Disabled (Default)
