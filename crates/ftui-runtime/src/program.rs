@@ -68,7 +68,7 @@ use ftui_core::terminal_session::{SessionOptions, TerminalSession};
 use ftui_render::budget::{BudgetDecision, DegradationLevel, FrameBudgetConfig, RenderBudget};
 use ftui_render::buffer::Buffer;
 use ftui_render::diff_strategy::DiffStrategy;
-use ftui_render::frame::{Frame, WidgetSignal};
+use ftui_render::frame::{Frame, WidgetBudget, WidgetSignal};
 use ftui_render::sanitize::sanitize;
 use std::io::{self, Stdout, Write};
 use std::time::{Duration, Instant};
@@ -384,6 +384,62 @@ impl PersistenceConfig {
     }
 }
 
+/// Configuration for widget refresh selection under render budget.
+///
+/// Defaults are conservative and deterministic:
+/// - enabled: true
+/// - staleness_window_ms: 1_000
+/// - starve_ms: 3_000
+/// - max_starved_per_frame: 2
+/// - max_drop_fraction: 1.0 (disabled)
+/// - weights: priority 1.0, staleness 0.5, focus 0.75, interaction 0.5
+/// - starve_boost: 1.5
+/// - min_cost_us: 1.0
+#[derive(Debug, Clone)]
+pub struct WidgetRefreshConfig {
+    /// Enable budgeted widget refresh selection.
+    pub enabled: bool,
+    /// Staleness decay window (ms) used to normalize staleness scores.
+    pub staleness_window_ms: u64,
+    /// Staleness threshold that triggers starvation guard (ms).
+    pub starve_ms: u64,
+    /// Maximum number of starved widgets to force in per frame.
+    pub max_starved_per_frame: usize,
+    /// Maximum fraction of non-essential widgets that may be dropped.
+    /// Set to 1.0 to disable the guardrail.
+    pub max_drop_fraction: f32,
+    /// Weight for base priority signal.
+    pub weight_priority: f32,
+    /// Weight for staleness signal.
+    pub weight_staleness: f32,
+    /// Weight for focus boost.
+    pub weight_focus: f32,
+    /// Weight for interaction boost.
+    pub weight_interaction: f32,
+    /// Additive boost to value for starved widgets.
+    pub starve_boost: f32,
+    /// Minimum cost (us) to avoid divide-by-zero.
+    pub min_cost_us: f32,
+}
+
+impl Default for WidgetRefreshConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            staleness_window_ms: 1_000,
+            starve_ms: 3_000,
+            max_starved_per_frame: 2,
+            max_drop_fraction: 1.0,
+            weight_priority: 1.0,
+            weight_staleness: 0.5,
+            weight_focus: 0.75,
+            weight_interaction: 0.5,
+            starve_boost: 1.5,
+            min_cost_us: 1.0,
+        }
+    }
+}
+
 /// Configuration for the program runtime.
 #[derive(Debug, Clone)]
 pub struct ProgramConfig {
@@ -419,6 +475,8 @@ pub struct ProgramConfig {
     pub persistence: PersistenceConfig,
     /// Inline auto UI height remeasurement policy.
     pub inline_auto_remeasure: Option<InlineAutoRemeasureConfig>,
+    /// Widget refresh selection configuration.
+    pub widget_refresh: WidgetRefreshConfig,
 }
 
 impl Default for ProgramConfig {
@@ -440,6 +498,7 @@ impl Default for ProgramConfig {
             kitty_keyboard: false,
             persistence: PersistenceConfig::default(),
             inline_auto_remeasure: None,
+            widget_refresh: WidgetRefreshConfig::default(),
         }
     }
 }
@@ -518,6 +577,12 @@ impl ProgramConfig {
     /// Set the base locale used for rendering.
     pub fn with_locale(mut self, locale: impl Into<crate::locale::Locale>) -> Self {
         self.locale_context = LocaleContext::new(locale);
+        self
+    }
+
+    /// Set the widget refresh selection configuration.
+    pub fn with_widget_refresh(mut self, config: WidgetRefreshConfig) -> Self {
+        self.widget_refresh = config;
         self
     }
 
@@ -765,6 +830,297 @@ impl BudgetDecisionEvidence {
     }
 }
 
+#[derive(Debug, Clone)]
+struct WidgetRefreshEntry {
+    widget_id: u64,
+    essential: bool,
+    starved: bool,
+    value: f32,
+    cost_us: f32,
+    score: f32,
+    staleness_ms: u64,
+}
+
+impl WidgetRefreshEntry {
+    fn to_json(&self) -> String {
+        format!(
+            r#"{{"id":{},"cost_us":{:.3},"value":{:.4},"score":{:.4},"essential":{},"starved":{},"staleness_ms":{}}}"#,
+            self.widget_id,
+            self.cost_us,
+            self.value,
+            self.score,
+            self.essential,
+            self.starved,
+            self.staleness_ms
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+struct WidgetRefreshPlan {
+    frame_idx: u64,
+    budget_us: f64,
+    degradation: DegradationLevel,
+    essentials_cost_us: f64,
+    selected_cost_us: f64,
+    selected_value: f64,
+    signal_count: usize,
+    selected: Vec<WidgetRefreshEntry>,
+    skipped_count: usize,
+    skipped_starved: usize,
+    starved_selected: usize,
+    over_budget: bool,
+}
+
+impl WidgetRefreshPlan {
+    fn new() -> Self {
+        Self {
+            frame_idx: 0,
+            budget_us: 0.0,
+            degradation: DegradationLevel::Full,
+            essentials_cost_us: 0.0,
+            selected_cost_us: 0.0,
+            selected_value: 0.0,
+            signal_count: 0,
+            selected: Vec::new(),
+            skipped_count: 0,
+            skipped_starved: 0,
+            starved_selected: 0,
+            over_budget: false,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.frame_idx = 0;
+        self.budget_us = 0.0;
+        self.degradation = DegradationLevel::Full;
+        self.essentials_cost_us = 0.0;
+        self.selected_cost_us = 0.0;
+        self.selected_value = 0.0;
+        self.signal_count = 0;
+        self.selected.clear();
+        self.skipped_count = 0;
+        self.skipped_starved = 0;
+        self.starved_selected = 0;
+        self.over_budget = false;
+    }
+
+    fn as_budget(&self) -> WidgetBudget {
+        if self.signal_count == 0 {
+            return WidgetBudget::allow_all();
+        }
+        let ids = self.selected.iter().map(|entry| entry.widget_id).collect();
+        WidgetBudget::allow_only(ids)
+    }
+
+    fn recompute(
+        &mut self,
+        frame_idx: u64,
+        budget_us: f64,
+        degradation: DegradationLevel,
+        signals: &[WidgetSignal],
+        config: &WidgetRefreshConfig,
+    ) {
+        self.clear();
+        self.frame_idx = frame_idx;
+        self.budget_us = budget_us;
+        self.degradation = degradation;
+
+        if !config.enabled || signals.is_empty() {
+            return;
+        }
+
+        self.signal_count = signals.len();
+        let mut essentials_cost = 0.0f64;
+        let mut selected_cost = 0.0f64;
+        let mut selected_value = 0.0f64;
+
+        let staleness_window = config.staleness_window_ms.max(1) as f32;
+        let mut candidates: Vec<WidgetRefreshEntry> = Vec::with_capacity(signals.len());
+
+        for signal in signals {
+            let starved = config.starve_ms > 0 && signal.staleness_ms >= config.starve_ms;
+            let staleness_score = (signal.staleness_ms as f32 / staleness_window).min(1.0);
+            let mut value = config.weight_priority * signal.priority
+                + config.weight_staleness * staleness_score
+                + config.weight_focus * signal.focus_boost
+                + config.weight_interaction * signal.interaction_boost;
+            if starved {
+                value += config.starve_boost;
+            }
+            let raw_cost = if signal.recent_cost_us > 0.0 {
+                signal.recent_cost_us
+            } else {
+                signal.cost_estimate_us
+            };
+            let cost_us = raw_cost.max(config.min_cost_us);
+            let score = if cost_us > 0.0 {
+                value / cost_us
+            } else {
+                value
+            };
+
+            let entry = WidgetRefreshEntry {
+                widget_id: signal.widget_id,
+                essential: signal.essential,
+                starved,
+                value,
+                cost_us,
+                score,
+                staleness_ms: signal.staleness_ms,
+            };
+
+            if degradation >= DegradationLevel::EssentialOnly && !signal.essential {
+                self.skipped_count += 1;
+                if starved {
+                    self.skipped_starved = self.skipped_starved.saturating_add(1);
+                }
+                continue;
+            }
+
+            if signal.essential {
+                essentials_cost += cost_us as f64;
+                selected_cost += cost_us as f64;
+                selected_value += value as f64;
+                if starved {
+                    self.starved_selected = self.starved_selected.saturating_add(1);
+                }
+                self.selected.push(entry);
+            } else {
+                candidates.push(entry);
+            }
+        }
+
+        let mut remaining = budget_us - selected_cost;
+
+        if degradation < DegradationLevel::EssentialOnly {
+            let nonessential_total = candidates.len();
+            let max_drop_fraction = config.max_drop_fraction.clamp(0.0, 1.0);
+            let enforce_drop_rate = max_drop_fraction < 1.0 && nonessential_total > 0;
+            let min_nonessential_selected = if enforce_drop_rate {
+                let min_fraction = (1.0 - max_drop_fraction).max(0.0);
+                ((min_fraction * nonessential_total as f32).ceil() as usize).min(nonessential_total)
+            } else {
+                0
+            };
+
+            candidates.sort_by(|a, b| {
+                b.starved
+                    .cmp(&a.starved)
+                    .then_with(|| b.score.total_cmp(&a.score))
+                    .then_with(|| b.value.total_cmp(&a.value))
+                    .then_with(|| a.cost_us.total_cmp(&b.cost_us))
+                    .then_with(|| a.widget_id.cmp(&b.widget_id))
+            });
+
+            let mut forced_starved = 0usize;
+            let mut nonessential_selected = 0usize;
+            let mut skipped_candidates = if enforce_drop_rate {
+                Vec::with_capacity(candidates.len())
+            } else {
+                Vec::new()
+            };
+
+            for entry in candidates.into_iter() {
+                if entry.starved && forced_starved >= config.max_starved_per_frame {
+                    self.skipped_count += 1;
+                    self.skipped_starved = self.skipped_starved.saturating_add(1);
+                    if enforce_drop_rate {
+                        skipped_candidates.push(entry);
+                    }
+                    continue;
+                }
+
+                if remaining >= entry.cost_us as f64 {
+                    remaining -= entry.cost_us as f64;
+                    selected_cost += entry.cost_us as f64;
+                    selected_value += entry.value as f64;
+                    if entry.starved {
+                        self.starved_selected = self.starved_selected.saturating_add(1);
+                        forced_starved += 1;
+                    }
+                    nonessential_selected += 1;
+                    self.selected.push(entry);
+                } else if entry.starved
+                    && forced_starved < config.max_starved_per_frame
+                    && nonessential_selected == 0
+                {
+                    // Starvation guard: ensure at least one starved widget can refresh.
+                    selected_cost += entry.cost_us as f64;
+                    selected_value += entry.value as f64;
+                    self.starved_selected = self.starved_selected.saturating_add(1);
+                    forced_starved += 1;
+                    nonessential_selected += 1;
+                    self.selected.push(entry);
+                } else {
+                    self.skipped_count += 1;
+                    if entry.starved {
+                        self.skipped_starved = self.skipped_starved.saturating_add(1);
+                    }
+                    if enforce_drop_rate {
+                        skipped_candidates.push(entry);
+                    }
+                }
+            }
+
+            if enforce_drop_rate && nonessential_selected < min_nonessential_selected {
+                for entry in skipped_candidates.into_iter() {
+                    if nonessential_selected >= min_nonessential_selected {
+                        break;
+                    }
+                    if entry.starved && forced_starved >= config.max_starved_per_frame {
+                        continue;
+                    }
+                    selected_cost += entry.cost_us as f64;
+                    selected_value += entry.value as f64;
+                    if entry.starved {
+                        self.starved_selected = self.starved_selected.saturating_add(1);
+                        forced_starved += 1;
+                        self.skipped_starved = self.skipped_starved.saturating_sub(1);
+                    }
+                    self.skipped_count = self.skipped_count.saturating_sub(1);
+                    nonessential_selected += 1;
+                    self.selected.push(entry);
+                }
+            }
+        }
+
+        self.essentials_cost_us = essentials_cost;
+        self.selected_cost_us = selected_cost;
+        self.selected_value = selected_value;
+        self.over_budget = selected_cost > budget_us;
+    }
+
+    #[must_use]
+    fn to_jsonl(&self) -> String {
+        let mut out = String::with_capacity(256 + self.selected.len() * 96);
+        out.push_str(r#"{"event":"widget_refresh""#);
+        out.push_str(&format!(
+            r#","frame_idx":{},"budget_us":{:.3},"degradation":"{}","essentials_cost_us":{:.3},"selected_cost_us":{:.3},"selected_value":{:.3},"selected_count":{},"skipped_count":{},"starved_selected":{},"starved_skipped":{},"over_budget":{}"#,
+            self.frame_idx,
+            self.budget_us,
+            self.degradation.as_str(),
+            self.essentials_cost_us,
+            self.selected_cost_us,
+            self.selected_value,
+            self.selected.len(),
+            self.skipped_count,
+            self.starved_selected,
+            self.skipped_starved,
+            self.over_budget
+        ));
+        out.push_str(r#","selected":["#);
+        for (i, entry) in self.selected.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&entry.to_json());
+        }
+        out.push_str("]}");
+        out
+    }
+}
+
 /// The program runtime that manages the update/view loop.
 pub struct Program<M: Model, W: Write + Send = Stdout> {
     /// The application model.
@@ -785,6 +1141,10 @@ pub struct Program<M: Model, W: Write + Send = Stdout> {
     frame_idx: u64,
     /// Widget scheduling signals captured during the last render.
     widget_signals: Vec<WidgetSignal>,
+    /// Widget refresh selection configuration.
+    widget_refresh_config: WidgetRefreshConfig,
+    /// Last computed widget refresh plan.
+    widget_refresh_plan: WidgetRefreshPlan,
     /// Current terminal width.
     width: u16,
     /// Current terminal height.
@@ -891,6 +1251,8 @@ impl<M: Model> Program<M, Stdout> {
             dirty: true,
             frame_idx: 0,
             widget_signals: Vec::new(),
+            widget_refresh_config: config.widget_refresh,
+            widget_refresh_plan: WidgetRefreshPlan::new(),
             width,
             height,
             poll_timeout: config.poll_timeout,
@@ -1470,6 +1832,7 @@ impl<M: Model, W: Write + Send> Program<M, W> {
         )
         .entered();
         let (buffer, cursor, cursor_visible) = self.render_buffer(frame_height);
+        self.update_widget_refresh_plan(frame_idx);
         let render_elapsed = render_start.elapsed();
         let mut present_elapsed = Duration::ZERO;
 
@@ -1590,6 +1953,27 @@ impl<M: Model, W: Write + Send> Program<M, W> {
         let _ = sink.write_jsonl(&evidence.to_jsonl());
     }
 
+    fn update_widget_refresh_plan(&mut self, frame_idx: u64) {
+        if !self.widget_refresh_config.enabled {
+            self.widget_refresh_plan.clear();
+            return;
+        }
+
+        let budget_us = self.budget.phase_budgets().render.as_secs_f64() * 1_000_000.0;
+        let degradation = self.budget.degradation();
+        self.widget_refresh_plan.recompute(
+            frame_idx,
+            budget_us,
+            degradation,
+            &self.widget_signals,
+            &self.widget_refresh_config,
+        );
+
+        if let Some(ref sink) = self.evidence_sink {
+            let _ = sink.write_jsonl(&self.widget_refresh_plan.to_jsonl());
+        }
+    }
+
     fn render_buffer(&mut self, frame_height: u16) -> (Buffer, Option<(u16, u16)>, bool) {
         // Note: Frame borrows the pool and links from writer.
         // We scope it so it drops before we call present_ui (which needs exclusive writer access).
@@ -1598,6 +1982,7 @@ impl<M: Model, W: Write + Send> Program<M, W> {
         let mut frame = Frame::from_buffer(buffer, pool);
         frame.set_degradation(self.budget.degradation());
         frame.set_links(links);
+        frame.set_widget_budget(self.widget_refresh_plan.as_budget());
 
         let view_start = Instant::now();
         let _view_span = debug_span!(
@@ -1919,6 +2304,12 @@ impl<M: Model> AppBuilder<M> {
         self
     }
 
+    /// Set the widget refresh selection configuration.
+    pub fn with_widget_refresh(mut self, config: WidgetRefreshConfig) -> Self {
+        self.config.widget_refresh = config;
+        self
+    }
+
     /// Enable inline auto UI height remeasurement.
     pub fn with_inline_auto_remeasure(mut self, config: InlineAutoRemeasureConfig) -> Self {
         self.config.inline_auto_remeasure = Some(config);
@@ -2163,6 +2554,7 @@ mod tests {
     use ftui_render::buffer::Buffer;
     use ftui_render::cell::Cell;
     use ftui_render::diff_strategy::DiffStrategy;
+    use ftui_render::frame::CostEstimateSource;
 
     // Simple test model
     struct TestModel {
@@ -2756,6 +3148,117 @@ mod tests {
         assert!(jsonl.contains("\"fallback_level\":1"));
         assert!(jsonl.contains("\"window_size\":256"));
         assert!(jsonl.contains("\"reset_count\":2"));
+    }
+
+    fn make_signal(
+        widget_id: u64,
+        essential: bool,
+        priority: f32,
+        staleness_ms: u64,
+        cost_us: f32,
+    ) -> WidgetSignal {
+        WidgetSignal {
+            widget_id,
+            essential,
+            priority,
+            staleness_ms,
+            focus_boost: 0.0,
+            interaction_boost: 0.0,
+            area_cells: 1,
+            cost_estimate_us: cost_us,
+            recent_cost_us: 0.0,
+            estimate_source: CostEstimateSource::FixedDefault,
+        }
+    }
+
+    #[test]
+    fn widget_refresh_selects_essentials_first() {
+        let signals = vec![
+            make_signal(1, true, 0.6, 0, 5.0),
+            make_signal(2, false, 0.9, 0, 4.0),
+        ];
+        let mut plan = WidgetRefreshPlan::new();
+        let config = WidgetRefreshConfig::default();
+        plan.recompute(1, 6.0, DegradationLevel::Full, &signals, &config);
+        let selected: Vec<u64> = plan.selected.iter().map(|e| e.widget_id).collect();
+        assert_eq!(selected, vec![1]);
+        assert!(!plan.over_budget);
+    }
+
+    #[test]
+    fn widget_refresh_degradation_essential_only_skips_nonessential() {
+        let signals = vec![
+            make_signal(1, true, 0.5, 0, 2.0),
+            make_signal(2, false, 1.0, 0, 1.0),
+        ];
+        let mut plan = WidgetRefreshPlan::new();
+        let config = WidgetRefreshConfig::default();
+        plan.recompute(3, 10.0, DegradationLevel::EssentialOnly, &signals, &config);
+        let selected: Vec<u64> = plan.selected.iter().map(|e| e.widget_id).collect();
+        assert_eq!(selected, vec![1]);
+        assert_eq!(plan.skipped_count, 1);
+    }
+
+    #[test]
+    fn widget_refresh_starvation_guard_forces_one_starved() {
+        let signals = vec![make_signal(7, false, 0.1, 10_000, 8.0)];
+        let mut plan = WidgetRefreshPlan::new();
+        let config = WidgetRefreshConfig {
+            starve_ms: 1_000,
+            max_starved_per_frame: 1,
+            ..Default::default()
+        };
+        plan.recompute(5, 0.0, DegradationLevel::Full, &signals, &config);
+        assert_eq!(plan.selected.len(), 1);
+        assert!(plan.selected[0].starved);
+        assert!(plan.over_budget);
+    }
+
+    #[test]
+    fn widget_refresh_budget_blocks_when_no_selection() {
+        let signals = vec![make_signal(42, false, 0.2, 0, 10.0)];
+        let mut plan = WidgetRefreshPlan::new();
+        let config = WidgetRefreshConfig {
+            starve_ms: 0,
+            max_starved_per_frame: 0,
+            ..Default::default()
+        };
+        plan.recompute(8, 0.0, DegradationLevel::Full, &signals, &config);
+        let budget = plan.as_budget();
+        assert!(!budget.allows(42, false));
+    }
+
+    #[test]
+    fn widget_refresh_max_drop_fraction_forces_minimum_refresh() {
+        let signals = vec![
+            make_signal(1, false, 0.4, 0, 10.0),
+            make_signal(2, false, 0.4, 0, 10.0),
+            make_signal(3, false, 0.4, 0, 10.0),
+            make_signal(4, false, 0.4, 0, 10.0),
+        ];
+        let mut plan = WidgetRefreshPlan::new();
+        let config = WidgetRefreshConfig {
+            starve_ms: 0,
+            max_starved_per_frame: 0,
+            max_drop_fraction: 0.5,
+            ..Default::default()
+        };
+        plan.recompute(12, 0.0, DegradationLevel::Full, &signals, &config);
+        let selected: Vec<u64> = plan.selected.iter().map(|e| e.widget_id).collect();
+        assert_eq!(selected, vec![1, 2]);
+    }
+
+    #[test]
+    fn widget_refresh_jsonl_contains_required_fields() {
+        let signals = vec![make_signal(7, true, 0.2, 0, 2.0)];
+        let mut plan = WidgetRefreshPlan::new();
+        let config = WidgetRefreshConfig::default();
+        plan.recompute(9, 4.0, DegradationLevel::Full, &signals, &config);
+        let jsonl = plan.to_jsonl();
+        assert!(jsonl.contains("\"event\":\"widget_refresh\""));
+        assert!(jsonl.contains("\"frame_idx\":9"));
+        assert!(jsonl.contains("\"selected_count\":1"));
+        assert!(jsonl.contains("\"id\":7"));
     }
 
     #[test]
