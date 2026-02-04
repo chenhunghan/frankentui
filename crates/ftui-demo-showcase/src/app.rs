@@ -1483,6 +1483,32 @@ impl AppModel {
                             self.current_screen = self.current_screen.prev();
                             return Cmd::None;
                         }
+                        // Category navigation (Shift+Left/Right)
+                        (KeyCode::Left, m) if m.contains(Modifiers::SHIFT) => {
+                            let current_category = screens::screen_category(self.current_screen);
+                            let prev_category = screens::prev_category(current_category);
+                            if let Some(next_screen) = screens::first_in_category(prev_category) {
+                                self.current_screen = next_screen;
+                            }
+                            return Cmd::None;
+                        }
+                        (KeyCode::Right, m) if m.contains(Modifiers::SHIFT) => {
+                            let current_category = screens::screen_category(self.current_screen);
+                            let next_category = screens::next_category(current_category);
+                            if let Some(next_screen) = screens::first_in_category(next_category) {
+                                self.current_screen = next_screen;
+                            }
+                            return Cmd::None;
+                        }
+                        // Screen navigation within current category (Left/Right)
+                        (KeyCode::Left, Modifiers::NONE) => {
+                            self.current_screen = screens::prev_in_category(self.current_screen);
+                            return Cmd::None;
+                        }
+                        (KeyCode::Right, Modifiers::NONE) => {
+                            self.current_screen = screens::next_in_category(self.current_screen);
+                            return Cmd::None;
+                        }
                         // Number keys for direct screen access
                         (KeyCode::Char(ch @ '0'..='9'), Modifiers::NONE) => {
                             if let Some(id) = ScreenId::from_number_key(ch) {
@@ -2740,6 +2766,59 @@ mod tests {
 
         // One more wraps to Dashboard.
         app.update(AppMsg::NextScreen);
+        assert_eq!(app.current_screen, ScreenId::Dashboard);
+    }
+
+    /// Verify Left/Right moves within current category.
+    #[test]
+    fn integration_left_right_within_category() {
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::Dashboard;
+
+        let right = Event::Key(KeyEvent {
+            code: KeyCode::Right,
+            modifiers: Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        app.update(AppMsg::from(right));
+        assert_eq!(
+            app.current_screen,
+            screens::next_in_category(ScreenId::Dashboard)
+        );
+
+        let left = Event::Key(KeyEvent {
+            code: KeyCode::Left,
+            modifiers: Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        app.update(AppMsg::from(left));
+        assert_eq!(app.current_screen, ScreenId::Dashboard);
+    }
+
+    /// Verify Shift+Left/Right jumps categories.
+    #[test]
+    fn integration_shift_left_right_category_jump() {
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::Dashboard;
+
+        let shift_right = Event::Key(KeyEvent {
+            code: KeyCode::Right,
+            modifiers: Modifiers::SHIFT,
+            kind: KeyEventKind::Press,
+        });
+        app.update(AppMsg::from(shift_right));
+        let expected = screens::first_in_category(screens::next_category(
+            screens::screen_category(ScreenId::Dashboard),
+        ))
+        .expect("next category has at least one screen");
+        assert_eq!(app.current_screen, expected);
+
+        let shift_left = Event::Key(KeyEvent {
+            code: KeyCode::Left,
+            modifiers: Modifiers::SHIFT,
+            kind: KeyEventKind::Press,
+        });
+        app.update(AppMsg::from(shift_left));
         assert_eq!(app.current_screen, ScreenId::Dashboard);
     }
 

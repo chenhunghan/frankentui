@@ -84,7 +84,7 @@
 - [x] Switch `chrome` tab bar + hit mapping to registry ordering
 - [x] Implement category tab render helpers in `chrome.rs`
 - [ ] Update `chrome` tab bar to render category tabs + per-category screens
-- [ ] Add category navigation: Shift+Left/Right jumps categories
+- [x] Add category navigation: Shift+Left/Right jumps categories
 - [x] Update command palette to use registry metadata (category, tags, blurb)
 - [ ] Implement screen palette filters + favorites (session-scoped)
 - [ ] Add palette UI hints for category filter + favorites

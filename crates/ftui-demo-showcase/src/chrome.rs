@@ -606,6 +606,12 @@ pub fn render_help_overlay(
         )
         .global_entry_categorized("Tab / L", "Next screen", HelpCategory::Navigation)
         .global_entry_categorized("S-Tab / H", "Previous screen", HelpCategory::Navigation)
+        .global_entry_categorized("← / →", "Prev/next screen (category)", HelpCategory::Navigation)
+        .global_entry_categorized(
+            "Shift+← / Shift+→",
+            "Jump categories",
+            HelpCategory::Navigation,
+        )
         // View
         .global_entry_categorized("?", "Toggle this help overlay", HelpCategory::View)
         .global_entry_categorized("A", "Toggle A11y panel", HelpCategory::View)
