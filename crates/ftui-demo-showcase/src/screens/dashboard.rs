@@ -4908,8 +4908,20 @@ impl Dashboard {
             return;
         }
 
+        let header_rows = if inner.height >= 4 { 1 } else { 0 };
+        if header_rows > 0 {
+            let header = Line::from_spans([
+                Span::styled("SEV ", theme::muted().bold()),
+                Span::styled("TIME  ", theme::muted()),
+                Span::styled("COMP  ", theme::muted()),
+                Span::styled("MESSAGE", theme::muted()),
+            ]);
+            Paragraph::new(Text::from_lines([header]))
+                .render(Rect::new(inner.x, inner.y, inner.width, 1), frame);
+        }
+
         // Get recent alerts from simulated data
-        let max_items = inner.height as usize;
+        let max_items = inner.height.saturating_sub(header_rows) as usize;
         let alerts: Vec<_> = self
             .simulated_data
             .alerts
@@ -4919,17 +4931,17 @@ impl Dashboard {
             .collect();
 
         for (i, alert) in alerts.iter().enumerate() {
-            if i as u16 >= inner.height {
+            let y = inner.y + header_rows + i as u16;
+            if y >= inner.bottom() {
                 break;
             }
 
-            let y = inner.y + i as u16;
-
-            let (label, indicator, color, effect) = match alert.severity {
+            let (label, indicator, fg, bg, effect) = match alert.severity {
                 AlertSeverity::Error => (
                     "CRIT",
                     "✖",
                     theme::intent::error_text(),
+                    theme::with_alpha(theme::intent::error_text(), 180),
                     TextEffect::PulsingGlow {
                         color: PackedRgba::rgb(255, 80, 100),
                         speed: 1.6,
@@ -4939,6 +4951,7 @@ impl Dashboard {
                     "WARN",
                     "▲",
                     theme::intent::warning_text(),
+                    theme::with_alpha(theme::intent::warning_text(), 160),
                     TextEffect::Pulse {
                         speed: 1.4,
                         min_alpha: 0.35,
@@ -4948,6 +4961,7 @@ impl Dashboard {
                     "INFO",
                     "●",
                     theme::intent::info_text(),
+                    theme::with_alpha(theme::intent::info_text(), 150),
                     TextEffect::ColorWave {
                         color1: theme::accent::PRIMARY.into(),
                         color2: theme::accent::ACCENT_8.into(),
@@ -4957,38 +4971,67 @@ impl Dashboard {
                 ),
             };
 
+            let component = if alert.message.contains("CPU") {
+                "CPU"
+            } else if alert.message.contains("Memory") {
+                "MEM"
+            } else if alert.message.contains("Network") || alert.message.contains("latency") {
+                "NET"
+            } else if alert.message.contains("Disk") {
+                "IO"
+            } else if alert.message.contains("TLS") {
+                "SEC"
+            } else if alert.message.contains("Cache") {
+                "CACHE"
+            } else {
+                "SYS"
+            };
+
             // Format timestamp as MM:SS
             let ts_secs = (alert.timestamp / 10) % 3600;
             let ts_min = ts_secs / 60;
             let ts_sec = ts_secs % 60;
             let time_str = format!("{:02}:{:02}", ts_min, ts_sec);
 
-            let prefix_plain = format!("{indicator} {label} {time_str} · ");
-            let prefix_width = display_width(prefix_plain.as_str()) as u16;
-            let prefix_area = Rect::new(inner.x, y, prefix_width.min(inner.width), 1);
+            let badge = Badge::new(label).with_style(
+                Style::new()
+                    .fg(theme::fg::PRIMARY)
+                    .bg(bg)
+                    .attrs(StyleFlags::BOLD),
+            );
+            let badge_width = badge.width();
+            let badge_area = Rect::new(inner.x, y, badge_width.min(inner.width), 1);
+            badge.render(badge_area, frame);
 
-            let prefix_line = Line::from_spans([
-                Span::styled(format!("{indicator} "), Style::new().fg(color).bold()),
-                Span::styled(format!("{label} "), Style::new().fg(color).bold()),
-                Span::styled(time_str.clone(), theme::muted()),
-                Span::styled(" · ", theme::muted()),
-            ]);
+            let time_area = Rect::new(
+                inner.x + badge_width + 1,
+                y,
+                6.min(inner.width.saturating_sub(badge_width + 1)),
+                1,
+            );
+            Paragraph::new(time_str.clone())
+                .style(theme::muted())
+                .render(time_area, frame);
 
-            Paragraph::new(Text::from_lines([prefix_line])).render(prefix_area, frame);
-
-            if inner.width <= prefix_width + 1 {
-                continue;
-            }
+            let comp_area = Rect::new(
+                time_area.right().saturating_add(1),
+                y,
+                6.min(inner.width.saturating_sub(time_area.right().saturating_add(1))),
+                1,
+            );
+            Paragraph::new(format!("{indicator} {component}"))
+                .style(Style::new().fg(fg))
+                .render(comp_area, frame);
 
             let msg_area = Rect::new(
-                inner.x + prefix_width,
+                comp_area.right().saturating_add(1),
                 y,
-                inner.width.saturating_sub(prefix_width),
+                inner.width.saturating_sub(comp_area.right().saturating_add(1) - inner.x),
                 1,
             );
             let msg = truncate_to_width(&alert.message, msg_area.width);
             let styled = StyledText::new(msg)
-                .base_color(color)
+                .base_color(fg)
                 .effect(effect)
                 .time(self.time)
                 .seed(alert.timestamp);
