@@ -193,6 +193,10 @@ impl GuidedTourState {
         self.steps.len()
     }
 
+    pub fn current_step(&self) -> Option<&TourStep> {
+        self.steps.get(self.step_index)
+    }
+
     pub fn active_screen(&self) -> ScreenId {
         self.steps
             .get(self.step_index)

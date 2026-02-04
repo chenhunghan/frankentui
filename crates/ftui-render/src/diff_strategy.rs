@@ -813,6 +813,15 @@ mod tests {
     }
 
     #[test]
+    fn test_select_dirty_rows_with_single_dirty_row_large_screen() {
+        let mut selector = DiffStrategySelector::with_defaults();
+
+        // Single-row changes on large screens should still favor DirtyRows.
+        let strategy = selector.select(200, 60, 1);
+        assert_eq!(strategy, DiffStrategy::DirtyRows);
+    }
+
+    #[test]
     fn test_select_full_redraw_when_high_change() {
         let config = DiffStrategyConfig {
             prior_alpha: 9.0, // High prior change rate

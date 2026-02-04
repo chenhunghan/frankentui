@@ -26,6 +26,15 @@
 
 use unicode_width::UnicodeWidthChar;
 
+#[inline]
+fn is_probable_emoji_char(c: char) -> bool {
+    let u = c as u32;
+    matches!(
+        u,
+        0x1F000..=0x1FAFF | 0x2300..=0x23FF | 0x2600..=0x27BF | 0x2B00..=0x2BFF
+    ) && u != 0x2764
+}
+
 /// Grapheme ID: reference to an interned string in [`GraphemePool`].
 ///
 /// # Layout
@@ -225,9 +234,14 @@ impl CellContent {
         } else if self.is_grapheme() {
             ((self.0 >> 24) & 0x7F) as usize
         } else {
-            self.as_char()
-                .and_then(UnicodeWidthChar::width)
-                .unwrap_or(1)
+            let Some(c) = self.as_char() else {
+                return 1;
+            };
+            let width = UnicodeWidthChar::width(c).unwrap_or(1);
+            if width == 1 && is_probable_emoji_char(c) {
+                return 2;
+            }
+            width
         }
     }
 
@@ -883,6 +897,15 @@ mod tests {
 
         let emoji = CellContent::from_char('🎉');
         assert_eq!(emoji.width(), 2);
+
+        let bolt = CellContent::from_char('⚡');
+        assert_eq!(bolt.width(), 2);
+
+        let gear = CellContent::from_char('⚙');
+        assert_eq!(gear.width(), 2);
+
+        let heart = CellContent::from_char('❤');
+        assert_eq!(heart.width(), 1);
     }
 
     #[test]

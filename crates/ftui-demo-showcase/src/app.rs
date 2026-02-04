@@ -42,7 +42,7 @@ use ftui_widgets::voi_debug_overlay::{
 
 use crate::screens;
 use crate::theme;
-use crate::tour::{GuidedTourState, TourAdvanceReason, TourEvent};
+use crate::tour::{GuidedTourState, TourAdvanceReason, TourEvent, TourStep};
 
 // ---------------------------------------------------------------------------
 // Performance HUD Diagnostics (bd-3k3x.8)
@@ -318,6 +318,45 @@ fn emit_palette_jsonl(
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{json}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Guided Tour Diagnostics (bd-iuvb.1)
+// ---------------------------------------------------------------------------
+
+/// Global counter for guided tour JSONL logs.
+static TOUR_LOG_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Return the guided tour JSONL log path if enabled.
+fn tour_log_path() -> Option<String> {
+    env::var("FTUI_TOUR_REPORT_PATH").ok()
+}
+
+/// Return the guided tour run id (for E2E correlation).
+fn tour_run_id() -> String {
+    env::var("FTUI_TOUR_RUN_ID").unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// Return the guided tour seed (deterministic default = 0).
+fn tour_seed() -> u64 {
+    env::var("FTUI_TOUR_SEED")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// Resolve a screen mode label for guided tour logs.
+fn tour_screen_mode() -> String {
+    env::var("FTUI_DEMO_SCREEN_MODE")
+        .or_else(|_| env::var("FTUI_HARNESS_SCREEN_MODE"))
+        .unwrap_or_else(|_| "alt".to_string())
+}
+
+/// Resolve a terminal capabilities profile label for guided tour logs.
+fn tour_caps_profile() -> String {
+    env::var("FTUI_TOUR_CAPS_PROFILE")
+        .or_else(|_| env::var("TERM"))
+        .unwrap_or_else(|_| "unknown".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1096,6 +1135,49 @@ impl AppModel {
         }
     }
 
+    fn emit_tour_jsonl(&self, action: &str, outcome: &str, step: Option<&TourStep>) {
+        let Some(path) = tour_log_path() else {
+            return;
+        };
+
+        let seq = TOUR_LOG_SEQ.fetch_add(1, Ordering::Relaxed);
+        let ts_us = seq.saturating_mul(16_667);
+        let run_id = tour_run_id();
+        let seed = tour_seed();
+        let mode = tour_screen_mode();
+        let caps_profile = tour_caps_profile();
+
+        let (step_id, screen_id, duration_ms) = if let Some(step) = step {
+            (
+                step.id.as_str(),
+                step.screen.title(),
+                step.duration.as_millis() as u64,
+            )
+        } else {
+            ("none", "none", 0)
+        };
+
+        let json = format!(
+            "{{\"seq\":{seq},\"ts_us\":{ts_us},\"event\":\"tour\",\"run_id\":\"{}\",\"action\":\"{}\",\"outcome\":\"{}\",\"step_id\":\"{}\",\"screen_id\":\"{}\",\"duration_ms\":{duration_ms},\"step_index\":{},\"step_count\":{},\"seed\":{seed},\"width\":{},\"height\":{},\"mode\":\"{}\",\"caps_profile\":\"{}\",\"speed\":{:.2},\"checksum\":null}}",
+            json_escape(&run_id),
+            json_escape(action),
+            json_escape(outcome),
+            json_escape(step_id),
+            json_escape(screen_id),
+            self.tour.step_index(),
+            self.tour.step_count(),
+            self.terminal_width,
+            self.terminal_height,
+            json_escape(&mode),
+            json_escape(&caps_profile),
+            self.tour.speed(),
+        );
+
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "{json}");
+        }
+    }
+
     pub fn start_tour(&mut self, start_step: usize, speed: f64) {
         let resume_screen = if self.current_screen == ScreenId::GuidedTour {
             self.display_screen()
@@ -1112,6 +1194,7 @@ impl AppModel {
                 ("speed".to_string(), format!("{:.2}", self.tour.speed())),
             ],
         );
+        self.emit_tour_jsonl("start", "ok", self.tour.current_step());
     }
 
     fn stop_tour(&mut self, keep_last: bool, reason: &str) {
@@ -1125,6 +1208,7 @@ impl AppModel {
                 ("screen".to_string(), screen.title().to_string()),
             ],
         );
+        self.emit_tour_jsonl("exit", reason, self.tour.current_step());
     }
 
     fn handle_tour_event(&mut self, event: TourEvent) {
@@ -1145,8 +1229,16 @@ impl AppModel {
                         ("reason".to_string(), reason_label.to_string()),
                     ],
                 );
+                let action = match reason {
+                    TourAdvanceReason::Auto => "auto",
+                    TourAdvanceReason::ManualNext => "next",
+                    TourAdvanceReason::ManualPrev => "prev",
+                    TourAdvanceReason::Jump => "jump",
+                };
+                self.emit_tour_jsonl(action, "ok", self.tour.current_step());
             }
             TourEvent::Finished { last_screen: _ } => {
+                self.emit_tour_jsonl("finish", "ok", self.tour.current_step());
                 self.stop_tour(true, "completed");
             }
         }
@@ -1339,7 +1431,7 @@ impl AppModel {
                 if self.tour.is_active() {
                     self.stop_tour(false, "switch_screen");
                 }
-                let from = self.current_screen.title();
+                let from = self.display_screen().title();
                 self.current_screen = id;
                 self.screens.action_timeline.record_command_event(
                     self.tick_count,
@@ -1608,6 +1700,8 @@ impl AppModel {
                     match *code {
                         KeyCode::Char(' ') => {
                             self.tour.toggle_pause();
+                            let action = if self.tour.is_paused() { "pause" } else { "resume" };
+                            self.emit_tour_jsonl(action, "ok", self.tour.current_step());
                             return Cmd::None;
                         }
                         KeyCode::Right | KeyCode::Char('n') => {
@@ -1629,11 +1723,13 @@ impl AppModel {
                         KeyCode::Char('+') | KeyCode::Char('=') => {
                             let speed = self.tour.speed() * 1.25;
                             self.tour.set_speed(speed);
+                            self.emit_tour_jsonl("speed_up", "ok", self.tour.current_step());
                             return Cmd::None;
                         }
                         KeyCode::Char('-') => {
                             let speed = self.tour.speed() / 1.25;
                             self.tour.set_speed(speed);
+                            self.emit_tour_jsonl("speed_down", "ok", self.tour.current_step());
                             return Cmd::None;
                         }
                         _ => {}
@@ -1775,7 +1871,7 @@ impl AppModel {
                         }
                     }
 
-                    if self.current_screen == ScreenId::AccessibilityPanel {
+                    if self.display_screen() == ScreenId::AccessibilityPanel {
                         match (*code, *modifiers) {
                             (KeyCode::Char('h'), Modifiers::NONE) => {
                                 return self.handle_msg(AppMsg::ToggleHighContrast, source);
@@ -1796,7 +1892,7 @@ impl AppModel {
                         (KeyCode::Char('c'), Modifiers::CTRL) => return Cmd::Quit,
                         // Command palette (Ctrl+K)
                         (KeyCode::Char('k'), Modifiers::CTRL) => {
-                            let log_screen = self.current_screen;
+                            let log_screen = self.display_screen();
                             let log_category = screens::screen_category(log_screen);
                             self.command_palette.open();
                             emit_palette_jsonl(

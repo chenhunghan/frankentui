@@ -737,18 +737,18 @@ fn palette_cyberpunk(t: f64) -> PackedRgba {
 fn palette_doom_wall(idx: usize) -> PackedRgba {
     // Muted browns/greys reminiscent of classic Doom E1M1.
     const PALETTE: &[(u8, u8, u8)] = &[
-        (48, 32, 20),
-        (72, 48, 30),
-        (96, 64, 40),
-        (120, 84, 54),
-        (64, 64, 64),
-        (96, 96, 96),
-        (80, 56, 34),
-        (136, 96, 58),
-        (168, 120, 72),
-        (88, 64, 44),
-        (110, 78, 50),
-        (140, 100, 62),
+        (72, 48, 32),
+        (100, 70, 44),
+        (130, 90, 58),
+        (160, 110, 72),
+        (90, 90, 90),
+        (130, 130, 130),
+        (96, 70, 44),
+        (160, 116, 74),
+        (190, 140, 90),
+        (110, 80, 56),
+        (130, 98, 68),
+        (170, 120, 80),
     ];
     let (r, g, b) = PALETTE[idx % PALETTE.len()];
     PackedRgba::rgb(r, g, b)
@@ -757,10 +757,10 @@ fn palette_doom_wall(idx: usize) -> PackedRgba {
 fn palette_quake_stone(t: f64) -> PackedRgba {
     let t = t.clamp(0.0, 1.0);
     // Quake palette approximation (muddy browns + stone greys).
-    let c1 = (40, 36, 32);
-    let c2 = (70, 64, 56);
-    let c3 = (108, 100, 90);
-    let c4 = (92, 86, 80);
+    let c1 = (60, 56, 50);
+    let c2 = (90, 84, 76);
+    let c3 = (130, 120, 110);
+    let c4 = (110, 104, 96);
 
     let (r, g, b) = if t < 0.33 {
         let s = t / 0.33;
@@ -777,10 +777,10 @@ fn palette_quake_stone(t: f64) -> PackedRgba {
 
 fn palette_quake_floor(t: f64) -> PackedRgba {
     let t = t.clamp(0.0, 1.0);
-    let c1 = (44, 36, 30);
-    let c2 = (72, 60, 48);
-    let c3 = (100, 86, 66);
-    let c4 = (82, 72, 58);
+    let c1 = (62, 54, 44);
+    let c2 = (90, 78, 62);
+    let c3 = (120, 102, 82);
+    let c4 = (100, 88, 70);
 
     let (r, g, b) = if t < 0.33 {
         let s = t / 0.33;
@@ -797,10 +797,10 @@ fn palette_quake_floor(t: f64) -> PackedRgba {
 
 fn palette_quake_ceiling(t: f64) -> PackedRgba {
     let t = t.clamp(0.0, 1.0);
-    let c1 = (28, 30, 36);
-    let c2 = (50, 54, 62);
-    let c3 = (76, 82, 94);
-    let c4 = (58, 62, 70);
+    let c1 = (46, 50, 60);
+    let c2 = (70, 76, 88);
+    let c3 = (98, 106, 120);
+    let c4 = (80, 86, 98);
 
     let (r, g, b) = if t < 0.33 {
         let s = t / 0.33;
@@ -3124,11 +3124,12 @@ impl DoomE1M1State {
         // Paint a subtle Doom-like sky/floor gradient under the walls.
         let horizon = center_y.round() as i32;
         let max_y = height as i32 - 1;
-        let sky_top = (22, 30, 62);
-        let sky_bottom = (78, 86, 118);
-        let floor_top = (70, 54, 38);
-        let floor_bottom = (26, 20, 16);
-        for py in (0..=max_y).step_by(2) {
+        let sky_top = (42, 66, 120);
+        let sky_bottom = (120, 140, 180);
+        let floor_top = (118, 86, 56);
+        let floor_bottom = (62, 42, 28);
+        let fill_stride = if matches!(quality, FxQuality::Minimal) { 2 } else { 1 };
+        for py in (0..=max_y).step_by(fill_stride) {
             let (r, g, b) = if py <= horizon {
                 let denom = horizon.max(1) as f64;
                 let t = (py as f64 / denom).clamp(0.0, 1.0);
@@ -3138,9 +3139,9 @@ impl DoomE1M1State {
                 let t = ((py - horizon) as f64 / denom).clamp(0.0, 1.0);
                 lerp_rgb(floor_top, floor_bottom, t)
             };
-            for px in (0..width as i32).step_by(2) {
+            for px in (0..width as i32).step_by(fill_stride) {
                 let jitter = ((px + py + frame as i32) & 3) as f32;
-                let shade = 0.88 + jitter * 0.03;
+                let shade = 0.9 + jitter * 0.04;
                 let rr = (r as f32 * shade).clamp(0.0, 255.0) as u8;
                 let gg = (g as f32 * shade).clamp(0.0, 255.0) as u8;
                 let bb = (b as f32 * shade).clamp(0.0, 255.0) as u8;
@@ -3172,32 +3173,32 @@ impl DoomE1M1State {
             }
 
             let fog = (corrected / 900.0).clamp(0.0, 1.0);
-            let mut brightness = (0.18 + (1.0 - fog).powf(1.2)).clamp(0.0, 1.4);
+            let mut brightness = (0.32 + (1.0 - fog).powf(1.1)).clamp(0.0, 1.6);
             if self.fire_flash > 0.0 {
-                brightness = (brightness + self.fire_flash * 0.35).min(1.4);
+                brightness = (brightness + self.fire_flash * 0.35).min(1.6);
             }
 
             let tex_band = ((hit_u * 32.0).floor() as i32) & 3;
             let tex_boost = match tex_band {
-                0 => 0.9,
-                1 => 1.02,
-                2 => 1.12,
-                _ => 1.22,
+                0 => 0.95,
+                1 => 1.08,
+                2 => 1.18,
+                _ => 1.28,
             };
 
             let grain =
                 (((px as u64).wrapping_mul(113) ^ (frame.wrapping_mul(131)) ^ hit_idx as u64) & 7)
                     as f32
                     / 80.0;
-            brightness = (brightness * tex_boost + grain + 0.06).clamp(0.15, 1.4);
+            brightness = (brightness * tex_boost + grain + 0.08).clamp(0.2, 1.6);
 
             let r = (base.r() as f32 * brightness).min(255.0) as u8;
             let g = (base.g() as f32 * brightness).min(255.0) as u8;
             let b = (base.b() as f32 * brightness).min(255.0) as u8;
             let wall_color = PackedRgba::rgb(r, g, b);
 
-            let sky_base = PackedRgba::rgb(30, 40, 70);
-            let floor_base = PackedRgba::rgb(42, 32, 24);
+            let sky_base = PackedRgba::rgb(48, 72, 120);
+            let floor_base = PackedRgba::rgb(80, 58, 36);
             let sky_fade = fog.clamp(0.0, 1.0);
             let floor_fade = fog.clamp(0.0, 1.0);
             let ceiling_color = PackedRgba::rgb(
@@ -3553,14 +3554,14 @@ impl QuakeE1M1State {
                 palette_quake_stone(height_t as f64)
             };
             let ambient = if is_floor {
-                0.28
+                0.38
             } else if is_ceiling {
-                0.18
+                0.28
             } else {
-                0.22
+                0.3
             };
-            let diffuse_scale = if is_floor || is_ceiling { 0.75 } else { 0.9 };
-            let diffuse = normal.dot(light_dir).max(0.0);
+            let diffuse_scale = if is_floor || is_ceiling { 0.85 } else { 1.0 };
+            let diffuse = normal.dot(light_dir).abs();
 
             tris.push(QuakeTri {
                 v0: w0,
@@ -3815,17 +3816,18 @@ impl QuakeE1M1State {
         let proj_scale = (w.min(h) * 0.5) / (QUAKE_FOV * 0.5).tan();
         let near = 0.04f32;
         let far = 10.0f32;
-        let fog_color = PackedRgba::rgb(28, 30, 38);
+        let fog_color = PackedRgba::rgb(52, 56, 66);
 
         let horizon = (h * 0.5 - self.player.pitch * (h * 0.35) + bob * proj_scale * 0.8)
             .clamp(0.0, h - 1.0)
             .round() as i32;
         let max_y = height as i32 - 1;
-        let sky_top = (18, 24, 42);
-        let sky_bottom = (54, 62, 86);
-        let floor_top = (72, 62, 46);
-        let floor_bottom = (26, 20, 16);
-        for py in (0..=max_y).step_by(2) {
+        let sky_top = (36, 50, 78);
+        let sky_bottom = (88, 104, 136);
+        let floor_top = (104, 86, 62);
+        let floor_bottom = (50, 36, 26);
+        let fill_stride = if matches!(quality, FxQuality::Minimal) { 2 } else { 1 };
+        for py in (0..=max_y).step_by(fill_stride) {
             let (r, g, b) = if py <= horizon {
                 let denom = horizon.max(1) as f64;
                 let t = (py as f64 / denom).clamp(0.0, 1.0);
@@ -3835,9 +3837,9 @@ impl QuakeE1M1State {
                 let t = ((py - horizon) as f64 / denom).clamp(0.0, 1.0);
                 lerp_rgb(floor_top, floor_bottom, t)
             };
-            for px in (0..width as i32).step_by(2) {
+            for px in (0..width as i32).step_by(fill_stride) {
                 let jitter = ((px * 3 + py * 5 + frame as i32) & 3) as f32;
-                let shade = 0.86 + jitter * 0.04;
+                let shade = 0.88 + jitter * 0.05;
                 let rr = (r as f32 * shade).clamp(0.0, 255.0) as u8;
                 let gg = (g as f32 * shade).clamp(0.0, 255.0) as u8;
                 let bb = (b as f32 * shade).clamp(0.0, 255.0) as u8;
@@ -3867,15 +3869,16 @@ impl QuakeE1M1State {
             let n = tri.normal;
             let view_dir = (eye - world0).normalized();
             let facing = n.dot(view_dir);
-            if facing <= 0.02 {
+            if facing.abs() <= 0.02 {
                 continue;
             }
-            let rim = (1.0 - facing.clamp(0.0, 1.0)).powf(2.0) * 0.35;
+            let facing = facing.abs();
+            let rim = (1.0 - facing.clamp(0.0, 1.0)).powf(2.0) * 0.45;
 
             let is_floor = tri.is_floor;
             let is_ceiling = tri.is_ceiling;
             let base = tri.base;
-            let light = (tri.ambient + tri.diffuse * tri.diffuse_scale + rim).clamp(0.0, 1.2);
+            let light = (tri.ambient + tri.diffuse * tri.diffuse_scale + rim).clamp(0.0, 1.4);
 
             let cam0 = Vec3::new(
                 (world0 - eye).dot(right),
@@ -3973,7 +3976,7 @@ impl QuakeE1M1State {
                         let wz = world0.z * b0 + world1.z * b1 + world2.z * b2;
 
                         let fog = ((z - near) / (far - near)).clamp(0.0, 1.0);
-                        let fade = (1.0 - fog).powf(1.55);
+                        let fade = (1.0 - fog).powf(1.35);
                         let pattern = if is_floor {
                             let tile = ((wx * inv_floor_tile).floor() as i32
                                 + (wy * inv_floor_tile).floor() as i32)
@@ -3994,11 +3997,11 @@ impl QuakeE1M1State {
                             ^ (py as u64).wrapping_mul(19349663)
                             ^ frame)
                             & 3) as f32
-                            / 22.0;
+                            / 20.0;
                         let mut brightness =
-                            (light * fade * pattern + grain + 0.12).clamp(0.08, 1.2);
+                            (light * fade * pattern + grain + 0.2).clamp(0.12, 1.4);
                         if self.fire_flash > 0.0 {
-                            brightness = (brightness + self.fire_flash * 0.35).min(1.3);
+                            brightness = (brightness + self.fire_flash * 0.4).min(1.5);
                         }
 
                         let mut r = base.r() as f32 * brightness;
@@ -4276,9 +4279,11 @@ impl VisualEffectsScreen {
     }
 
     fn canvas_mode_for_effect(&self, _quality: FxQuality, _area_cells: usize) -> Mode {
-        // Always render in braille resolution; performance is controlled via stride/quality,
-        // but we never downshift to block modes that visibly reduce resolution.
-        Mode::Braille
+        match self.effect {
+            // FPS effects benefit from chunkier pixels for readability in terminals.
+            EffectType::DoomE1M1 | EffectType::QuakeE1M1 => Mode::Block,
+            _ => Mode::Braille,
+        }
     }
 
     fn switch_effect(&mut self, effect: EffectType) {
@@ -4981,8 +4986,11 @@ impl Screen for VisualEffectsScreen {
         // Reuse cached painter (grow-only) and render at sub-pixel resolution.
         {
             let area_cells = canvas_area.width as usize * canvas_area.height as usize;
-            // Visual fidelity is non-negotiable for this screen.
-            let quality = FxQuality::Full;
+            let mut quality =
+                FxQuality::from_degradation_with_area(frame.degradation, area_cells);
+            if self.is_fps_effect() && matches!(quality, FxQuality::Off) {
+                quality = FxQuality::Minimal;
+            }
             self.last_quality.set(quality);
             let theme_inputs = current_fx_theme();
 

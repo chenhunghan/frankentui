@@ -61,6 +61,37 @@ fn render(frame: &mut Frame) {
 
 const RULE_WIDTH: u16 = 36;
 
+fn wrap_markdown_for_panel(text: &Text, width: u16) -> Text {
+    let width = usize::from(width);
+    if width == 0 {
+        return text.clone();
+    }
+
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let plain = line.to_plain_text();
+        if is_table_line(&plain) || line.width() <= width {
+            lines.push(line.clone());
+            continue;
+        }
+
+        lines.extend(line.wrap(width, WrapMode::Word));
+    }
+
+    let mut wrapped = Text::from_lines(lines);
+    wrapped.truncate(width, None);
+    wrapped
+}
+
+fn is_table_line(plain: &str) -> bool {
+    plain.chars().any(|c| {
+        matches!(
+            c,
+            '┌' | '┬' | '┐' | '├' | '┼' | '┤' | '└' | '┴' | '┘' | '│' | '─'
+        )
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Editor,
@@ -196,7 +227,7 @@ impl MarkdownLiveEditor {
 
     fn render_preview_text(&self, width: u16) -> Text {
         MarkdownRenderer::new(self.md_theme.clone())
-            .rule_width(RULE_WIDTH)
+            .rule_width(RULE_WIDTH.min(width))
             .table_max_width(width)
             .render(&self.editor.text())
     }
@@ -367,18 +398,21 @@ impl MarkdownLiveEditor {
             return;
         }
 
+        let rendered_md = self.render_preview_text(inner.width);
+        let wrapped_md = wrap_markdown_for_panel(&rendered_md, inner.width);
+
         if self.diff_mode {
             let rows = Flex::vertical()
                 .constraints([Constraint::Min(4), Constraint::Fixed(6)])
                 .split(inner);
-            let rendered_md = self.render_preview_text(inner.width);
-            Paragraph::new(rendered_md.clone())
+            Paragraph::new(wrapped_md.clone())
+                .wrap(WrapMode::None)
                 .scroll((self.preview_scroll, 0))
                 .render(rows[0], frame);
-            self.render_width_diff(frame, rows[1], &rendered_md);
+            self.render_width_diff(frame, rows[1], &wrapped_md);
         } else {
-            let rendered_md = self.render_preview_text(inner.width);
-            Paragraph::new(rendered_md)
+            Paragraph::new(wrapped_md)
+                .wrap(WrapMode::None)
                 .scroll((self.preview_scroll, 0))
                 .render(inner, frame);
         }
