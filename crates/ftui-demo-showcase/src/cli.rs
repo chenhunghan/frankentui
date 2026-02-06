@@ -56,33 +56,34 @@ SCREENS:
    13  Macro Recorder     Record/replay input macros and scenarios
    14  Performance        Frame budget, caching, virtualization
    15  Markdown           Rich text and markdown rendering
-   16  Mermaid Showcase   Interactive Mermaid diagrams with layout diagnostics and live controls
-   17  Mermaid Mega Showcase   Comprehensive Mermaid diagram lab with performance knobs and diagnostics
-   18  Visual Effects     Animated braille and canvas effects
-   19  Responsive         Breakpoint-driven responsive layout demo
-   20  Log Search         Live log search and filter demo
-   21  Notifications      Toast notification system demo
-   22  Action Timeline    Event timeline with filtering and severity
-   23  Sizing             Content-aware intrinsic sizing demo
-   24  Layout Inspector   Constraint solver visual inspector
-   25  Text Editor        Advanced multi-line text editor with search
-   26  Mouse Playground   Mouse hit-testing and interaction demo
-   27  Form Validation    Comprehensive form validation demo
-   28  Virtualized Search Fuzzy search in 100K+ items demo
-   29  Async Tasks        Async task manager and queue diagnostics
-   30  Theme Studio       Live palette editor and theme inspector
-   31  Time-Travel Studio A/B compare + diff heatmap of recorded snapshots
-   32  Performance Challenge Stress harness for degradation tiers
-   33  Explainability     Diff/resize/budget evidence cockpit
-   34  i18n Stress Lab    Unicode width, RTL, emoji, and truncation
-   35  VOI Overlay        Galaxy-Brain VOI debug overlay
-   36  Inline Mode        Inline scrollback + chrome story
-   37  Accessibility      Accessibility control panel + contrast checks
-   38  Widget Builder     Interactive widget composition sandbox
-   39  Palette Evidence   Command palette evidence lab
-   40  Determinism Lab    Checksum equivalence + determinism proofs
-   41  Links              OSC-8 hyperlink playground + hit regions
-   42  Kanban Board       Interactive Kanban board with drag-drop
+   16  Live Markdown Editor Split-pane editor + preview with search and diff mode
+   17  Mermaid Showcase   Interactive Mermaid diagrams with layout diagnostics and live controls
+   18  Mermaid Mega Showcase   Comprehensive Mermaid diagram lab with performance knobs and diagnostics
+   19  Visual Effects     Animated braille and canvas effects
+   20  Responsive         Breakpoint-driven responsive layout demo
+   21  Log Search         Live log search and filter demo
+   22  Notifications      Toast notification system demo
+   23  Action Timeline    Event timeline with filtering and severity
+   24  Sizing             Content-aware intrinsic sizing demo
+   25  Layout Inspector   Constraint solver visual inspector
+   26  Text Editor        Advanced multi-line text editor with search
+   27  Mouse Playground   Mouse hit-testing and interaction demo
+   28  Form Validation    Comprehensive form validation demo
+   29  Virtualized Search Fuzzy search in 100K+ items demo
+   30  Async Tasks        Async task manager and queue diagnostics
+   31  Theme Studio       Live palette editor and theme inspector
+   32  Time-Travel Studio A/B compare + diff heatmap of recorded snapshots
+   33  Performance Challenge Stress harness for degradation tiers
+   34  Explainability     Diff/resize/budget evidence cockpit
+   35  i18n Stress Lab    Unicode width, RTL, emoji, and truncation
+   36  VOI Overlay        Galaxy-Brain VOI debug overlay
+   37  Inline Mode        Inline scrollback + chrome story
+   38  Accessibility      Accessibility control panel + contrast checks
+   39  Widget Builder     Interactive widget composition sandbox
+   40  Palette Evidence   Command palette evidence lab
+   41  Determinism Lab    Checksum equivalence + determinism proofs
+   42  Links              OSC-8 hyperlink playground + hit regions
+   43  Kanban Board       Interactive Kanban board with drag-drop
 
 KEYBINDINGS:
     1-9, 0                Switch to screens 1-10 by number
@@ -747,18 +748,18 @@ mod tests {
     }
 
     #[test]
-    fn help_text_contains_mermaid_showcase_as_screen_16() {
-        assert!(HELP_TEXT.contains("16  Mermaid Showcase"));
+    fn help_text_contains_mermaid_showcase_as_screen_17() {
+        assert!(HELP_TEXT.contains("17  Mermaid Showcase"));
     }
 
     #[test]
-    fn help_text_contains_mermaid_mega_showcase_as_screen_17() {
-        assert!(HELP_TEXT.contains("17  Mermaid Mega Showcase"));
+    fn help_text_contains_mermaid_mega_showcase_as_screen_18() {
+        assert!(HELP_TEXT.contains("18  Mermaid Mega Showcase"));
     }
 
     #[test]
-    fn help_text_contains_visual_effects_as_screen_18() {
-        assert!(HELP_TEXT.contains("18  Visual Effects"));
+    fn help_text_contains_visual_effects_as_screen_19() {
+        assert!(HELP_TEXT.contains("19  Visual Effects"));
     }
 
     #[test]

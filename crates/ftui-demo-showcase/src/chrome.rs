@@ -1303,6 +1303,7 @@ pub fn accent_for(id: ScreenId) -> theme::ColorToken {
         ScreenId::Performance => theme::screen_accent::PERFORMANCE,
         ScreenId::MacroRecorder => theme::screen_accent::ADVANCED,
         ScreenId::MarkdownRichText => theme::screen_accent::MARKDOWN,
+        ScreenId::MarkdownLiveEditor => theme::screen_accent::MARKDOWN,
         ScreenId::VisualEffects => theme::screen_accent::VISUAL_EFFECTS,
         ScreenId::ResponsiveDemo => theme::screen_accent::RESPONSIVE_DEMO,
         ScreenId::LogSearch => theme::screen_accent::LOG_SEARCH,

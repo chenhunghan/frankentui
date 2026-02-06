@@ -4858,10 +4858,11 @@ mod tests {
     #[test]
     fn registry_by_family_unsupported() {
         let unsup = SampleRegistry::by_family(SampleFamily::Unsupported);
-        assert_eq!(unsup.len(), 3);
-        for s in &unsup {
-            assert!(s.edge_cases.contains(&"unsupported-diagram"));
-        }
+        assert!(
+            unsup.is_empty(),
+            "Expected no unsupported samples, got {}",
+            unsup.len()
+        );
     }
 
     #[test]

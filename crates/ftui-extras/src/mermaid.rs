@@ -6704,11 +6704,10 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
         if !saw_header {
             if let Some((dtype, dir)) = parse_header(trimmed) {
                 if dtype == DiagramType::Pie {
-                    let lower = trimmed.to_ascii_lowercase();
-                    pie_show_data = lower
+                    pie_show_data = trimmed
                         .split_whitespace()
                         .skip(1)
-                        .any(|token| token == "showdata");
+                        .any(|token| token.eq_ignore_ascii_case("showData"));
                 }
                 diagram_type = dtype;
                 direction = dir;
@@ -8647,7 +8646,7 @@ fn strip_quotes(s: &str) -> String {
 const SQUOTE: char = '\'';
 
 fn is_pie_show_data_line(text: &str) -> bool {
-    text.trim().eq_ignore_ascii_case("showdata")
+    text.trim().eq_ignore_ascii_case("showData")
 }
 
 fn parse_pie_title_line(text: &str) -> Option<String> {
@@ -9689,17 +9688,22 @@ mod tests {
     #[allow(dead_code)]
     fn jsonl_event(path: &str, event: &str) -> serde_json::Value {
         let content = std::fs::read_to_string(path).expect("read log");
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let value: serde_json::Value = serde_json::from_str(trimmed).expect("jsonl parse");
-            if value.get("event").and_then(|v| v.as_str()) == Some(event) {
-                return value;
-            }
-        }
-        panic!("missing jsonl event: {event}");
+        content
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                let value: serde_json::Value = serde_json::from_str(trimmed).expect("jsonl parse");
+                if value.get("event").and_then(|v| v.as_str()) == Some(event) {
+                    Some(value)
+                } else {
+                    None
+                }
+            })
+            .next()
+            .expect("missing jsonl event")
     }
 
     #[test]
@@ -10059,7 +10063,7 @@ mod tests {
             ("|o--|{", "zero-or-one-to-one-or-many"),
         ] {
             let input = format!("erDiagram\nA {} B : {}", arrow, desc);
-            let ast = parse(&input).unwrap_or_else(|_| panic!("parse {}", desc));
+            let ast = parse(&input).expect("parse");
             let edge = ast
                 .statements
                 .iter()
@@ -10067,7 +10071,7 @@ mod tests {
                     Statement::Edge(e) => Some(e),
                     _ => None,
                 })
-                .unwrap_or_else(|| panic!("no edge for {}", desc));
+                .expect("edge");
             assert_eq!(edge.arrow, arrow, "arrow for {}", desc);
             assert_eq!(edge.label.as_deref(), Some(desc), "label for {}", desc);
         }
@@ -12210,12 +12214,12 @@ B --> C
             &MermaidFallbackPolicy::default(),
         );
         assert_eq!(ir_parse.ir.constraints.len(), 1);
-        match &ir_parse.ir.constraints[0] {
-            LayoutConstraint::SameRank { node_ids, .. } => {
-                assert_eq!(node_ids, &["A", "B", "C"]);
-            }
-            other => panic!("expected SameRank, got {other:?}"),
-        }
+        let constraint = &ir_parse.ir.constraints[0];
+        let node_ids: &[String] = match constraint {
+            LayoutConstraint::SameRank { node_ids, .. } => node_ids,
+            _ => &[],
+        };
+        assert_eq!(node_ids, ["A", "B", "C"]);
     }
 
     #[test]
@@ -12233,19 +12237,19 @@ A --> B
             &MermaidFallbackPolicy::default(),
         );
         assert_eq!(ir_parse.ir.constraints.len(), 1);
-        match &ir_parse.ir.constraints[0] {
+        let constraint = &ir_parse.ir.constraints[0];
+        let (from_id, to_id, min_len) = match constraint {
             LayoutConstraint::MinLength {
                 from_id,
                 to_id,
                 min_len,
                 ..
-            } => {
-                assert_eq!(from_id, "A");
-                assert_eq!(to_id, "B");
-                assert_eq!(*min_len, 3);
-            }
-            other => panic!("expected MinLength, got {other:?}"),
-        }
+            } => (from_id.as_str(), to_id.as_str(), *min_len),
+            _ => ("", "", 0),
+        };
+        assert_eq!(from_id, "A");
+        assert_eq!(to_id, "B");
+        assert_eq!(min_len, 3);
     }
 
     #[test]
@@ -12263,14 +12267,14 @@ A --> B
             &MermaidFallbackPolicy::default(),
         );
         assert_eq!(ir_parse.ir.constraints.len(), 1);
-        match &ir_parse.ir.constraints[0] {
-            LayoutConstraint::Pin { node_id, x, y, .. } => {
-                assert_eq!(node_id, "A");
-                assert!((x - 100.0).abs() < 1e-9);
-                assert!((y - 50.0).abs() < 1e-9);
-            }
-            other => panic!("expected Pin, got {other:?}"),
-        }
+        let constraint = &ir_parse.ir.constraints[0];
+        let (node_id, x, y) = match constraint {
+            LayoutConstraint::Pin { node_id, x, y, .. } => (node_id.as_str(), *x, *y),
+            _ => ("", 0.0, 0.0),
+        };
+        assert_eq!(node_id, "A");
+        assert!((x - 100.0).abs() < 1e-9);
+        assert!((y - 50.0).abs() < 1e-9);
     }
 
     #[test]
@@ -12289,12 +12293,12 @@ B --> C
             &MermaidFallbackPolicy::default(),
         );
         assert_eq!(ir_parse.ir.constraints.len(), 1);
-        match &ir_parse.ir.constraints[0] {
-            LayoutConstraint::OrderInRank { node_ids, .. } => {
-                assert_eq!(node_ids, &["A", "B", "C"]);
-            }
-            other => panic!("expected OrderInRank, got {other:?}"),
-        }
+        let constraint = &ir_parse.ir.constraints[0];
+        let node_ids: &[String] = match constraint {
+            LayoutConstraint::OrderInRank { node_ids, .. } => node_ids,
+            _ => &[],
+        };
+        assert_eq!(node_ids, ["A", "B", "C"]);
     }
 
     #[test]
@@ -12362,18 +12366,18 @@ B --> C
             .collect();
         assert_eq!(commits.len(), 3);
         // Check second commit has id
-        if let Statement::GitGraphCommit(c) = &commits[1] {
-            assert_eq!(c.id.as_deref(), Some("abc"));
-        } else {
-            panic!("expected GitGraphCommit");
-        }
+        let second_id = match commits[1] {
+            Statement::GitGraphCommit(c) => c.id.as_deref(),
+            _ => None,
+        };
+        assert_eq!(second_id, Some("abc"));
         // Check third commit has tag
-        if let Statement::GitGraphCommit(c) = &commits[2] {
-            assert_eq!(c.id.as_deref(), Some("def"));
-            assert_eq!(c.tag.as_deref(), Some("v1"));
-        } else {
-            panic!("expected GitGraphCommit");
-        }
+        let (third_id, third_tag) = match commits[2] {
+            Statement::GitGraphCommit(c) => (c.id.as_deref(), c.tag.as_deref()),
+            _ => (None, None),
+        };
+        assert_eq!(third_id, Some("def"));
+        assert_eq!(third_tag, Some("v1"));
     }
 
     #[test]

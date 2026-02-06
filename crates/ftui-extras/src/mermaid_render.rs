@@ -827,6 +827,7 @@ enum EdgeLineStyle {
     Thick,
 }
 
+/// Fill color for Journey nodes based on `journey_score_N` classes.
 fn journey_score_fill(ir_node: &crate::mermaid::IrNode) -> Option<PackedRgba> {
     for class in &ir_node.classes {
         if let Some(s) = class.strip_prefix("journey_score_")
@@ -876,7 +877,6 @@ fn sankey_flow_fill(ir_node: &crate::mermaid::IrNode) -> Option<PackedRgba> {
     }
     None
 }
-
 /// Detect edge line style from the Mermaid arrow string.
 fn detect_edge_style(arrow: &str) -> EdgeLineStyle {
     if arrow.contains("-.") || arrow.contains(".-") {

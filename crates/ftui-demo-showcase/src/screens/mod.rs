@@ -269,6 +269,16 @@ pub const SCREEN_REGISTRY: &[ScreenMeta] = &[
         tour_step_hint: None,
     },
     ScreenMeta {
+        id: ScreenId::MarkdownLiveEditor,
+        title: "Live Markdown Editor",
+        short_label: "MD Live",
+        category: ScreenCategory::Text,
+        palette_tags: &["markdown", "editor", "preview", "search", "diff"],
+        blurb: "Split-pane live Markdown editor with search and width diff mode.",
+        default_hotkey: None,
+        tour_step_hint: None,
+    },
+    ScreenMeta {
         id: ScreenId::MermaidShowcase,
         title: "Mermaid Showcase",
         short_label: "Mermaid",

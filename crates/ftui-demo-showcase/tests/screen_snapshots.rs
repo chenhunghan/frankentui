@@ -965,6 +965,30 @@ fn markdown_backdrop_nordic_theme_120x40() {
 }
 
 // ============================================================================
+// Live Markdown Editor
+// ============================================================================
+
+#[test]
+fn markdown_live_editor_initial_80x24() {
+    let screen = ftui_demo_showcase::screens::markdown_live_editor::MarkdownLiveEditor::new();
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("markdown_live_editor_initial_80x24", &frame.buffer);
+}
+
+#[test]
+fn markdown_live_editor_initial_120x40() {
+    let screen = ftui_demo_showcase::screens::markdown_live_editor::MarkdownLiveEditor::new();
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("markdown_live_editor_initial_120x40", &frame.buffer);
+}
+
+// ============================================================================
 // Advanced Features
 // ============================================================================
 

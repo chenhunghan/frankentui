@@ -731,11 +731,136 @@ impl Screen for MarkdownLiveEditor {
         ]
     }
 
+    fn consumes_text_input(&self) -> bool {
+        matches!(self.focus, Focus::Editor | Focus::Search)
+    }
+
     fn title(&self) -> &'static str {
         "Live Markdown"
     }
 
     fn tab_label(&self) -> &'static str {
         "MD Live"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ftui_core::event::MouseEvent;
+    use ftui_render::grapheme_pool::GraphemePool;
+
+    fn key(code: KeyCode) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        })
+    }
+
+    fn ctrl(code: KeyCode) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers: Modifiers::CTRL,
+            kind: KeyEventKind::Press,
+        })
+    }
+
+    fn click(x: u16, y: u16) -> Event {
+        Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+        ))
+    }
+
+    #[test]
+    fn initial_state_defaults() {
+        let screen = MarkdownLiveEditor::new();
+        assert_eq!(screen.focus, Focus::Editor);
+        assert!(!screen.diff_mode);
+        assert_eq!(screen.title(), "Live Markdown");
+        assert_eq!(screen.tab_label(), "MD Live");
+    }
+
+    #[test]
+    fn consumes_text_input_depends_on_focus() {
+        let mut screen = MarkdownLiveEditor::new();
+        assert!(screen.consumes_text_input());
+        screen.focus = Focus::Preview;
+        screen.sync_focus();
+        assert!(!screen.consumes_text_input());
+    }
+
+    #[test]
+    fn ctrl_f_focuses_search_and_escape_returns_to_editor() {
+        let mut screen = MarkdownLiveEditor::new();
+        screen.update(&ctrl(KeyCode::Char('f')));
+        assert_eq!(screen.focus, Focus::Search);
+        screen.update(&key(KeyCode::Escape));
+        assert_eq!(screen.focus, Focus::Editor);
+    }
+
+    #[test]
+    fn search_navigation_selects_matches_and_wraps() {
+        let mut screen = MarkdownLiveEditor::new();
+        screen.editor.set_text("alpha beta alpha gamma alpha");
+        screen.search_input.set_value("alpha");
+        screen.recompute_search();
+
+        assert_eq!(screen.search_results.len(), 3);
+        assert_eq!(screen.current_match, Some(0));
+        assert_eq!(screen.editor.selected_text().as_deref(), Some("alpha"));
+
+        screen.next_match();
+        assert_eq!(screen.current_match, Some(1));
+        assert_eq!(screen.editor.selected_text().as_deref(), Some("alpha"));
+
+        screen.next_match();
+        assert_eq!(screen.current_match, Some(2));
+        screen.next_match();
+        assert_eq!(screen.current_match, Some(0));
+
+        screen.prev_match();
+        assert_eq!(screen.current_match, Some(2));
+    }
+
+    #[test]
+    fn mouse_click_switches_focus_panels() {
+        let mut screen = MarkdownLiveEditor::new();
+        screen.layout_search.set(Rect::new(0, 0, 80, 3));
+        screen.layout_editor.set(Rect::new(0, 3, 40, 20));
+        screen.layout_preview.set(Rect::new(40, 3, 40, 20));
+
+        screen.update(&click(4, 1));
+        assert_eq!(screen.focus, Focus::Search);
+
+        screen.update(&click(10, 8));
+        assert_eq!(screen.focus, Focus::Editor);
+
+        screen.update(&click(60, 8));
+        assert_eq!(screen.focus, Focus::Preview);
+    }
+
+    #[test]
+    fn ctrl_d_toggles_diff_mode() {
+        let mut screen = MarkdownLiveEditor::new();
+        assert!(!screen.diff_mode);
+        screen.update(&ctrl(KeyCode::Char('d')));
+        assert!(screen.diff_mode);
+        screen.update(&ctrl(KeyCode::Char('d')));
+        assert!(!screen.diff_mode);
+    }
+
+    #[test]
+    fn render_smoke_two_sizes() {
+        let mut pool = GraphemePool::new();
+        let screen = MarkdownLiveEditor::new();
+
+        let mut frame = Frame::new(80, 24, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 80, 24));
+
+        let mut frame = Frame::new(120, 40, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 120, 40));
     }
 }
