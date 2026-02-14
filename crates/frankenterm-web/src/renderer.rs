@@ -333,6 +333,9 @@ pub struct RendererConfig {
     pub zoom: f32,
     /// Backend selection policy for renderer initialization.
     pub backend_preference: RendererBackendPreference,
+    /// CSS font-family for terminal text (e.g. `"Fira Code"`).
+    /// Defaults to `"Pragmasevka NF"` with `monospace` fallback.
+    pub font_family: Option<String>,
 }
 
 impl Default for RendererConfig {
@@ -343,6 +346,7 @@ impl Default for RendererConfig {
             dpr: 1.0,
             zoom: 1.0,
             backend_preference: RendererBackendPreference::Auto,
+            font_family: None,
         }
     }
 }
@@ -853,10 +857,11 @@ mod gpu {
         canvas_height: u16,
         cached_font_height: u16,
         cached_font_css: String,
+        font_family: String,
     }
 
     impl GlyphCanvasRasterizer {
-        fn new() -> Result<Self, RendererError> {
+        fn new(font_family: Option<&str>) -> Result<Self, RendererError> {
             let window = web_sys::window().ok_or_else(|| {
                 RendererError::SurfaceError("window unavailable for glyph rasterizer".to_owned())
             })?;
@@ -908,6 +913,9 @@ mod gpu {
                 canvas_height: 0,
                 cached_font_height: 0,
                 cached_font_css: String::new(),
+                font_family: font_family
+                    .unwrap_or(TERMINAL_FONT_FAMILY)
+                    .to_owned(),
             })
         }
 
@@ -943,7 +951,7 @@ mod gpu {
 
             let font_px = (f64::from(height_px.max(1)) * TERMINAL_FONT_SCALE).max(1.0);
             self.cached_font_css =
-                format!("{font_px:.2}px \"{TERMINAL_FONT_FAMILY}\", {TERMINAL_FONT_FALLBACK}");
+                format!("{font_px:.2}px \"{}\", {TERMINAL_FONT_FALLBACK}", self.font_family);
             self.context.set_font(&self.cached_font_css);
             self.cached_font_height = height_px;
         }
@@ -1247,7 +1255,7 @@ mod gpu {
                 atlas_height,
                 usize::from(atlas_width) * usize::from(atlas_height),
             );
-            let glyph_rasterizer = GlyphCanvasRasterizer::new()?;
+            let glyph_rasterizer = GlyphCanvasRasterizer::new(config.font_family.as_deref())?;
 
             let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("glyph_atlas"),
@@ -1924,6 +1932,7 @@ mod gpu {
         cursor_offset: Option<u32>,
         cursor_style: CursorStyle,
         selection_range: Option<(u32, u32)>,
+        font_family: String,
     }
 
     impl Canvas2dRenderer {
@@ -1958,6 +1967,11 @@ mod gpu {
                 config.dpr,
                 config.zoom,
             );
+            let font_family = config
+                .font_family
+                .as_deref()
+                .unwrap_or("monospace")
+                .to_owned();
             let mut renderer = Self {
                 canvas,
                 context,
@@ -1973,6 +1987,7 @@ mod gpu {
                 cursor_offset: None,
                 cursor_style: CursorStyle::None,
                 selection_range: None,
+                font_family,
             };
             renderer.sync_canvas_size(geometry);
             renderer.apply_context_defaults();
@@ -2150,10 +2165,11 @@ mod gpu {
             let hovered_link_id = self.hovered_link_id;
 
             let font_px = (cell_height * 0.82).max(1.0);
-            let regular_font = format!("{font_px:.2}px monospace");
-            let bold_font = format!("bold {font_px:.2}px monospace");
-            let italic_font = format!("italic {font_px:.2}px monospace");
-            let bold_italic_font = format!("italic bold {font_px:.2}px monospace");
+            let ff = &self.font_family;
+            let regular_font = format!("{font_px:.2}px \"{ff}\", monospace");
+            let bold_font = format!("bold {font_px:.2}px \"{ff}\", monospace");
+            let italic_font = format!("italic {font_px:.2}px \"{ff}\", monospace");
+            let bold_italic_font = format!("italic bold {font_px:.2}px \"{ff}\", monospace");
 
             let mut glyph_buf = [0u8; 4];
             for (index, cell) in self.cells_cpu.iter().enumerate() {

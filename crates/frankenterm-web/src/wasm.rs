@@ -13,7 +13,7 @@ use crate::input::{
     MousePhase, PasteInput, TouchInput, TouchPhase, TouchPoint, VtInputEncoderFeatures, WheelInput,
     encode_vt_input_event, normalize_dom_key_code,
 };
-use crate::patch_feed::core_patch_to_patches;
+use crate::patch_feed::{cell_from_core, core_patch_to_patches};
 use crate::renderer::{
     CellData, CellPatch, CursorStyle, GridGeometry, RendererBackendPreference, RendererConfig,
     WebGpuRenderer, cell_attr_link_id, cell_patches_from_flat_u32,
@@ -445,6 +445,7 @@ impl FrankenTermWeb {
         let dpr = parse_init_f32(&options, "dpr")?.unwrap_or(1.0);
         let zoom = parse_init_f32(&options, "zoom")?.unwrap_or(1.0);
         let backend_preference = parse_init_renderer_backend(&options)?;
+        let font_family = parse_init_string(&options, "fontFamily")?;
 
         let config = RendererConfig {
             cell_width,
@@ -452,6 +453,7 @@ impl FrankenTermWeb {
             dpr,
             zoom,
             backend_preference,
+            font_family,
         };
 
         let renderer = WebGpuRenderer::init(canvas.clone(), cols, rows, &config)
@@ -575,6 +577,38 @@ impl FrankenTermWeb {
             .resize(usize::from(geometry.cols) * usize::from(geometry.rows), 0);
         self.auto_link_urls.clear();
         self.sync_terminal_engine_size(geometry.cols, geometry.rows);
+
+        // Rebuild shadow_cells + renderer from the engine grid after resize.
+        // The flat Vec::resize above doesn't restructure rows, so we build
+        // a full-frame CellPatch from the properly-resized engine grid and
+        // route it through apply_cell_patches, which updates both
+        // shadow_cells AND uploads dirty rows to the renderer.
+        {
+            let full_patch = if let Some(engine) = self.engine.as_ref() {
+                let grid = engine.grid();
+                let total = usize::from(geometry.cols) * usize::from(geometry.rows);
+                let mut cells = Vec::with_capacity(total);
+                for r in 0..geometry.rows {
+                    for c in 0..geometry.cols {
+                        cells.push(match grid.cell(r, c) {
+                            Some(cell) => cell_from_core(cell),
+                            None => CellData::EMPTY,
+                        });
+                    }
+                }
+                Some(CellPatch { offset: 0, cells })
+            } else {
+                None
+            };
+            if let Some(patch) = full_patch {
+                self.apply_cell_patches(&[patch]);
+            }
+            // Sync presented_grid so next feed() produces correct incremental diffs
+            if let Some(engine) = self.engine.as_mut() {
+                let _ = engine.snapshot_patches();
+            }
+        }
+
         self.refresh_search_after_buffer_change();
         self.refresh_viewport_after_resize(previous_viewport_start);
         self.sync_canvas_css_size(geometry);
@@ -2708,6 +2742,13 @@ fn parse_init_f32(options: &Option<JsValue>, key: &str) -> Result<Option<f32>, J
         return Err(JsValue::from_str(&format!("field {key} must be finite")));
     }
     Ok(Some(n_f32))
+}
+
+fn parse_init_string(options: &Option<JsValue>, key: &str) -> Result<Option<String>, JsValue> {
+    let Some(obj) = options.as_ref() else {
+        return Ok(None);
+    };
+    get_string_opt(obj, key)
 }
 
 fn parse_init_bool(options: &Option<JsValue>, key: &str) -> Option<bool> {
