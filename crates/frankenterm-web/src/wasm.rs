@@ -445,6 +445,7 @@ impl FrankenTermWeb {
         let dpr = parse_init_f32(&options, "dpr")?.unwrap_or(1.0);
         let zoom = parse_init_f32(&options, "zoom")?.unwrap_or(1.0);
         let backend_preference = parse_init_renderer_backend(&options)?;
+        let font_family = parse_init_string(&options, "fontFamily")?;
 
         let config = RendererConfig {
             cell_width,
@@ -452,6 +453,7 @@ impl FrankenTermWeb {
             dpr,
             zoom,
             backend_preference,
+            font_family,
         };
 
         let renderer = WebGpuRenderer::init(canvas.clone(), cols, rows, &config)
@@ -2740,6 +2742,13 @@ fn parse_init_f32(options: &Option<JsValue>, key: &str) -> Result<Option<f32>, J
         return Err(JsValue::from_str(&format!("field {key} must be finite")));
     }
     Ok(Some(n_f32))
+}
+
+fn parse_init_string(options: &Option<JsValue>, key: &str) -> Result<Option<String>, JsValue> {
+    let Some(obj) = options.as_ref() else {
+        return Ok(None);
+    };
+    get_string_opt(obj, key)
 }
 
 fn parse_init_bool(options: &Option<JsValue>, key: &str) -> Option<bool> {
